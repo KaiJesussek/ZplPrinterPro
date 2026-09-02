@@ -324,38 +324,39 @@ fn digit_run(items: &[Item], from: usize) -> usize {
 }
 
 /// Emit one literal character in the current subset, switching subsets when
-/// the character is not representable (B covers 32..127, A covers 0..95,
-/// C holds pairs only). Bytes above 127 substitute `?` - Code 128 is a
-/// 7-bit symbology and real printers substitute the '?' character.
+/// the character is not representable. Value mapping per ISO/IEC 15417
+/// (the guide's Table 3, p.97 - the two agree exactly):
+/// `B` holds ASCII 32..127 as value c-32; `A` holds ASCII 32..95 (SP.._)
+/// as c-32 and ASCII 0..31 (controls) as c+64; `C` holds digit pairs.
+/// ASCII 96..127 is not in A (`96`/`101` are FNC symbols there) and
+/// switches to B. Bytes above 127 substitute `?` - Code 128 is a 7-bit
+/// symbology and real printers substitute the '?' character. Values never
+/// exceed 105 here, so WIDTHS indexing in `bars` cannot go out of bounds.
 fn emit_char(vals: &mut Vec<u8>, subset: &mut Subset, c: u8) {
     let (switch, value) = match *subset {
-        Subset::A => {
-            if c <= 95 {
-                (None, c)
-            } else if c <= 127 {
-                (Some(CODE_B), c - 32)
-            } else {
-                (None, 63) // '?'
-            }
-        }
+        Subset::A => match c {
+            0..=31 => (None, c + 64),      // controls NUL..US
+            32..=95 => (None, c - 32),     // SP.._
+            96..=127 => (Some(CODE_B), c - 32), // '`'..DEL live in B
+            _ => (None, 31),               // '?'
+        },
         Subset::B => match c {
             32..=127 => (None, c - 32),
-            0..=31 => (Some(CODE_A), c),
-            _ => (None, 31), // '?'
+            0..=31 => (Some(CODE_A), c + 64),
+            _ => (None, 31),               // '?'
         },
         Subset::C => {
-            // C cannot carry a single character; leave for A (control
-            // chars) or B (the rest).
-            let (code, target) = if c < 32 || c == 127 {
-                (CODE_A, Subset::A)
+            // C cannot carry a single character; leave for A (controls) or
+            // B (the rest, including substituted '?').
+            let (code, target, value) = if c < 32 {
+                (CODE_A, Subset::A, c + 64)
+            } else if c <= 127 {
+                (CODE_B, Subset::B, c - 32)
             } else {
-                (CODE_B, Subset::B)
+                (CODE_B, Subset::B, 31)    // '?'
             };
             *subset = target;
-            (Some(code), match target {
-                Subset::A => c.min(95),
-                _ => c.saturating_sub(32),
-            })
+            (Some(code), value)
         }
     };
     if let Some(code) = switch {

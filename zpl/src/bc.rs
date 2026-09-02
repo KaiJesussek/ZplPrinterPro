@@ -59,7 +59,13 @@ pub fn encode(
 /// empty pattern - the parser already warned where it can (^FS with no
 /// data), so this never panics and never fails.
 pub fn barcode_field(f: &BarcodeField) -> Pattern {
-    if f.data.is_empty() {
+    // The IR keeps barcode data as a Latin-1 view of the source bytes
+    // (Task 12 upgrades the codepage decode); recover the bytes through
+    // Latin-1, NOT `str::as_bytes` - that would UTF-8-re-encode bytes >=
+    // 0x80 into two symbols and corrupt the barcode (a byte-value
+    // symbology encodes the original byte).
+    let data = latin1_bytes(&f.data);
+    if data.is_empty() {
         return Pattern::Bars(Vec::new());
     }
     // ^BY defaults are resolved at parse time; zeros here mean a field that
@@ -67,11 +73,19 @@ pub fn barcode_field(f: &BarcodeField) -> Pattern {
     let module = if f.module == 0 { 2 } else { f.module };
     let ratio = if f.ratio == 0 { 30 } else { f.ratio };
     let height = if f.height == 0 { 10 } else { f.height };
-    let data = prepare_ucc(f);
+    let data = prepare_ucc(f, data);
     match encode(f.symbology, &data, module, ratio, height, f.line) {
         Ok(pattern) => pattern,
         Err(_) => Pattern::Bars(Vec::new()),
     }
+}
+
+/// The IR's `String` holds each source byte as its Latin-1 code point;
+/// map back 1:1. Chars beyond U+00FF (only reachable once Task 12 decodes
+/// real codepages) truncate - 1D symbologies encode byte values, the known
+/// Zebra lossiness for non-Latin-1 content.
+fn latin1_bytes(data: &str) -> Vec<u8> {
+    data.chars().map(|c| c as u32 as u8).collect()
 }
 
 /// ^BC UCC/EAN-128 data preparation, per the guide's ^BC page: `e=Y` adds
@@ -80,8 +94,8 @@ pub fn barcode_field(f: &BarcodeField) -> Pattern {
 /// strips parentheses and spaces and prepends FNC1 (`>8`, the guide's
 /// invocation). Combinations (`e`+`D`) are mutually exclusive on real
 /// firmware; each step applies where its data shape allows.
-fn prepare_ucc(f: &BarcodeField) -> Vec<u8> {
-    let mut data = f.data.as_bytes().to_vec();
+fn prepare_ucc(f: &BarcodeField, data: Vec<u8>) -> Vec<u8> {
+    let mut data = data;
     if f.model == b'D' {
         // Guide: "The printer automatically strips out parentheses and
         // spaces for encoding" and "starts in the appropriate subset

@@ -61,7 +61,7 @@ fn end_format(ctx: &mut ParseContext, _params: &[u8]) {
         return;
     }
     // An open barcode field closed by ^XZ without data can't be encoded.
-    warn_empty_barcode(ctx);
+    check_barcode_data(ctx);
     if let Some(label) = ctx.state.end_format(&ctx.mode) {
         ctx.pending_label = Some(label);
     }
@@ -70,20 +70,32 @@ fn end_format(ctx: &mut ParseContext, _params: &[u8]) {
 fn end_field(ctx: &mut ParseContext, _params: &[u8]) {
     // An open field closes into its format; a ^DF download hands its
     // captured bytes over to Memory.formats.
-    warn_empty_barcode(ctx);
+    check_barcode_data(ctx);
     if let Some((name, bytes)) = ctx.state.end_field() {
         ctx.memory.formats.insert(memory::format_name(name.as_bytes()), bytes);
     }
 }
 
-/// A barcode field closed with no ^FD data prints nothing on a real
-/// printer; warn so callers see the format is incomplete (never panic).
-fn warn_empty_barcode(ctx: &mut ParseContext) {
+/// Barcode data problems visible at field close: no ^FD data (prints
+/// nothing on a real printer) and bytes >= 0x80 (Code 128 is 7-bit - the
+/// encoder substitutes '?', and the guide's A-mode is "full ASCII").
+/// Both warn, never panic.
+fn check_barcode_data(ctx: &mut ParseContext) {
     if let FormatState::Field { draft, .. } = &ctx.state {
-        if draft.barcode.is_some() && draft.data.is_empty() {
+        if draft.barcode.is_none() {
+            return;
+        }
+        if draft.data.is_empty() {
             ctx.diags.push(Diagnostic::warning(
                 "BC",
                 "barcode field has no data; nothing to encode",
+            ));
+            return;
+        }
+        if let Some(&hi) = draft.data.iter().find(|&&b| b >= 0x80) {
+            ctx.diags.push(Diagnostic::warning(
+                "BC",
+                format!("barcode data contains non-ASCII byte 0x{hi:02X}; encoded as '?' (Code 128 is 7-bit)"),
             ));
         }
     }

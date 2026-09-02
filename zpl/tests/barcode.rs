@@ -207,9 +207,11 @@ fn bc128_subset_invocations() {
     );
 
     // `>;1234>7ABC`: start C (also auto: run of 4 digits), pairs 12 34,
-    // CODE A (101), letters encoded in Subset A (A = value 65, distinct
-    // from B's 33). Check: (105 + 12 + 68 + 303 + 260 + 330 + 402) mod 103
-    // = 1480 mod 103 = 38.
+    // CODE A (101), then letters in Subset A - the guide's Table 3 (p.97,
+    // matching ISO/IEC 15417) maps A->33, B->34, C->35, distinct from B's
+    // 1,2,3. Check (hand-computed from the standard's formula):
+    // (105 + 12*1 + 34*2 + 101*3 + 33*4 + 34*5 + 35*6) mod 103
+    // = (105 + 12 + 68 + 303 + 132 + 170 + 210) = 1000 mod 103 = 73.
     let (label, _) = common::parse_one(b"^XA^BC^FD>;1234>7ABC^FS^XZ");
     let f = assert_single_barcode(&label);
     assert_bars(
@@ -220,10 +222,10 @@ fn bc128_subset_invocations() {
             1,1,2,2,3,2, // 12
             1,3,1,1,2,3, // 34
             3,1,1,1,4,1, // 101 CODE A
-            1,2,1,1,2,4, // 65 'A'
-            1,2,1,4,2,1, // 66 'B'
-            1,4,1,1,2,2, // 67 'C'
-            1,3,2,3,1,1, // 38
+            1,1,1,3,2,3, // 33 'A'
+            1,3,1,1,2,3, // 34 'B'
+            1,3,1,3,2,1, // 35 'C'
+            1,4,2,1,1,2, // 73
             2,3,3,1,1,1,2, // stop
         ],
     );
@@ -376,6 +378,37 @@ fn encode_substitutes_high_bytes() {
     let (label, _) = common::parse_one(b"^XA^BC^FDAB\xFF\xE9^FS^XZ");
     let f = assert_single_barcode(&label);
     assert!(matches!(barcode_field(f), Pattern::Bars(b) if !b.is_empty()));
+}
+
+/// Reviewer repro: a non-digit byte >= 0x80 while Subset C is active must
+/// not index WIDTHS out of bounds (old code emitted c-32 = 107+ -> panic).
+/// 0x8B becomes '?' (B value 31, pattern 212321) after a CODE B switch:
+/// [105, 12, 34, 56, 78, 100, 31, check, stop], check =
+/// (105 + 12 + 68 + 168 + 312 + 500 + 186) mod 103 = 1351 mod 103 = 12.
+/// The parser also warns about the unencodable byte.
+#[test]
+fn bc_high_byte_in_subset_c_never_panics() {
+    let (label, diags) = common::parse_one(b"^XA^BC^FD12345678\x8B^FS^XZ");
+    assert!(
+        diags.items.iter().any(|d| d.severity == Severity::Warning),
+        "expected an unencodable-byte warning, got {diags:?}",
+    );
+    let f = assert_single_barcode(&label);
+    assert_bars(
+        &barcode_field(f),
+        2,
+        &[
+            2,1,1,2,3,2, // 105
+            1,1,2,2,3,2, // 12
+            1,3,1,1,2,3, // 34
+            3,3,1,1,2,1, // 56
+            2,4,1,1,1,2, // 78
+            1,1,4,1,3,1, // 100 CODE B
+            2,1,2,3,2,1, // 31 '?'
+            1,1,2,2,3,2, // 12 (check)
+            2,3,3,1,1,1,2, // stop
+        ],
+    );
 }
 
 /// ^FH hex escapes apply to barcode data too (the shared `^FD` data path):
