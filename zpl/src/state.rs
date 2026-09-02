@@ -11,24 +11,39 @@ use crate::ir::{BarcodeField, Field, Label, OriginMode, Rotation, TextBlock, Tex
 #[derive(Default)]
 pub struct Memory {}
 
-/// Printer-wide configuration (label geometry, orientation, shifts, text
-/// defaults).
+/// Printer-wide geometry and text configuration, all defaults per the ZPL II
+/// guide's power-up tables (Task 6 verified them against the guide; see the
+/// task report for the divergences from the plan's sketches).
 ///
-/// Geometry values start at their defaults until the ^PW/^LL/^LH/... handlers
-/// land in Task 8; all-zero defaults mean "unset" for now. The text defaults
-/// (^CF font, ^FW rotation, ^CI codepage, ^FC clock indicators) are live from
-/// Task 5 onward; their power-up values follow the guide (footnotes in the
-/// field docs).
+/// Geometry commands land in `PrinterMode` because the renderer consumes
+/// them; non-geometry settings with downstream consumers live in
+/// [`PrinterConfig`] on the parse context.
 #[derive(Clone, Debug)]
 pub struct PrinterMode {
+    /// `^PW` print width in dots (power-up: the printer width - 832 dots for
+    /// a 203-dpi 4-inch printer, the guide's configuration-label example).
     pub pw_dots: u32,
+    /// `^LL` label length in dots; 0 = AUTO - ^LL omitted, the renderer
+    /// sizes the label to its printed content (the guide's continuous-media
+    /// rule; an explicit ^LL value of 0 is impossible, so 0 is unambiguous).
     pub ll_dots: u32,
+    /// `^LH` label home offset (0..32000 each, power-up 0), added to every
+    /// field origin at render time.
     pub lh_x: u32,
     pub lh_y: u32,
+    /// `^PO` print orientation: 0 = N (normal), 1 = I (inverted 180deg). The
+    /// guide knows only these two values.
     pub orientation: u8,
-    pub label_top: u32,
-    pub left_shift: u32,
+    /// `^LT` label top offset (-120..120, power-up 0): shifts the whole
+    /// format up (negative) or down from the label's top edge.
+    pub label_top: i32,
+    /// `^LS` left-shift (-9999..9999, power-up 0), Z-130 compatibility.
+    pub left_shift: i32,
+    /// `^PM` mirror image of the whole label (Y), left-right flip.
     pub mirror: bool,
+    /// `^PQ` print quantity (default 1); `Label::copies` at ^XZ, and the
+    /// server's labels-remaining tracking.
+    pub copies: u32,
     /// `^CF` default font as `[canonical, raw]` (power-up: A).
     pub default_font: [u8; 2],
     /// `^CF` default character height in dots (power-up: 9).
@@ -48,14 +63,15 @@ pub struct PrinterMode {
 impl Default for PrinterMode {
     fn default() -> Self {
         PrinterMode {
-            pw_dots: 0,
-            ll_dots: 0,
+            pw_dots: 832,
+            ll_dots: 0, // auto: ^LL omitted
             lh_x: 0,
             lh_y: 0,
             orientation: 0,
             label_top: 0,
             left_shift: 0,
             mirror: false,
+            copies: 1,
             default_font: [b'A', b' '],
             default_font_h: 9,
             default_font_w: 5,
@@ -63,6 +79,43 @@ impl Default for PrinterMode {
             code_page: 0,
             font_assignments: BTreeMap::new(),
             clock_indicators: [b'%', 0, 0],
+        }
+    }
+}
+
+/// Non-geometry printer settings that have real downstream consumers.
+///
+/// Other accept-only commands (`^PR ^MT ^MM ^MF ^MI ^ML ^MP ^MW ^PA ^PF ^SC
+/// ^ZZ ^XB ^XS ^PN`) are parsed and validated by their handlers but not
+/// stored: the guide describes media/hardware actions with no effect on the
+/// label image, so a bitmap renderer has nowhere to put them (see the Task 6
+/// report).
+#[derive(Clone, Debug)]
+pub struct PrinterConfig {
+    /// `~SD`/`^MD` darkness in tenths of the guide's 0-30 scale (8.3 -> 83;
+    /// the XiIIIPlus-class 0.1 steps survive this way). `~SD` sets the
+    /// absolute value, `^MD` adds its signed offset. Power-up 0.
+    pub darkness: i32,
+    /// `^MN` media-tracking letter (N/Y/W/M/A/V); 0 = unset (the guide
+    /// ignores a missing value). V (continuous, variable length) drives Task
+    /// 10's auto label height.
+    pub media_tracking: u8,
+    /// `^MU` units letter: D dots / I inches / M millimeters (power-up D).
+    /// Field-by-field meaning; Task 13 scales field coordinates by it.
+    pub units: u8,
+    /// `^SZ` ZPL mode: 1 = ZPL, 2 = ZPL II (power-up 2). Mode 1 selects the
+    /// legacy ZPL language, which this project deliberately does not
+    /// implement (the plan drops ZPL I); the value is recorded anyway.
+    pub zpl_mode: u8,
+}
+
+impl Default for PrinterConfig {
+    fn default() -> Self {
+        PrinterConfig {
+            darkness: 0,
+            media_tracking: 0,
+            units: b'D',
+            zpl_mode: 2,
         }
     }
 }
@@ -135,7 +188,7 @@ impl FormatState {
         Some(Label {
             width_dots: mode.pw_dots,
             height_dots: mode.ll_dots,
-            copies: 1,
+            copies: mode.copies,
             fields,
         })
     }
@@ -238,6 +291,8 @@ pub struct ParseContext<'a> {
     pub diags: &'a mut Diagnostics,
     pub memory: &'a mut Memory,
     pub mode: PrinterMode,
+    /// Non-geometry printer settings (^MD/~SD darkness, ^MN tracking, ...).
+    pub config: PrinterConfig,
     /// The most recently completed label (^XZ), for the protocol layer.
     pub pending_label: Option<Label>,
 }
@@ -249,6 +304,7 @@ impl<'a> ParseContext<'a> {
             diags,
             memory,
             mode: PrinterMode::default(),
+            config: PrinterConfig::default(),
             pending_label: None,
         }
     }

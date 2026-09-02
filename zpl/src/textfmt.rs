@@ -10,11 +10,11 @@ use crate::state::{FieldDraft, FormatState, ParseContext};
 
 /// Split command parameters on commas, trimming ASCII whitespace from each
 /// segment. Multi-line ZPL puts the line break inside the last parameter
-/// (`^FO100,50\n`); every numeric handler parses through here, so trimming
-/// keeps the trailing LF/CRLF from corrupting the final value. ^FD field
-/// data does NOT go through this splitter - `append_data` keeps its bytes
-/// verbatim, as Zebra does.
-fn split_commas(params: &[u8]) -> Vec<&[u8]> {
+/// (`^FO100,50\n`); every numeric handler (here and in the Task 6 config
+/// handlers) parses through this, so trimming keeps the trailing LF/CRLF
+/// from corrupting the final value. ^FD field data does NOT go through this
+/// splitter - `append_data` keeps its bytes verbatim, as Zebra does.
+pub(crate) fn split_commas(params: &[u8]) -> Vec<&[u8]> {
     params.split(|&b| b == b',').map(trim_ws).collect()
 }
 
@@ -26,7 +26,7 @@ fn trim_ws(p: &[u8]) -> &[u8] {
 }
 
 /// Parse a decimal unsigned parameter; `None` for empty or malformed input.
-fn to_u32(p: &[u8]) -> Option<u32> {
+pub(crate) fn to_u32(p: &[u8]) -> Option<u32> {
     if p.is_empty() || !p.iter().all(|b| b.is_ascii_digit()) {
         return None;
     }

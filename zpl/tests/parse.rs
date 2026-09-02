@@ -1,10 +1,12 @@
-//! Integration tests for the Task 5 text-field command set.
+//! Integration tests for the Task 5 text-field and Task 6 label-configuration
+//! command sets.
 
 mod common;
 
 use common::parse_one;
-use zpl::diag::Severity;
+use zpl::diag::{Diagnostics, Severity};
 use zpl::ir::{Field, Justification, Label, OriginMode, Rotation, TextBlock, TextField};
+use zpl::state::Memory;
 
 fn text_field(label: &Label, i: usize) -> &TextField {
     match &label.fields[i] {
@@ -245,4 +247,176 @@ fn malformed_params_warn_not_panic() {
         })
     );
     assert_eq!(t.data, "Hello");
+}
+
+// --- Task 6: label configuration commands ---------------------------------
+
+#[test]
+fn config_commands_affect_label() {
+    // ^XA^PW812^LL500^LH20,30^PQ3^XZ -> width 812, height 500, copies 3; the
+    // ^LH offset is stored in the mode and applied to field origins at
+    // render time (fields keep their own coordinates in the IR).
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (label, ctx) = common::parse_ctx(b"^XA^PW812^LL500^LH20,30^PQ3^XZ", &mut diags, &mut memory);
+    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(label.width_dots, 812);
+    assert_eq!(label.height_dots, 500);
+    assert_eq!(label.copies, 3);
+    assert_eq!((ctx.mode.lh_x, ctx.mode.lh_y), (20, 30));
+
+    // The offset is render-time, not baked into field origins.
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (label, ctx) = common::parse_ctx(b"^XA^LH20,30^FO10,10^FDx^FS^XZ", &mut diags, &mut memory);
+    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!((ctx.mode.lh_x, ctx.mode.lh_y), (20, 30));
+    assert_eq!((text_field(&label, 0).x, text_field(&label, 0).y), (10, 10));
+}
+
+#[test]
+fn defaults_match_guide() {
+    // Empty format: the guide's power-up defaults. ^PW defaults to the
+    // printer width (832 dots for a 203-dpi 4-inch printer, the guide's
+    // configuration-label example); ^LL omitted -> auto height, represented
+    // as 0 in the IR (the renderer sizes the label to its content); ^PQ
+    // defaults to 1 copy.
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (label, ctx) = common::parse_ctx(b"^XA^XZ", &mut diags, &mut memory);
+    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(label.width_dots, 832);
+    assert_eq!(label.height_dots, 0); // auto
+    assert_eq!(label.copies, 1);
+    assert_eq!((ctx.mode.lh_x, ctx.mode.lh_y), (0, 0));
+    assert_eq!(ctx.mode.orientation, 0); // ^PO N (normal)
+    assert!(!ctx.mode.mirror);
+    assert_eq!(ctx.mode.left_shift, 0);
+    assert_eq!(ctx.mode.label_top, 0);
+    assert_eq!(ctx.config.darkness, 0);
+    assert_eq!(ctx.config.media_tracking, 0); // unset: guide requires a value
+    assert_eq!(ctx.config.units, b'D'); // ^MU power-up D (dots)
+    assert_eq!(ctx.config.zpl_mode, 2); // ^SZ power-up 2 = ZPL II
+}
+
+#[test]
+fn omitted_ll_means_auto_label_height() {
+    // Guide (continuous media): the label length comes from the content when
+    // ^LL is not given; explicit ^LL y (1..32000) fixes the height.
+    let (label, diags) = parse_one(b"^XA^FO0,0^FDx^FS^XZ");
+    assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
+    assert_eq!(label.height_dots, 0); // auto
+
+    let (label, _) = parse_one(b"^XA^LL300^XZ");
+    assert_eq!(label.height_dots, 300);
+}
+
+#[test]
+fn pq_sets_copies_and_ignores_extra_params() {
+    // Guide format ^PQq,p,r,o,e: only q (1..99,999,999, default 1) matters
+    // yet; the pause/replicate/override/cut params are accepted and ignored
+    // without warning.
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (label, ctx) = common::parse_ctx(b"^XA^PQ5,10,1,Y^XZ", &mut diags, &mut memory);
+    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(label.copies, 5);
+    assert_eq!(ctx.mode.copies, 5);
+
+    // Invalid q warns; the quantity stays at the previous value.
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (label, ctx) = common::parse_ctx(b"^XA^PQabc^XZ", &mut diags, &mut memory);
+    assert_eq!(ctx.diags.items.len(), 1, "expected one warning, got {0:?}", ctx.diags);
+    assert!(matches!(ctx.diags.items[0].severity, Severity::Warning));
+    assert_eq!(label.copies, 1);
+    assert_eq!(ctx.mode.copies, 1);
+}
+
+#[test]
+fn orientation_mirror_and_shifts_store_in_mode() {
+    // ^PO N/I (guide: only these two), ^PM N/Y, ^LS -9999..9999, ^LT -120..120.
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (_, ctx) = common::parse_ctx(b"^XA^POI^PMY^LS-50^LT-10^XZ", &mut diags, &mut memory);
+    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(ctx.mode.orientation, 1); // I = inverted
+    assert!(ctx.mode.mirror);
+    assert_eq!(ctx.mode.left_shift, -50);
+    assert_eq!(ctx.mode.label_top, -10);
+
+    // Invalid or out-of-range values are ignored with a warning.
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (_, ctx) = common::parse_ctx(b"^XA^POS^PMx^LS99999^LT999^XZ", &mut diags, &mut memory);
+    assert_eq!(ctx.diags.items.len(), 4, "expected four warnings, got {0:?}", ctx.diags);
+    assert_eq!(ctx.mode.orientation, 0);
+    assert!(!ctx.mode.mirror);
+    assert_eq!(ctx.mode.left_shift, 0);
+    assert_eq!(ctx.mode.label_top, 0);
+}
+
+#[test]
+fn darkness_media_units_and_zpl_mode_stored_in_config() {
+    // ^MD is a signed relative adjustment (-30..30, power-up 0); ~SD sets
+    // the absolute 00..30. Both keep the 0.1-step resolution of
+    // XiIIIPlus-class printers: stored in tenths (8.3 -> 83).
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (_, ctx) = common::parse_ctx(b"^XA^MD8.3^MNV^MUI^SZ2^XZ", &mut diags, &mut memory);
+    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(ctx.config.darkness, 83);
+    assert_eq!(ctx.config.media_tracking, b'V');
+    assert_eq!(ctx.config.units, b'I');
+    assert_eq!(ctx.config.zpl_mode, 2);
+
+    // ~SD writes absolute darkness (tilde printer operation, any time).
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (_, ctx) = common::parse_ctx(b"^XA~SD24^XZ", &mut diags, &mut memory);
+    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(ctx.config.darkness, 240);
+
+    // Malformed values warn and keep the current setting.
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (_, ctx) = common::parse_ctx(b"^XA^MDabc^MN0^MUx^SZ3^XZ", &mut diags, &mut memory);
+    assert_eq!(ctx.diags.items.len(), 4, "expected four warnings, got {0:?}", ctx.diags);
+    assert_eq!(ctx.config.darkness, 0);
+    assert_eq!(ctx.config.media_tracking, 0);
+    assert_eq!(ctx.config.units, b'D');
+    assert_eq!(ctx.config.zpl_mode, 2);
+}
+
+#[test]
+fn accept_only_config_commands_never_warn_on_valid_params() {
+    // Every accept-only command fed guide-valid parameters: parsed, no
+    // warnings, format completes.
+    let (label, diags) = parse_one(b"^XA^PR12,5,D^MTT^MMC,Y^MFN,N^MIR,HEAD CLEANING^ML4000^MPD^MWN^PA1,0,1,0^PF150^SC9600,8,N,1,X,N^ZZ600,N^XSY,Y^XB^PH^PN10^PON^PMN^XZ");
+    assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
+    assert_eq!(label.fields.len(), 0);
+}
+
+#[test]
+fn config_malformed_params_warn_not_panic() {
+    // The brief's headline case: ^XA^PQabc^XZ -> warning, parse completes.
+    let (label, diags) = parse_one(b"^XA^PQabc^XZ");
+    assert!(diags.items.iter().all(|d| d.severity == Severity::Warning));
+    assert_eq!(label.copies, 1);
+
+    // A sweep of garbage through every config family warns and never panics;
+    // settings fall back to their current values.
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (_, ctx) = common::parse_ctx(
+        b"^XA^LHx,y^PW-1^LL99999^LSz^LTw^MDq^PO0^PMq^MN9^MT9^MM9^MU9^MF9^MI9,9^ML-1^MP9^MW9^PA9,9,9,9^PFX^SC9,9,9,9,9,9~SD99^SZ9^ZZx,y^XS9,9,9^PNx^XZ",
+        &mut diags,
+        &mut memory,
+    );
+    assert!(ctx.diags.items.len() >= 35, "expected >= 35 warnings, got {}", ctx.diags.items.len());
+    assert!(ctx.diags.items.iter().all(|d| d.severity == Severity::Warning));
+    assert_eq!(ctx.mode.lh_x, 0);
+    assert_eq!(ctx.mode.pw_dots, 832); // kept (guide default)
+    assert_eq!(ctx.config.darkness, 0);
+    assert_eq!(ctx.config.zpl_mode, 2);
 }

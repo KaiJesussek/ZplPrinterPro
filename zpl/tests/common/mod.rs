@@ -16,3 +16,18 @@ pub fn parse_one(src: &[u8]) -> (Label, Diagnostics) {
     let label = ctx.pending_label.expect("format never closed by ^XZ");
     (label, diags)
 }
+
+/// Parse a complete format, returning the closed label plus the full parser
+/// context, so tests can observe printer settings that have no IR slot
+/// (`^LH`/`^PO`/`^PM`/`^PQ` quantities, `PrinterConfig`, ...). Panics if no
+/// `^XZ` closed a format.
+pub fn parse_ctx<'a>(
+    src: &[u8],
+    diags: &'a mut Diagnostics,
+    memory: &'a mut Memory,
+) -> (Label, ParseContext<'a>) {
+    let mut ctx = ParseContext::new(diags, memory);
+    parse_stream(&mut Scanner::new(src), &mut ctx);
+    let label = ctx.pending_label.take().expect("format never closed by ^XZ");
+    (label, ctx)
+}

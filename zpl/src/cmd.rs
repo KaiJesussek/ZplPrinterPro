@@ -1,5 +1,6 @@
 //! Command table and dispatch for ZPL II.
 
+use crate::config;
 use crate::diag::Diagnostic;
 use crate::scanner::{Cmd, Scanner, Token};
 use crate::state::{FormatState, ParseContext};
@@ -75,6 +76,42 @@ const TABLE: &[CommandSpec] = &[
     CommandSpec { mnemonic: *b"CW", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::assign_font },
     CommandSpec { mnemonic: *b"CI", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::change_international },
     CommandSpec { mnemonic: *b"FC", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::set_clock_indicators },
+    // Task 6: label configuration commands. Geometry config is stored in
+    // PrinterMode; darkness/media/units/ZPL-mode in PrinterConfig; the rest
+    // are parse-and-validate (see config.rs).
+    CommandSpec { mnemonic: *b"LH", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::label_home },
+    CommandSpec { mnemonic: *b"LL", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::label_length },
+    CommandSpec { mnemonic: *b"PW", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::print_width },
+    CommandSpec { mnemonic: *b"PO", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::print_orientation },
+    CommandSpec { mnemonic: *b"PM", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::mirror_image },
+    CommandSpec { mnemonic: *b"LS", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::label_shift },
+    CommandSpec { mnemonic: *b"LT", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::label_top },
+    CommandSpec { mnemonic: *b"MD", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::media_darkness },
+    CommandSpec { mnemonic: *b"PQ", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::print_quantity },
+    CommandSpec { mnemonic: *b"PR", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::print_rate },
+    CommandSpec { mnemonic: *b"PH", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::slew_to_home },
+    CommandSpec { mnemonic: *b"MN", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::media_tracking },
+    CommandSpec { mnemonic: *b"MT", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::media_type },
+    CommandSpec { mnemonic: *b"MM", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::print_mode },
+    CommandSpec { mnemonic: *b"MU", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::units },
+    CommandSpec { mnemonic: *b"MF", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::media_feed },
+    CommandSpec { mnemonic: *b"MI", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::maintenance_message },
+    CommandSpec { mnemonic: *b"ML", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::max_label_length },
+    CommandSpec { mnemonic: *b"MP", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::mode_protection },
+    CommandSpec { mnemonic: *b"MW", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::head_cold_warning },
+    CommandSpec { mnemonic: *b"PA", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::advanced_text },
+    CommandSpec { mnemonic: *b"PF", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::slew_rows },
+    CommandSpec { mnemonic: *b"SC", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::serial_comms },
+    CommandSpec { mnemonic: *b"SZ", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::zpl_mode },
+    CommandSpec { mnemonic: *b"ZZ", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::printer_sleep },
+    CommandSpec { mnemonic: *b"XB", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::suppress_backfeed },
+    CommandSpec { mnemonic: *b"XS", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::dynamic_calibration },
+    CommandSpec { mnemonic: *b"PN", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::present_now },
+    // Tilde printer operations from the same config family: darkness and
+    // slew-to-home have ^- and ~-forms in the guide (^PH ~PH p.317; ~SD p.333
+    // is the only darkness form).
+    CommandSpec { mnemonic: *b"SD", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: config::set_darkness },
+    CommandSpec { mnemonic: *b"PH", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: config::slew_to_home },
 ];
 
 /// The command table: prefix+mnemonic -> handler. Rows accumulate across tasks.
@@ -146,8 +183,9 @@ mod tests {
         let mut diags = Diagnostics::default();
         let mut mem = Memory::default();
         let mut ctx = ParseContext::new(&mut diags, &mut mem);
-        parse_stream(&mut Scanner::new(b"^XA^ZZ^FS^XZ"), &mut ctx);
-        assert_eq!(ctx.diags.items.len(), 1); // ^ZZ unknown
+        // ^QZ is not a real command; ^ZZ is registered (Task 6: printer sleep).
+        parse_stream(&mut Scanner::new(b"^XA^QZ^FS^XZ"), &mut ctx);
+        assert_eq!(ctx.diags.items.len(), 1); // ^QZ unknown
         assert!(matches!(ctx.diags.items[0].severity, Severity::UnknownCommand));
         assert!(ctx.pending_label.is_some()); // ^XA..^XZ framed
     }
