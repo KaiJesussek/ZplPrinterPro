@@ -104,8 +104,9 @@ fn resolve_font(spec: u8) -> Option<[u8; 2]> {
 }
 
 /// `^FW` rotation: N/0 normal, R/90, I/180, B/270 (case-insensitive letters,
-/// numeric degrees), per the guide's allowed values.
-fn parse_rotation(p: &[u8]) -> Option<Rotation> {
+/// numeric degrees), per the guide's allowed values. ^BC's `o` parameter
+/// uses the same letters.
+pub(crate) fn parse_rotation(p: &[u8]) -> Option<Rotation> {
     match p {
         b"N" | b"n" | b"0" => Some(Rotation::R0),
         b"R" | b"r" | b"90" => Some(Rotation::R90),

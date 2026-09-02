@@ -1,5 +1,6 @@
 //! Command table and dispatch for ZPL II.
 
+use crate::bc;
 use crate::config;
 use crate::diag::Diagnostic;
 use crate::geom;
@@ -59,6 +60,8 @@ fn end_format(ctx: &mut ParseContext, _params: &[u8]) {
         ));
         return;
     }
+    // An open barcode field closed by ^XZ without data can't be encoded.
+    warn_empty_barcode(ctx);
     if let Some(label) = ctx.state.end_format(&ctx.mode) {
         ctx.pending_label = Some(label);
     }
@@ -67,8 +70,22 @@ fn end_format(ctx: &mut ParseContext, _params: &[u8]) {
 fn end_field(ctx: &mut ParseContext, _params: &[u8]) {
     // An open field closes into its format; a ^DF download hands its
     // captured bytes over to Memory.formats.
+    warn_empty_barcode(ctx);
     if let Some((name, bytes)) = ctx.state.end_field() {
         ctx.memory.formats.insert(memory::format_name(name.as_bytes()), bytes);
+    }
+}
+
+/// A barcode field closed with no ^FD data prints nothing on a real
+/// printer; warn so callers see the format is incomplete (never panic).
+fn warn_empty_barcode(ctx: &mut ParseContext) {
+    if let FormatState::Field { draft, .. } = &ctx.state {
+        if draft.barcode.is_some() && draft.data.is_empty() {
+            ctx.diags.push(Diagnostic::warning(
+                "BC",
+                "barcode field has no data; nothing to encode",
+            ));
+        }
     }
 }
 
@@ -109,6 +126,11 @@ const TABLE: &[CommandSpec] = &[
     CommandSpec { mnemonic: *b"GE", prefix: Prefix::Caret, kind: CmdKind::Format, handler: geom::graphic_ellipse },
     CommandSpec { mnemonic: *b"GF", prefix: Prefix::Caret, kind: CmdKind::Format, handler: geom::graphic_field },
     CommandSpec { mnemonic: *b"GS", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::graphic_symbol },
+    // Task 9: barcode field framework. ^BY sets the ^B* defaults (module
+    // width, ratio, height); ^BC (Code 128) is the first symbology and the
+    // pattern for Task 15's ^B1..^BE.
+    CommandSpec { mnemonic: *b"BY", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::bar_code_defaults },
+    CommandSpec { mnemonic: *b"BC", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::code_128 },
     CommandSpec { mnemonic: *b"DG", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: memory::download_graphic },
     CommandSpec { mnemonic: *b"DY", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: memory::download_object },
     CommandSpec { mnemonic: *b"DS", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: memory::download_scalable_font },
@@ -285,7 +307,7 @@ mod tests {
                 font_width: 0,
                 data: b"hello".to_vec(),
                 block: None,
-                symbology: None,
+                barcode: None,
                 graphic: None,
                 inline_data: None,
                 geometry: None,

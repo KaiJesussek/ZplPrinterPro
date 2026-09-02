@@ -22,7 +22,8 @@ pub fn parse_one(src: &[u8]) -> (Label, Diagnostics) {
 /// Parse a complete format, returning the closed label plus the full parser
 /// context, so tests can observe printer settings that have no IR slot
 /// (`^LH`/`^PO`/`^PM`/`^PQ` quantities, `PrinterConfig`, ...). Panics if no
-/// `^XZ` closed a format.
+/// `^XZ` closed a format. Not every test binary needs the extra context.
+#[allow(dead_code)]
 pub fn parse_ctx<'a>(
     src: &[u8],
     diags: &'a mut Diagnostics,

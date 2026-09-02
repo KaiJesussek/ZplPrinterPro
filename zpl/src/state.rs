@@ -52,6 +52,15 @@ pub struct PrinterMode {
     pub default_font_w: u32,
     /// `^FW` default field rotation (power-up: N).
     pub fw_rotation: Rotation,
+    /// `^BY w` default barcode module width in dots (guide p.148:
+    /// 1..10, power-up 2). Snapshot onto the field draft when the `^B*`
+    /// command is parsed.
+    pub by_module: u32,
+    /// `^BY r` wide/narrow ratio in tenths (3.0 -> 30; guide p.148:
+    /// 2.0..3.0 in 0.1 steps, power-up 3.0).
+    pub by_ratio: u32,
+    /// `^BY h` default barcode height in dots (guide p.148: power-up 10).
+    pub by_height: u32,
     /// `^CI` international character set (power-up: 0, U.S.A. 1).
     pub code_page: u8,
     /// `^CW` font assignments: character -> stored font name.
@@ -80,6 +89,9 @@ impl Default for PrinterMode {
             default_font_h: 9,
             default_font_w: 5,
             fw_rotation: Rotation::R0,
+            by_module: 2,
+            by_ratio: 30,
+            by_height: 10,
             code_page: 0,
             font_assignments: BTreeMap::new(),
             downloaded_font: None,
@@ -123,6 +135,30 @@ impl Default for PrinterConfig {
             zpl_mode: 2,
         }
     }
+}
+
+/// `^B*` barcode parameters on an open field draft: the `^BY` defaults
+/// snapshotted when the symbology command was parsed, overridden by the
+/// symbology's own parameters (^BC `o,h,f,g,e,m`; Task 15's symbologies
+/// have their own param tables).
+#[derive(Debug, Clone)]
+pub struct BarcodeDraft {
+    /// Symbology mnemonic letter, e.g. `b'C'` for `^BC`.
+    pub symbology: u8,
+    /// `^BY w`: module width in dots (power-up 2).
+    pub module: u32,
+    /// `^BY r`: wide/narrow ratio in tenths (3.0 -> 30; power-up 30).
+    pub ratio: u32,
+    /// `^BY h`, overridden by the symbology command's height parameter.
+    pub height: u32,
+    /// `^BC f`: print interpretation line below, `b'Y'`/`b'N'` (default Y).
+    pub line: u8,
+    /// `^BC g`: print interpretation line above the code (default N).
+    pub interpret: bool,
+    /// `^BC e`: UCC check digit (mod 10; default N).
+    pub ucc: bool,
+    /// `^BC m`: mode letter N/U/A/D (default N).
+    pub model: u8,
 }
 
 /// The shape a drawing-field command (`^GB ^GC ^GD ^GE`) deposits on the
@@ -171,7 +207,10 @@ pub struct FieldDraft {
     pub font_width: u32,
     pub data: Vec<u8>,
     pub block: Option<TextBlock>,
-    pub symbology: Option<u8>,
+    /// `^B*` barcode parameters; `None` for text/graphic fields. Set by the
+    /// symbology command (^BC here, ^B1..^BE in Task 15), which snapshots
+    /// the ^BY defaults and applies its own parameters.
+    pub barcode: Option<BarcodeDraft>,
     /// `^XG`/`^IM`/`^IL`: the field recalls a stored graphic instead of
     /// carrying text/barcode data.
     pub graphic: Option<GraphicKind>,
@@ -293,7 +332,7 @@ impl FieldDraft {
             font_width: mode.default_font_w,
             data: Vec::new(),
             block: None,
-            symbology: None,
+            barcode: None,
             graphic: None,
             inline_data: None,
             geometry: None,
@@ -306,10 +345,6 @@ impl FieldDraft {
     }
 
     /// Convert a closed draft into its IR field.
-    ///
-    /// Text fields carry all their geometry on the draft. Barcode geometry
-    /// (module/height/line) has no draft counterparts yet, so it falls back
-    /// to the ^BY defaults until Task 9 wires ^BY onto the draft.
     fn into_field(self) -> Field {
         // Drawing fields (^GB ^GC ^GD ^GE) carry their shape on the draft;
         // the field origin comes from this draft's ^FO/^FT (or 0,0).
@@ -348,16 +383,19 @@ impl FieldDraft {
                 let (data, bytes_per_row) = self.inline_data.unwrap_or_default();
                 Field::Graphic(GraphicField { x: self.x, y: self.y, kind, data, bytes_per_row })
             }
-            None => match self.symbology {
-                Some(symbology) => Field::Barcode(BarcodeField {
+            None => match self.barcode {
+                Some(b) => Field::Barcode(BarcodeField {
                     x: self.x,
                     y: self.y,
-                    symbology,
+                    symbology: b.symbology,
                     data,
-                    // ponytail: ^BY defaults (module 2, height 10, line 1) until Task 9.
-                    module: 2,
-                    height: 10,
-                    line: 1,
+                    module: b.module,
+                    ratio: b.ratio,
+                    height: b.height,
+                    line: b.line,
+                    interpret: b.interpret,
+                    ucc: b.ucc,
+                    model: b.model,
                     rotation: self.rotation,
                 }),
                 None => Field::Text(TextField {

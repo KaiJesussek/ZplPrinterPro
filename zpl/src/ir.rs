@@ -89,9 +89,26 @@ pub struct BarcodeField {
     /// Symbology mnemonic letter, e.g. `b'C'` for `^BC`.
     pub symbology: u8,
     pub data: String,
+    /// `^BY w`: module width in dots (guide default 2).
     pub module: u32,
+    /// `^BY r`: wide/narrow ratio in tenths (3.0 -> 30; guide default 3.0).
+    /// Code 128 is a fixed-ratio symbology, so the encoder ignores it;
+    /// Task 15's wide/narrow symbologies (Code 39, I2of5) consume it.
+    pub ratio: u32,
+    /// `^BY h`/symbology `h`: barcode height in dots (guide default 10).
     pub height: u32,
+    /// `^BC f`: print interpretation line below the code, `b'Y'`/`b'N'`
+    /// (guide default Y).
     pub line: u8,
+    /// `^BC g`: print interpretation line above the code (guide default N).
+    pub interpret: bool,
+    /// `^BC e`: UCC check digit - adds the mod-10 UCC check digit; the
+    /// mod-103 check is always present (guide default N).
+    pub ucc: bool,
+    /// `^BC m`: mode letter N/U/A/D (guide default N). U = UCC case mode
+    /// (19-digit pad/trim), A = automatic subset selection, D = UCC/EAN
+    /// mode (FNC1 prefix, parentheses/spaces stripped).
+    pub model: u8,
     pub rotation: Rotation,
 }
 
@@ -209,8 +226,12 @@ mod tests {
                     symbology: b'C',
                     data: "123456".into(),
                     module: 2,
+                    ratio: 30,
                     height: 50,
-                    line: 0,
+                    line: b'Y',
+                    interpret: true,
+                    ucc: true,
+                    model: b'D',
                     rotation: Rotation::R180,
                 }),
                 Field::Box(BoxField {

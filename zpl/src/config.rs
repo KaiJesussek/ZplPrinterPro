@@ -42,7 +42,8 @@ fn to_i32(p: &[u8]) -> Option<i32> {
 /// Unsigned parameter confined to `[min, max]`. A missing/empty segment
 /// silently takes `fallback` (ZPL's "no value -> keep/use default" rule);
 /// garbage or out-of-range warns and falls back too - never panics.
-fn u32_in(
+/// Shared with the Task 9 barcode handlers (^BY/^BC ranges).
+pub(crate) fn u32_in(
     seg: Option<&[u8]>,
     cmd: &str,
     name: &str,
@@ -94,8 +95,9 @@ fn i32_in(
 /// Parse a signed decimal with at most one fractional digit into tenths
 /// (`8.3` -> 83, `-6` -> -60). The guide's ^MD/~SD accept 0.1 steps on
 /// XiIIIPlus-class printers; tenths keep those valid inputs warning-free
-/// (the plan's integer sketch would have corrupted them).
-fn to_tenths(p: &[u8]) -> Option<i32> {
+/// (the plan's integer sketch would have corrupted them). ^BY's ratio
+/// (2.0..3.0 in 0.1 steps) uses the same arithmetic.
+pub(crate) fn to_tenths(p: &[u8]) -> Option<i32> {
     let (sign, rest) = match p.first() {
         Some(b'-') => (-1, &p[1..]),
         Some(b'+') => (1, &p[1..]),
