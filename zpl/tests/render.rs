@@ -342,6 +342,10 @@ fn hostile_dimensions_never_hang_or_panic() {
             Field::Ellipse(EllipseField { x: 2, y: 2, width: u32::MAX, height: u32::MAX, thickness: u32::MAX, color: b'W' }),
             Field::Diagonal(DiagonalField { x: 3, y: 0, width: u32::MAX, height: u32::MAX, direction: b'L', thickness: u32::MAX, color: b'B' }),
             Field::Graphic(GraphicField { x: u32::MAX - 1, y: 0, kind: GraphicKind::Inline, data: vec![0xFF], bytes_per_row: 1 }),
+            // bytes_per_row * 8 overflows u32 for values >= 2^29 (the old
+            // code panicked in debug); empty data passes the multiple-of
+            // check (0 % N == 0) and must render as a no-op blit.
+            Field::Graphic(GraphicField { x: 0, y: 0, kind: GraphicKind::Inline, data: Vec::new(), bytes_per_row: u32::MAX }),
         ],
     };
     let opts = RenderOptions {
@@ -354,6 +358,45 @@ fn hostile_dimensions_never_hang_or_panic() {
     // Auto height over a u32::MAX-tall field is capped at the emulator's
     // dimension ceiling (32000 dots) - a bounded canvas, never a 2 GB one.
     assert_eq!((outcome.bitmap.width, outcome.bitmap.height), (4, 32_000));
+}
+
+#[test]
+fn blit_negative_origin_reads_source_correctly() {
+    // ^LS2 shifts fields left by 2: the 8x1 all-black image blits at x=-2.
+    // The visible span is source columns 2..8 mapped to destination
+    // columns 0..6 - the off-canvas source columns must be skipped, not
+    // painted onto the right edge.
+    let outcome = render_src(b"^XA^PW32^LL16^LS2^FO0,0^GFA,1,1,1,FF^FS^XZ");
+    let bmp = &outcome.bitmap;
+    for x in 0..6 {
+        assert!(bmp.get(x, 0), "visible src cols 2..8 land at dst {x},0");
+    }
+    assert!(!bmp.get(6, 0) && !bmp.get(7, 0), "dst cols 6..7 stay white");
+
+    // ^LT-1 shifts the format up by 1: y=-1, so only source row 1 is
+    // visible, at destination row 0.
+    let outcome = render_src(b"^XA^PW32^LL16^LT-1^FO0,0^GFA,2,2,1,FFFF^FS^XZ");
+    let bmp = &outcome.bitmap;
+    for x in 0..8 {
+        assert!(bmp.get(x, 0), "src row 1 lands at dst {x},0");
+        assert!(!bmp.get(x, 1) && !bmp.get(x, 2), "src row 0 went off the top; dst rows stay white");
+    }
+
+    // ^POI rotates the 16x1 image (data F00F: 0xF0 0x0F) to fx = 8-16 = -8
+    // and fy = 8-0-1 = 7: destination row 7 shows source columns 8..15
+    // (byte 0x0F = four white then four black); source columns 0..7
+    // (0xF0) must never appear.
+    let outcome = render_src(b"^XA^PW8^LL8^POI^FO0,0^GFA,2,2,2,F00F^FS^XZ");
+    let bmp = &outcome.bitmap;
+    for x in 0..4 {
+        assert!(!bmp.get(x, 7), "src cols 8..11 (0x0F leading zeros) at dst {x},7");
+    }
+    for x in 4..8 {
+        assert!(bmp.get(x, 7), "src cols 12..15 (0x0F trailing ones) at dst {x},7");
+    }
+    for y in 0..7 {
+        assert!(!bmp.get(0, y) && !bmp.get(7, y), "no image pixels above the rotated row");
+    }
 }
 
 #[test]

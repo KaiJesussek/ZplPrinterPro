@@ -288,19 +288,26 @@ pub(crate) fn blit(dst: &mut Bitmap, src_w: u32, src_h: u32, src: &[u8], x: i64,
     if src_w == 0 || src_h == 0 {
         return;
     }
+    // A negative origin is reachable from valid ZPL (^LS/^LT shifts, ^POI/
+    // ^PMY on a footprint larger than the canvas): destination column 0
+    // then corresponds to source column -x, and the first (-x) source
+    // columns fall off the left edge. The source read must be offset by
+    // the clipped-away amount, and the visible extent shortened by it.
+    let xo = (-x).max(0) as u32;
+    let yo = (-y).max(0) as u32;
     let x0 = x.max(0) as u32;
     let y0 = y.max(0) as u32;
     if x0 >= dst.width || y0 >= dst.height {
         return;
     }
-    let vw = (dst.width - x0).min(src_w);
-    let vh = (dst.height - y0).min(src_h);
+    let vw = (dst.width - x0).min(src_w.saturating_sub(xo));
+    let vh = (dst.height - y0).min(src_h.saturating_sub(yo));
     let src_stride = ((src_w as usize) + 7) / 8;
     for sy in 0..vh {
         for sx in 0..vw {
-            let b = (sy as usize) * src_stride + (sx as usize >> 3);
+            let b = ((sy + yo) as usize) * src_stride + ((sx + xo) as usize >> 3);
             if let Some(&byte) = src.get(b) {
-                if byte & (0x80 >> (sx & 7)) != 0 {
+                if byte & (0x80 >> ((sx + xo) & 7)) != 0 {
                     dst.set(x0 + sx, y0 + sy, true);
                 } else {
                     dst.set(x0 + sx, y0 + sy, false);

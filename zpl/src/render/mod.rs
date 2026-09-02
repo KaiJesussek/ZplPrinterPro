@@ -208,8 +208,12 @@ pub fn render(label: &Label, opts: &RenderOptions) -> Result<RenderOutcome, Rend
                             g.bytes_per_row
                         )));
                     }
-                    let iw = g.bytes_per_row * 8;
-                    let ih = g.data.len() as u32 / g.bytes_per_row;
+                    // u64 math: `bytes_per_row * 8` overflows u32 for
+                    // bytes_per_row >= 2^29 (hand-built IR can carry that;
+                    // the parser caps ^GF at 99999). Width/height are
+                    // clamped to u32 and used only for extents.
+                    let iw = (g.bytes_per_row as u64 * 8).min(u32::MAX as u64) as u32;
+                    let ih = (g.data.len() as u64 / g.bytes_per_row as u64).min(u32::MAX as u64) as u32;
                     let (fx, fy) = place(opts.mode, w, h, g.x, g.y, iw, ih);
                     blit(&mut bmp, iw, ih, &g.data, fx, fy);
                 }
@@ -259,7 +263,8 @@ fn footprint(field: &Field, opts: &RenderOptions) -> (Option<u32>, Option<u32>) 
             GraphicKind::Inline
                 if g.bytes_per_row > 0 && g.data.len() % g.bytes_per_row as usize == 0 =>
             {
-                (Some(g.y), Some(g.data.len() as u32 / g.bytes_per_row))
+                let ih = (g.data.len() as u64 / g.bytes_per_row as u64).min(u32::MAX as u64) as u32;
+                (Some(g.y), Some(ih))
             }
             GraphicKind::Stored(name) => match opts.memory.images.get(name) {
                 Some(img) => (Some(g.y), Some(img.height)),
