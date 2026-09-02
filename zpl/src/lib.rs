@@ -5,6 +5,7 @@
 pub mod bc;
 mod bc128;
 pub mod cmd;
+pub mod codepage;
 pub mod config;
 pub mod diag;
 pub mod error;

@@ -382,13 +382,15 @@ fn encode_substitutes_high_bytes() {
 
 /// Reviewer repro: a non-digit byte >= 0x80 while Subset C is active must
 /// not index WIDTHS out of bounds (old code emitted c-32 = 107+ -> panic).
-/// 0x8B becomes '?' (B value 31, pattern 212321) after a CODE B switch:
+/// ^CI13 (CP850) keeps the byte single-byte (0x8B -> i, U+00EF) so the
+/// encoder still sees a value >= 0x80, which becomes '?' (B value 31,
+/// pattern 212321) after a CODE B switch:
 /// [105, 12, 34, 56, 78, 100, 31, check, stop], check =
 /// (105 + 12 + 68 + 168 + 312 + 500 + 186) mod 103 = 1351 mod 103 = 12.
 /// The parser also warns about the unencodable byte.
 #[test]
 fn bc_high_byte_in_subset_c_never_panics() {
-    let (label, diags) = common::parse_one(b"^XA^BC^FD12345678\x8B^FS^XZ");
+    let (label, diags) = common::parse_one(b"^XA^CI13^BC^FD12345678\x8B^FS^XZ");
     assert!(
         diags.items.iter().any(|d| d.severity == Severity::Warning),
         "expected an unencodable-byte warning, got {diags:?}",

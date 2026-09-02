@@ -62,6 +62,7 @@ fn end_format(ctx: &mut ParseContext, _params: &[u8]) {
     }
     // An open barcode field closed by ^XZ without data can't be encoded.
     check_barcode_data(ctx);
+    check_malformed_utf16(ctx);
     if let Some(label) = ctx.state.end_format(&ctx.mode) {
         ctx.pending_label = Some(label);
     }
@@ -71,8 +72,26 @@ fn end_field(ctx: &mut ParseContext, _params: &[u8]) {
     // An open field closes into its format; a ^DF download hands its
     // captured bytes over to Memory.formats.
     check_barcode_data(ctx);
+    check_malformed_utf16(ctx);
     if let Some((name, bytes)) = ctx.state.end_field() {
         ctx.memory.formats.insert(memory::format_name(name.as_bytes()), bytes);
+    }
+}
+
+/// A `^CI29`/`^CI30` field whose bytes are malformed UTF-16 (odd length,
+/// unpaired surrogate) decodes lossily; warn so the parser's "malformed ->
+/// warning + lossy, never panic" contract is observable. Mirrors
+/// `check_barcode_data`'s inspect-the-open-draft pattern.
+fn check_malformed_utf16(ctx: &mut ParseContext) {
+    if let FormatState::Field { draft, .. } = &ctx.state {
+        if matches!(draft.code_page, 29 | 30)
+            && crate::codepage::is_malformed_utf16(&draft.data, draft.code_page == 30)
+        {
+            ctx.diags.push(Diagnostic::warning(
+                "CI",
+                "malformed UTF-16 data; decoding lossily",
+            ));
+        }
     }
 }
 
@@ -318,6 +337,7 @@ mod tests {
                 font_height: 0,
                 font_width: 0,
                 data: b"hello".to_vec(),
+                code_page: 0,
                 block: None,
                 barcode: None,
                 graphic: None,

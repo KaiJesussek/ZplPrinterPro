@@ -193,10 +193,11 @@ fn append_data(ctx: &mut ParseContext, params: &[u8]) {
 }
 
 /// `^FHx`: hex escapes in this field's ^FD data use indicator x
-/// (default `_`).
+/// (default `_`). The indicator is trimmed like numeric params: a bare
+/// `^FH` on its own line must not swallow the trailing newline.
 pub(crate) fn field_hex(ctx: &mut ParseContext, params: &[u8]) {
     if let Some(d) = draft_mut(ctx) {
-        d.hex = Some(params.first().copied().unwrap_or(b'_'));
+        d.hex = Some(trim_ws(params).first().copied().unwrap_or(b'_'));
     }
 }
 
@@ -475,16 +476,41 @@ pub(crate) fn assign_font(ctx: &mut ParseContext, params: &[u8]) {
 }
 
 /// `^CIa,...`: international character set (codepage) for the printer
-/// (power-up: 0). The s/d remapping params are consumed by Task 12's
-/// codepage model.
+/// (power-up: 0, U.S.A. 1 = Code Page 1252). The raw value is stored even
+/// when it is unknown/unsupported - decoding then falls back to 1252, and
+/// a later bare `^CI` still resets to 0. The s/d remapping params are
+/// parsed-but-ignored (the guide's per-country replacements are deferred).
 pub(crate) fn change_international(ctx: &mut ParseContext, params: &[u8]) {
     let first = split_commas(params).first().copied().unwrap_or(&[]);
+    let apply = |mode_cp: &mut u8, state: &mut FormatState, cp: u8| {
+        *mode_cp = cp;
+        // A ^CI inside a format applies to an already-open field (printer
+        // state commands are meaningful any time); drafts that open later
+        // snapshot the mode at open().
+        if let FormatState::Field { draft, .. } = state {
+            draft.code_page = cp;
+        }
+    };
     if first.is_empty() {
-        ctx.mode.code_page = 0; // bare ^CI resets to power-up 0
+        apply(&mut ctx.mode.code_page, &mut ctx.state, 0); // bare ^CI resets
         return;
     }
     match to_u32(first) {
-        Some(v) if v <= u8::MAX as u32 => ctx.mode.code_page = v as u8,
+        Some(v) if v <= u8::MAX as u32 => {
+            let cp = v as u8;
+            if !crate::codepage::is_known(cp) {
+                ctx.diags.push(Diagnostic::warning(
+                    "CI",
+                    format!("unknown character set {cp}; using the default (1252)"),
+                ));
+            } else if crate::codepage::is_unsupported(cp) {
+                ctx.diags.push(Diagnostic::warning(
+                    "CI",
+                    format!("encoding not supported: ^CI{cp}; using 1252"),
+                ));
+            }
+            apply(&mut ctx.mode.code_page, &mut ctx.state, cp);
+        }
         _ => ctx.diags.push(Diagnostic::warning(
             "CI",
             format!(

@@ -206,6 +206,10 @@ pub struct FieldDraft {
     /// `^A` character width in dots; 0 = standard font matrix.
     pub font_width: u32,
     pub data: Vec<u8>,
+    /// `^CI` character set at data-accumulation time (snapshotted from the
+    /// mode when the draft opened, updated by later `^CI` commands);
+    /// `into_field` decodes `data` through it (Task 12).
+    pub code_page: u8,
     pub block: Option<TextBlock>,
     /// `^B*` barcode parameters; `None` for text/graphic fields. Set by the
     /// symbology command (^BC here, ^B1..^BE in Task 15), which snapshots
@@ -331,6 +335,7 @@ impl FieldDraft {
             font_height: mode.default_font_h,
             font_width: mode.default_font_w,
             data: Vec::new(),
+            code_page: mode.code_page,
             block: None,
             barcode: None,
             graphic: None,
@@ -372,9 +377,10 @@ impl FieldDraft {
                 }
             };
         }
-        // Latin-1 until Task 12 applies the ^CI code page; bytes were
-        // accumulated verbatim with ^FH escapes already expanded.
-        let data: String = self.data.iter().map(|&b| b as char).collect();
+        // Single decode point for text and barcode fields: bytes were
+        // accumulated verbatim with ^FH escapes already expanded, then
+        // decoded once through the field's ^CI character set.
+        let data: String = crate::codepage::decode_text(&self.data, self.code_page);
         match self.graphic {
             // Inline ^GF carries its bitmap on the draft; stored-image
             // recall (^XG/^IM/^IL) leaves the bytes to the renderer, which
