@@ -187,6 +187,30 @@ fn font_sizes_flow_into_field() {
 }
 
 #[test]
+fn multiline_format_trims_line_endings_from_params() {
+    // Multi-line ZPL puts the line break inside the final parameter segment;
+    // numeric handlers must trim it (no spurious warnings), while ^FD data
+    // keeps its newline bytes, as Zebra does.
+    let (label, diags) = parse_one(b"^XA\n^FW90\n^FO100,50\n^A0,30,30\n^FDHi\n^FS\n^XZ\n");
+    assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
+    assert_eq!(label.fields.len(), 1);
+    let t = text_field(&label, 0);
+    assert_eq!((t.x, t.y), (100, 50));
+    assert_eq!((t.font_height, t.font_width), (30, 30));
+    assert_eq!(t.rotation, Rotation::R90); // ^FW90 survives its trailing \n
+    assert_eq!(t.data, "Hi\n");
+
+    // CRLF variant.
+    let (label, diags) = parse_one(b"^XA\r\n^FO100,50\r\n^A0,30,30\r\n^FDHi\r\n^FS\r\n^XZ\r\n");
+    assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
+    let t = text_field(&label, 0);
+    assert_eq!((t.x, t.y), (100, 50));
+    assert_eq!((t.font_height, t.font_width), (30, 30));
+    assert_eq!(t.rotation, Rotation::R0);
+    assert_eq!(t.data, "Hi\r\n");
+}
+
+#[test]
 fn repeated_field_commands_keep_one_draft() {
     // ^FS-less continuation: data concatenates and the last origin wins, so
     // ^FD...^FD (and a second ^FO) all describe one field.

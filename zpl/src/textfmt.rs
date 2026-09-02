@@ -8,9 +8,21 @@ use crate::diag::{Diagnostic, Diagnostics};
 use crate::ir::{Justification, OriginMode, Rotation, TextBlock};
 use crate::state::{FieldDraft, FormatState, ParseContext};
 
-/// Split command parameters on commas.
+/// Split command parameters on commas, trimming ASCII whitespace from each
+/// segment. Multi-line ZPL puts the line break inside the last parameter
+/// (`^FO100,50\n`); every numeric handler parses through here, so trimming
+/// keeps the trailing LF/CRLF from corrupting the final value. ^FD field
+/// data does NOT go through this splitter - `append_data` keeps its bytes
+/// verbatim, as Zebra does.
 fn split_commas(params: &[u8]) -> Vec<&[u8]> {
-    params.split(|&b| b == b',').collect()
+    params.split(|&b| b == b',').map(trim_ws).collect()
+}
+
+/// Strip ASCII whitespace from both ends of a parameter segment.
+fn trim_ws(p: &[u8]) -> &[u8] {
+    let start = p.iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(p.len());
+    let end = p.iter().rposition(|b| !b.is_ascii_whitespace()).map_or(start, |i| i + 1);
+    &p[start..end]
 }
 
 /// Parse a decimal unsigned parameter; `None` for empty or malformed input.
@@ -358,7 +370,7 @@ pub(crate) fn assign_font(ctx: &mut ParseContext, params: &[u8]) {
         return;
     }
     let name = match params.iter().position(|&b| b == b',') {
-        Some(pos) => params[pos + 1..].to_vec(),
+        Some(pos) => trim_ws(&params[pos + 1..]).to_vec(),
         None => Vec::new(),
     };
     ctx.mode
