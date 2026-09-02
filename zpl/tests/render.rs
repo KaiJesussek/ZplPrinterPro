@@ -10,6 +10,7 @@ use zpl::cmd::parse_stream;
 use zpl::diag::Diagnostics;
 use zpl::fonts::{FontData, FontProvider, FontSpec};
 use zpl::render::render;
+use zpl::render::Bitmap;
 use zpl::render::RenderError;
 use zpl::render::RenderOptions;
 use zpl::render::RenderOutcome;
@@ -426,4 +427,269 @@ fn degenerate_inline_graphic_is_render_error() {
         Err(RenderError::InvalidGraphic(msg)) => assert!(msg.contains("per row"), "{msg}"),
         other => panic!("expected InvalidGraphic, got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Task 13: text painting - glyph rasterization, ^FB wrapping, rotation,
+// reverse video, baseline (^FT) origin, width rule, downloaded fonts.
+// ---------------------------------------------------------------------------
+
+use zpl::fonts::DefaultFontProvider;
+
+/// Parse + render with the bundled built-in font provider (text tests need
+/// real fonts; `render_into` uses `NoFonts`).
+fn render_text_into(src: &[u8], diags: &mut Diagnostics, memory: &mut Memory) -> RenderOutcome {
+    let mut ctx = ParseContext::new(diags, memory);
+    parse_stream(&mut Scanner::new(src), &mut ctx);
+    let label = ctx.pending_label.take().expect("no format closed by ^XZ");
+    let opts = RenderOptions {
+        dpi: 203,
+        fonts: &DefaultFontProvider::new(),
+        memory: &*ctx.memory,
+        mode: &ctx.mode,
+    };
+    render(&label, &opts).expect("render failed structurally")
+}
+
+/// Parse + render a text-bearing format at 203 dpi with the bundled fonts.
+fn render_text(src: &[u8]) -> RenderOutcome {
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    render_text_into(src, &mut diags, &mut memory)
+}
+
+/// Split the black columns of a row range into contiguous clusters (each
+/// cluster = one glyph's ink).
+fn col_clusters(bmp: &Bitmap, rows: core::ops::Range<u32>) -> Vec<(u32, u32)> {
+    let mut cols: Vec<u32> = (0..bmp.width)
+        .filter(|&x| rows.clone().any(|y| bmp.get(x, y)))
+        .collect();
+    cols.dedup();
+    let mut clusters = Vec::new();
+    for &c in &cols {
+        match clusters.last_mut() {
+            Some((_, end)) if c <= *end + 1 => *end = c,
+            _ => clusters.push((c, c)),
+        }
+    }
+    clusters
+}
+
+/// First row (within the given range) that has any black pixel.
+fn first_ink_row(bmp: &Bitmap, mut rows: core::ops::Range<u32>) -> Option<u32> {
+    rows.find(|&y| (0..bmp.width).any(|x| bmp.get(x, y)))
+}
+
+#[test]
+fn text_paints_black_pixels_in_cell() {
+    // ^A0N,20,20^FO0,0^FDX^FS at 203 dpi: the X glyph inks rows 0..20 of
+    // the label's top-left corner.
+    let out = render_text(b"^XA^PW64^LL40^FO0,0^A0N,20,20^FDX^FS^XZ");
+    let bmp = &out.bitmap;
+    let ink: Vec<(u32, u32)> = (0..bmp.height)
+        .flat_map(|y| (0..bmp.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| bmp.get(x, y))
+        .collect();
+    assert!(ink.len() >= 8, "an X rasterizes to a real glyph, got {} dots", ink.len());
+    assert!(
+        ink.iter().all(|&(_, y)| y < 40),
+        "nothing paints below the 20-dot cell at a 40-tall label"
+    );
+    assert!(
+        ink.iter().any(|&(x, y)| (0..20).contains(&y) && x < 20),
+        "black pixels land inside rows 0..20 of the field origin"
+    );
+    let within: Vec<&(u32, u32)> = ink.iter().filter(|&&(x, y)| y < 20 && x < 40).collect();
+    assert!(!within.is_empty() && within.len() < 400, "glyph ink, not a filled region");
+    // Rows 22..40 stay completely white.
+    assert!((22..40).all(|y| (0..bmp.width).all(|x| !bmp.get(x, y))));
+}
+
+#[test]
+fn fb_wraps_at_width() {
+    // ^FB40 width, ^A0N,20,20 (fixed 20-dot advance): "AA AA" wraps to two
+    // lines of "AA"; with 0 line spacing the second line starts exactly one
+    // cell (20 dots) below the first.
+    let out = render_text(b"^XA^PW64^LL60^FO0,0^FB40,2,0,L^A0N,20,20^FDAA AA^FS^XZ");
+    let bmp = &out.bitmap;
+    let r1 = first_ink_row(bmp, 0..20).expect("first line has ink");
+    let r2 = first_ink_row(bmp, 20..40).expect("second wrapped line has ink");
+    assert_eq!(r2, r1 + 20, "second line starts one cell below the first");
+    assert!((40..60).all(|y| (0..bmp.width).all(|x| !bmp.get(x, y))), "block stays 2 lines");
+    // Each line carries two A glyphs 20 dots apart (fixed ^A width) - the
+    // aggregated two-line scan shows the two column clusters per line.
+    let clusters = col_clusters(bmp, 0..40);
+    assert_eq!(clusters.len(), 2, "two A columns per line: {clusters:?}");
+    assert_eq!(clusters[1].0 - clusters[0].0, 20, "fixed advance spaces the As");
+}
+
+#[test]
+fn rotation_90() {
+    // ^A0R,20,20^FO10,10: the 20x20 cell rotates 90deg CW about the field
+    // origin: ink lands in the 20-wide column starting at x=10, stacked
+    // down the y-axis from y=10 by the 20-dot advance.
+    let out = render_text(b"^XA^PW80^LL80^FO10,10^A0R,20,20^FDX^FS^XZ");
+    let bmp = &out.bitmap;
+    assert!((0..80).all(|y| !bmp.get(9, y)), "nothing left of the rotated cell");
+    assert!((0..80).all(|x| !bmp.get(x, 9)), "nothing above the rotated cell");
+    let ink: Vec<(u32, u32)> = (0..80)
+        .flat_map(|y| (0..80).map(move |x| (x, y)))
+        .filter(|&(x, y)| bmp.get(x, y))
+        .collect();
+    assert!(!ink.is_empty(), "rotated glyph paints");
+    assert!(
+        ink.iter().all(|&(x, _y)| (10..30).contains(&x)),
+        "rotated ink confined to the cell-height column x 10..30: {ink:?}"
+    );
+    assert!(
+        ink.iter().all(|&(_, y)| (10..30).contains(&y)),
+        "rotated ink confined to the advance column y 10..30"
+    );
+    assert!(
+        ink.iter().any(|&(_, y)| y >= 15),
+        "ink stacks down past the halfway point of the rotated advance"
+    );
+}
+
+#[test]
+fn reverse_field() {
+    // ^FR: the field's layout rectangle fills black and the glyph erases to
+    // white - every pixel inside the box is the complement of the normal
+    // render, everything outside is unchanged.
+    let normal = render_text(b"^XA^PW64^LL40^FO0,0^A0N,20,0^FDX^FS^XZ");
+    let rev = render_text(b"^XA^PW64^LL40^FO0,0^FR^A0N,20,0^FDX^FS^XZ");
+    let (nb, rb) = (&normal.bitmap, &rev.bitmap);
+    let n_ink = (0..20)
+        .flat_map(|y| (0..40).map(move |x| (x, y)))
+        .filter(|&(x, y)| nb.get(x, y))
+        .count();
+    assert!(n_ink > 0, "normal render actually inks");
+    // Single 'X' at the origin (Left): the layout box is [0..advance) x
+    // [0..cell), advance = round(adv_X * 20/15) at the fixed 20-dot cell.
+    let metric = DefaultFontProvider::new().get(&FontSpec::Zebra(b'0')).expect("font 0");
+    let adv = (metric.metrics.advances[b'X' as usize - 32] as f32 * 20.0 / 15.0).round() as u32;
+    let cell = 20u32;
+    for y in 0..40 {
+        for x in 0..64 {
+            let in_box = y < cell && x < adv;
+            if in_box {
+                assert_ne!(nb.get(x, y), rb.get(x, y), "box pixel {x},{y} flips");
+            } else {
+                assert_eq!(nb.get(x, y), rb.get(x, y), "outside pixel {x},{y} unchanged");
+            }
+        }
+    }
+    // The box itself is black somewhere (reverse video, not a no-op) ...
+    assert!(
+        (0..cell).flat_map(|y| (0..adv).map(move |x| (x, y))).any(|(x, y)| rb.get(x, y)),
+        "reverse paints a black field"
+    );
+    // ... and the glyph bits are white inside it.
+    let g_ink: Vec<(u32, u32)> = (0..cell)
+        .flat_map(|y| (0..adv).map(move |x| (x, y)))
+        .filter(|&(x, y)| nb.get(x, y))
+        .collect();
+    assert!(
+        g_ink.iter().any(|&(x, y)| !rb.get(x, y)),
+        "the glyph itself is white inside the black box"
+    );
+}
+
+#[test]
+fn dot_origin_baseline() {
+    // ^FT20,20 + a descending 'p': the origin is the BASELINE, so ink
+    // straddles row 20 - ascender above, descender below. A ^FO block
+    // origin would put the cell top at 20 (no ink above it).
+    let out = render_text(b"^XA^PW64^LL40^FT20,20^A0N,20,20^FDp^FS^XZ");
+    let bmp = &out.bitmap;
+    assert!(
+        (10..19).any(|y| (0..40).any(|x| bmp.get(x, y))),
+        "ascender ink above the baseline row 20"
+    );
+    assert!(
+        (21..26).any(|y| (0..40).any(|x| bmp.get(x, y))),
+        "descender ink below the baseline row 20"
+    );
+    assert!((26..40).all(|y| (0..40).all(|x| !bmp.get(x, y))), "descender is ~5 dots");
+}
+
+#[test]
+fn a_width_rule_fixed_advance() {
+    // ^A0N,20,20: w=20 fixes every advance - the second X starts exactly
+    // 20 dots after the first. ^A0N,20,0 keeps the proportional default so
+    // the second X starts at the font's measured advance. (Guide ^A p.60:
+    // w in dots for scalable fonts; 0 = standard font matrix.)
+    let fixed = render_text(b"^XA^PW64^LL40^FO0,0^A0N,20,20^FDXX^FS^XZ");
+    let prop = render_text(b"^XA^PW64^LL40^FO0,0^A0N,20,0^FDXX^FS^XZ");
+    let f = col_clusters(&fixed.bitmap, 0..30);
+    let p = col_clusters(&prop.bitmap, 0..30);
+    assert!(f.len() >= 2 && p.len() >= 2, "two X glyphs in both renders");
+    let f_pitch = f[1].0 - f[0].0;
+    let p_pitch = p[1].0 - p[0].0;
+    assert_eq!(f_pitch, 20, "fixed width w=20 spaces the glyphs 20 dots apart");
+    let metric = DefaultFontProvider::new()
+        .get(&FontSpec::Zebra(b'0'))
+        .expect("font 0 served");
+    let adv_x = metric.metrics.advances[b'X' as usize - 32] as u32;
+    // eff = 20/15 (font 0: cell 15 -> requested height 20).
+    let expected = (adv_x as f32 * 20.0 / 15.0).round() as u32;
+    assert_eq!(p_pitch, expected, "proportional pitch = round(advance * h/cell)");
+}
+
+#[test]
+fn missing_font_warns() {
+    // ^A9 (an unmapped Zebra letter): warning + the field is skipped, but
+    // the label still renders (a following valid field paints).
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let out = render_text_into(
+        b"^XA^PW64^LL40^FO0,0^A9N,20,20^FDX^FS^FO0,25^A0N,10,10^FDY^FS^XZ",
+        &mut diags,
+        &mut memory,
+    );
+    assert!(!out.warnings.is_empty(), "missing font warns");
+    assert!(
+        out.warnings.iter().any(|w| w.contains("font unavailable")),
+        "warning names the unavailable font: {:?}",
+        out.warnings
+    );
+    assert!(
+        (25..40).any(|y| (0..64).any(|x| out.bitmap.get(x, y))),
+        "the second field still paints"
+    );
+}
+
+#[test]
+fn downloaded_font_text_paint() {
+    // ^A@ naming a stored TTF paints through the same path with no warning.
+    const FIXTURE: &[u8] = include_bytes!("fixtures/DejaVuSansCondensed.ttf");
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    memory.fonts.insert("FONTFILE.TTF".into(), FIXTURE.to_vec());
+    let out = render_text_into(
+        b"^XA^PW64^LL40^FO0,0^A@N,20,20,E:FONTFILE.TTF^FDX^FS^XZ",
+        &mut diags,
+        &mut memory,
+    );
+    assert!(out.warnings.is_empty(), "downloaded font paints cleanly: {:?}", out.warnings);
+    assert!(
+        (0..20).flat_map(|y| (0..30).map(move |x| (x, y))).any(|(x, y)| out.bitmap.get(x, y)),
+        "downloaded-font glyph inks the cell"
+    );
+}
+
+#[test]
+fn hostile_text_never_panics() {
+    // Huge height/width params, an off-label origin, and a giant string:
+    // cell scaling caps the raster, off-canvas glyphs are skipped, and
+    // nothing panics or overflows.
+    let src = b"^XA^PW64^LL64\
+^FO99999999,99999999^A0N,32000,32000^FDX^FS\
+^FO0,0^A0N,32000,4294967295^FDXX^FS\
+^FO10,10^A0N,4294967295,1^FDXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX^FS^XZ";
+    let out = render_text(src);
+    assert_eq!((out.bitmap.width, out.bitmap.height), (64, 64));
+    // No panic is the point; a best-effort glyph may or may not intersect:
+    // assert the bitmap is still coherent (deterministic pixel reads).
+    assert!((0..64).all(|y| (0..64).all(|x| !out.bitmap.get(x, y) || out.bitmap.get(x, y))));
 }

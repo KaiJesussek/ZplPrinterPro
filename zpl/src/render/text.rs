@@ -1,0 +1,606 @@
+//! Text-field painting (Task 13): `ab_glyph` glyph rasterization, `^FB`
+//! block wrapping, field rotation (`^A`/`^FW`), `^FR` reverse video, and
+//! the `^FT` baseline (typeset) origin.
+//!
+//! # Semantics (guide-anchored, reference-verified)
+//!
+//! * **Cell size** - `^A` p.60: `h` is "Character Height (in dots)",
+//!   `w` is "width (in dots)"; "If the value is not given or a 0 (zero) is
+//!   entered, the height or width is determined by the standard font
+//!   matrix." So `font_height` is the cell height in dots (0 = font
+//!   default scaled by dpi/203) and `font_width` **fixes every advance**
+//!   (0 = proportional per-character advances). Metrics are the Task 11
+//!   tables at the 203 dpi reference; `eff = h/cell` (explicit height) or
+//!   `dpi/203` (default) scales advances, baseline, and glyph size.
+//! * **Rotation** - `^FW` p.208 / `^A`: `R` = "rotated 90 degrees
+//!   (clockwise)", `I` = "inverted 180 degrees", `B` = "read from the
+//!   bottom up, 270 degrees"; `^FO` p.201 sets "the upper-left corner of
+//!   the field area ... independent of the rotation". Verified against a
+//!   reference ZPL renderer (dev-time oracle, nothing derived committed):
+//!   the rotated **area's top-left stays on the field origin** (^FO), the
+//!   drawing rotates inside it, glyphs are rotated 90deg clockwise *per
+//!   cell*, and advances stack along the rotated flow axis. `^FT` p.205:
+//!   "The typesetting origin of the field is fixed with respect to the
+//!   contents of the field" - the baseline *point* of the (last, for ^FB)
+//!   line stays on the origin, and the rotation formulas are re-anchored
+//!   so the point `(pen 0, baseline)` of the last line lands on it.
+//! * **Wrapping** - `^FB` p.186: word wrap at spaces, "Normal carriage
+//!   returns, line feeds, and **word spaces at line breaks are discarded**";
+//!   a word too long for the line is character-broken at the right edge
+//!   (the reference hyphenates; this renderer does not - `ponytail:` add
+//!   the hyphen pass when the block formatter grows one), `max_lines`
+//!   caps (0 = unlimited), `line_spacing` 0 = font height, justification
+//!   per line. `^FB` width 0: "If the value ... is not specified, the
+//!   text does not print" - the field is skipped with a warning.
+//! * **Reverse video** - `^FR` p.203: field prints white on black; the
+//!   documented approximation: fill the field's layout rectangle black,
+//!   then paint the glyphs white (`ponytail:` ceiling - real Zebra
+//!   inverts per dot within the field box; swap for a per-dot invert when
+//!   overlapping fields demand it).
+//!
+//! # Safety
+//!
+//! The renderer never panics and never allocates unboundedly: glyph
+//! rasterization is capped at [`MAX_GLYPH_CELL`] (the rasterizer
+//! allocates a float per pixel of the glyph's pixel box), glyphs whose
+//! destination rectangle misses the canvas are skipped before any
+//! rasterization, all pen/origin arithmetic is i64, and every pixel
+//! write goes through [`Bitmap::set`] (bounds-checked).
+
+use ab_glyph::{point, Font, FontVec, GlyphId};
+
+use crate::fonts::{FontData, FontMetrics};
+use crate::ir::{Justification, OriginMode, Rotation, TextField};
+use crate::render::draw::fill_rect;
+use crate::render::{Bitmap, RenderOptions};
+
+/// Rasterization ceiling. `ab_glyph`'s rasterizer allocates one `f32`
+/// coverage value per pixel of the glyph's box, so an uncapped cell
+/// (`^A` h allows 32000) is a multi-gigabyte allocation. Cells above the
+/// cap draw at the cap.
+/// `ponytail:` per-scanline streaming would render true 32000-dot text;
+/// no label in scope needs it, and the cap keeps hostile input cheap.
+const MAX_GLYPH_CELL: u32 = 1024;
+
+/// `^GS` graphic symbols (guide p.217): the field prints one built-in
+/// symbol by the `^FD` letter instead of a text glyph.
+fn symbol_for(c: char) -> char {
+    match c {
+        'A' => '\u{00A9}', // (C)
+        'B' => '\u{00AE}', // (R)
+        'C' => '\u{2122}', // (TM)
+        _ => c,
+    }
+}
+
+/// Advance of `c` at the reference metrics. The Task 11 deferred minor:
+/// a 0 entry in `advances` (a glyph absent from the font's cmap) - and
+/// any character outside the printable ASCII table the table covers -
+/// advances like a **space**, never as `.notdef`.
+fn ref_advance(m: &FontMetrics, c: char) -> u16 {
+    let u = c as u32;
+    let slot = if (32..=126).contains(&u) {
+        m.advances.get((u - 32) as usize).copied().unwrap_or(0)
+    } else {
+        0
+    };
+    if slot == 0 {
+        m.advances.first().copied().unwrap_or(0)
+    } else {
+        slot
+    }
+}
+
+/// A wrapped text line with its total advance width.
+struct Line {
+    chars: Vec<char>,
+    width: u64,
+}
+
+/// Per-character advance at paint scale, honoring the `^A` width rule.
+struct Advancer<'a> {
+    metrics: &'a FontMetrics,
+    eff: f32,
+    /// Fixed advance in dots when `^A` w > 0; 0 = proportional.
+    fixed: u64,
+}
+
+impl Advancer<'_> {
+    fn dots(&self, c: char) -> u64 {
+        if self.fixed > 0 {
+            return self.fixed;
+        }
+        (ref_advance(self.metrics, c) as f32 * self.eff).round().max(0.0) as u64
+    }
+}
+
+/// The resolved field layout: wrapped lines, scale, and extents in
+/// unrotated (R0) space, all independent of the TTF bytes (metrics only).
+struct FieldLayout {
+    lines: Vec<Line>,
+    cell: u64,
+    baseline: u64,
+    pitch: u64,
+    /// Justified line-start offsets (R0 space, relative to the origin).
+    starts: Vec<u64>,
+    /// Content box in R0 space: x in [box_left, box_right), y in [0, block_h).
+    box_left: u64,
+    box_right: u64,
+    block_h: u64,
+}
+
+impl FieldLayout {
+    /// A line's justified start offset.
+    fn start(&self, i: usize) -> u64 {
+        self.starts[i]
+    }
+
+    /// Total unrotated block height in dots.
+    fn block_height(&self) -> u64 {
+        self.block_h
+    }
+}
+
+/// Greedy word wrap (guide `^FB`): break at spaces (discarded at breaks),
+/// a word too long for the line is character-broken at the right edge.
+fn wrap_words(data: &str, wrap_w: u64, adv: &Advancer<'_>, max_lines: u32) -> Vec<Line> {
+    let mut lines: Vec<Line> = Vec::new();
+    let mut cur: Vec<char> = Vec::new();
+    let mut cur_w: u64 = 0;
+    let flush = |lines: &mut Vec<Line>, cur: &mut Vec<char>, cur_w: &mut u64| {
+        if !cur.is_empty() || lines.is_empty() {
+            let width = *cur_w;
+            lines.push(Line { chars: core::mem::take(cur), width });
+        }
+        *cur_w = 0;
+    };
+    let capped = |lines: &Vec<Line>| max_lines > 0 && lines.len() >= max_lines as usize;
+    for word in data.split([' ', '\n']) {
+        if capped(&lines) {
+            break;
+        }
+        if word.is_empty() {
+            // A space run: keep one trailing space if it still fits; a
+            // space at a line break is discarded (guide ^FB).
+            if !cur.is_empty() && cur_w + adv.dots(' ') <= wrap_w {
+                cur.push(' ');
+                cur_w += adv.dots(' ');
+            }
+            continue;
+        }
+        let word_w = word.chars().map(|c| adv.dots(c)).sum::<u64>();
+        let sep = if cur.is_empty() { 0 } else { adv.dots(' ') };
+        if cur_w + sep + word_w <= wrap_w {
+            if sep > 0 {
+                cur.push(' ');
+                cur_w += sep;
+            }
+            cur.extend(word.chars());
+            cur_w += word_w;
+        } else {
+            flush(&mut lines, &mut cur, &mut cur_w);
+            if capped(&lines) {
+                break;
+            }
+            // Place the word on the fresh line, character-breaking it if
+            // it alone exceeds the width.
+            for ch in word.chars() {
+                if !cur.is_empty() && cur_w + adv.dots(ch) > wrap_w {
+                    flush(&mut lines, &mut cur, &mut cur_w);
+                    if capped(&lines) {
+                        break;
+                    }
+                }
+                cur.push(ch);
+                cur_w += adv.dots(ch);
+            }
+        }
+    }
+    if max_lines == 0 || lines.len() < max_lines as usize {
+        flush(&mut lines, &mut cur, &mut cur_w);
+    }
+    lines
+}
+
+/// Compute the field layout from metrics; `None` when the field must not
+/// print (`^FB` width 0 - the guide's "text does not print" rule).
+fn layout(t: &TextField, m: &FontMetrics, dpi: u32) -> Option<FieldLayout> {
+    let eff = if t.font_height > 0 {
+        t.font_height as f32 / m.cell_height.max(1) as f32
+    } else {
+        dpi as f32 / 203.0
+    };
+    let cell = ((m.cell_height as f32 * eff).round()).clamp(1.0, MAX_GLYPH_CELL as f32) as u64;
+    let baseline = ((m.baseline as f32 * eff).round()).clamp(1.0, cell as f32) as u64;
+    let spacing = t.block.as_ref().map(|b| b.line_spacing as u64).unwrap_or(0);
+    let pitch = cell + spacing;
+    let fixed = if t.font_width > 0 { t.font_width as u64 } else { 0 };
+    let adv = Advancer { metrics: m, eff, fixed };
+    let (wrap_w, justification, max_lines) = match &t.block {
+        Some(b) => {
+            if b.width == 0 {
+                // Guide ^FB: "If the value is less than the font width or
+                // not specified, the text does not print."
+                return None;
+            }
+            (b.width as u64, b.justification.clone(), b.max_lines)
+        }
+        None => (u64::MAX, Justification::Left, 0),
+    };
+    let data = if t.symbol {
+        symbol_for(t.data.chars().next().unwrap_or(' ')).to_string()
+    } else {
+        t.data.clone()
+    };
+    let raw_lines = wrap_words(&data, wrap_w, &adv, max_lines);
+    let mut lines = Vec::with_capacity(raw_lines.len());
+    let mut starts = Vec::with_capacity(raw_lines.len());
+    let mut box_left = u64::MAX;
+    let mut box_right = 0u64;
+    for l in raw_lines {
+        let w = l.width;
+        let start = match justification {
+            Justification::Left => 0,
+            Justification::Right => wrap_w.saturating_sub(w),
+            Justification::Center => (wrap_w.saturating_sub(w)) / 2,
+        };
+        box_left = box_left.min(start);
+        box_right = box_right.max(start.saturating_add(w));
+        starts.push(start);
+        lines.push(l);
+    }
+    if lines.is_empty() {
+        lines.push(Line { chars: Vec::new(), width: 0 });
+        starts.push(0);
+        box_left = 0;
+        box_right = 0;
+    }
+    let block_h = (lines.len() as u64 - 1) * pitch + cell;
+    Some(FieldLayout {
+        lines,
+        cell,
+        baseline,
+        pitch,
+        starts,
+        box_left,
+        box_right,
+        block_h,
+    })
+}
+
+/// Extents for `place`/auto height: (y-top in label space, x extent, y
+/// extent) of the field in its own rotation. `y` may drop below the field
+/// origin for `^FT` (block grows up from the baseline).
+fn extents(t: &TextField, l: &FieldLayout) -> (i64, u64, u64) {
+    let block_h = l.block_height();
+    match t.rotation {
+        Rotation::R0 | Rotation::R180 => {
+            let y = if t.origin == OriginMode::Dot {
+                t.y as i64 - (l.baseline + (l.lines.len() as u64 - 1) * l.pitch) as i64
+            } else {
+                t.y as i64
+            };
+            (y, l.box_right, block_h)
+        }
+        Rotation::R90 | Rotation::R270 => {
+            let y = t.y as i64 + l.box_left as i64;
+            let w = (l.lines.len() as u64 - 1) * l.pitch + l.cell;
+            (y, w, l.box_right - l.box_left)
+        }
+    }
+}
+
+/// The field's (y, height) in label space for the auto-height scan:
+/// nothing when the field doesn't print or its font is unavailable.
+pub(crate) fn text_footprint(t: &TextField, opts: &RenderOptions) -> Option<(u32, u32)> {
+    let spec = crate::render::field_font_spec(t);
+    let fd = crate::render::resolve_font(&spec, opts)?;
+    let l = layout(t, &fd.metrics, opts.dpi)?;
+    let (y, _fw, fh) = extents(t, &l);
+    let y = y.max(0) as u32;
+    Some((y, fh as u32))
+}
+
+/// Paint a text field into the bitmap. Warnings are appended for fields
+/// that cannot print (block width 0, unusable TTF).
+pub(crate) fn paint_text(
+    bmp: &mut Bitmap,
+    t: &TextField,
+    fd: &FontData,
+    opts: &RenderOptions,
+    warnings: &mut Vec<String>,
+) {
+    let Some(l) = layout(t, &fd.metrics, opts.dpi) else {
+        if t.block.as_ref().is_some_and(|b| b.width == 0) {
+            warnings.push("text block width 0; field not printed (guide ^FB)".to_string());
+        }
+        return;
+    };
+    if l.lines.iter().all(|ln| ln.chars.is_empty()) {
+        return; // empty field: nothing to paint, nothing to warn about
+    }
+    let Ok(mut face) = FontVec::try_from_vec(fd.ttf.clone()) else {
+        warnings.push("stored font bytes are not a usable TrueType font; field skipped".to_string());
+        return;
+    };
+    let upem = face.units_per_em().unwrap_or(2048.0);
+    let ascent = face.ascent_unscaled();
+    if ascent <= 0.0 || upem <= 0.0 {
+        warnings.push("font has unusable vertical metrics; field skipped".to_string());
+        return;
+    }
+    // Scale so the face's ascent lands on the metric baseline; the drawn
+    // cell therefore approximates the target cell like the committed
+    // metric tables' fitted ppem does.
+    let scale = l.baseline as f32 * upem / ascent;
+    let adv = Advancer {
+        metrics: &fd.metrics,
+        eff: if t.font_height > 0 {
+            t.font_height as f32 / fd.metrics.cell_height.max(1) as f32
+        } else {
+            opts.dpi as f32 / 203.0
+        },
+        fixed: if t.font_width > 0 { t.font_width as u64 } else { 0 },
+    };
+
+    let (_, fw, fh) = extents(t, &l);
+    let fw = u32::try_from(fw).unwrap_or(u32::MAX);
+    let fh = u32::try_from(fh).unwrap_or(u32::MAX);
+    let (ox, oy) =
+        crate::render::place(opts.mode, bmp.width as i64, bmp.height as i64, t.x, t.y, fw, fh);
+    let n_lines = l.lines.len() as i64;
+    let last_pitch = (n_lines - 1) * l.pitch as i64;
+    // The last line's first character advance: the ^FT R270 re-anchor
+    // measures its baseline point from it.
+    let first_adv: i64 = l
+        .lines
+        .last()
+        .and_then(|ln| ln.chars.first())
+        .map(|c| adv.dots(*c) as i64)
+        .unwrap_or(0);
+
+    if t.reverse {
+        paint_reverse_box(bmp, ox, oy, &l, t);
+    }
+
+    let glyph_black = !t.reverse; // reverse: white glyphs on the black box
+    for (li, line) in l.lines.iter().enumerate() {
+        let start = l.start(li) as i64;
+        let line_top = li as i64 * l.pitch as i64;
+        let mut pen: i64 = 0;
+        for &ch in &line.chars {
+            let gid = face.glyph_id(ch);
+            let ch_adv = adv.dots(ch) as i64;
+            if gid != GlyphId(0) {
+                paint_glyph(
+                    bmp,
+                    &mut face,
+                    scale,
+                    gid,
+                    ch_adv,
+                    ox,
+                    oy,
+                    start + pen,
+                    line_top,
+                    t.rotation,
+                    t.origin,
+                    l.cell as i64,
+                    l.baseline as i64,
+                    l.box_right as i64,
+                    l.block_h as i64,
+                    last_pitch,
+                    first_adv,
+                    glyph_black,
+                );
+            }
+            pen = pen.saturating_add(ch_adv);
+        }
+    }
+}
+
+/// Fill the field's layout rectangle black (reverse video background),
+/// in rotated space.
+fn paint_reverse_box(bmp: &mut Bitmap, ox: i64, oy: i64, l: &FieldLayout, t: &TextField) {
+    let box_w = (l.box_right - l.box_left) as i64;
+    let n_lines = l.lines.len() as i64;
+    let block_w = (n_lines - 1) * l.pitch as i64 + l.cell as i64;
+    let baseline_off = l.baseline as i64 + (n_lines - 1) * l.pitch as i64;
+    let (x, y, w, h) = match (t.rotation, t.origin) {
+        (Rotation::R0, _) => (l.box_left as i64, 0, box_w, l.block_h as i64),
+        (Rotation::R90, OriginMode::Block) => (0, l.box_left as i64, block_w, box_w),
+        (Rotation::R90, OriginMode::Dot) => {
+            (l.baseline as i64 - l.cell as i64 + 1, l.box_left as i64, block_w, box_w)
+        }
+        (Rotation::R180, OriginMode::Block) => (0, 0, box_w, l.block_h as i64),
+        (Rotation::R180, OriginMode::Dot) => {
+            (-(l.box_right as i64), -baseline_off, box_w, l.block_h as i64)
+        }
+        (Rotation::R270, OriginMode::Block) => (0, l.box_left as i64, block_w, box_w),
+        (Rotation::R270, OriginMode::Dot) => {
+            (-baseline_off, l.box_left as i64, block_w, box_w)
+        }
+    };
+    fill_rect(bmp, ox + x, oy + y, w, h, b'B');
+}
+
+/// A dot of the upright cell maps through rotation (and the `^FT`
+/// baseline-point re-anchor) to a bitmap coordinate. Coordinates are
+/// relative to the placed origin: `gx` in the character's advance
+/// column, `gy` rows down from the cell top.
+#[allow(clippy::too_many_arguments)]
+fn rotate_point(
+    gx: i64,
+    gy: i64,
+    line_top: i64,
+    cell_left: i64,
+    rotation: Rotation,
+    origin: OriginMode,
+    cell: i64,
+    baseline: i64,
+    box_right: i64,
+    block_h: i64,
+    last_pitch: i64,
+    pen_adv: i64,
+    first_adv_total: i64,
+) -> (i64, i64) {
+    let ft = origin == OriginMode::Dot;
+    match rotation {
+        Rotation::R0 => {
+            let y = if ft {
+                line_top - last_pitch + gy - baseline
+            } else {
+                line_top + gy
+            };
+            (cell_left + gx, y)
+        }
+        Rotation::R90 => {
+            // Upright top row (gy = 0) faces right after the rotation;
+            // reading order flows +y.
+            let x = if ft {
+                line_top - last_pitch + baseline - gy
+            } else {
+                line_top + cell - 1 - gy
+            };
+            (x, cell_left + gx)
+        }
+        Rotation::R180 => {
+            // Cells flow right-to-left within the block ("inverted 180").
+            let x = if ft {
+                -cell_left - gx
+            } else {
+                box_right - 1 - cell_left - gx
+            };
+            let y = if ft {
+                last_pitch - line_top + baseline - gy
+            } else {
+                block_h - 1 - line_top - gy
+            };
+            (x, y)
+        }
+        Rotation::R270 => {
+            // "Read from the bottom up": reading order flows -y, glyphs
+            // 90deg counterclockwise inside the cell.
+            let x = if ft {
+                line_top - last_pitch + gy - baseline
+            } else {
+                line_top + gy
+            };
+            let y = cell_left + pen_adv - 1 - gx - if ft { first_adv_total } else { 0 };
+            (x, y)
+        }
+    }
+}
+
+/// Rasterize one glyph and map it through the field rotation. The glyph
+/// is skipped entirely (no raster allocation) when its destination cell
+/// misses the canvas; every write goes through [`Bitmap::set`].
+#[allow(clippy::too_many_arguments)]
+fn paint_glyph(
+    bmp: &mut Bitmap,
+    face: &mut FontVec,
+    scale: f32,
+    gid: GlyphId,
+    pen_adv: i64,
+    ox: i64,
+    oy: i64,
+    cell_left: i64,
+    line_top: i64,
+    rotation: Rotation,
+    origin: OriginMode,
+    cell: i64,
+    baseline: i64,
+    box_right: i64,
+    block_h: i64,
+    last_pitch: i64,
+    first_adv: i64,
+    black: bool,
+) {
+    // The mapping is affine over the cell, so its destination bounds are
+    // the min/max of the four corners.
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (i64::MAX, i64::MAX, i64::MIN, i64::MIN);
+    for (gx, gy) in [(0i64, 0i64), (pen_adv, 0i64), (0, cell), (pen_adv, cell)] {
+        let (bx, by) = rotate_point(
+            gx, gy, line_top, cell_left, rotation, origin, cell, baseline,
+            box_right, block_h, last_pitch, pen_adv, first_adv,
+        );
+        min_x = min_x.min(bx);
+        min_y = min_y.min(by);
+        max_x = max_x.max(bx);
+        max_y = max_y.max(by);
+    }
+    // `rotate_point` coordinates are relative to the placed origin; the
+    // destination bounds shift by (ox, oy) like every painted pixel.
+    min_x += ox;
+    min_y += oy;
+    max_x += ox;
+    max_y += oy;
+    if max_x < 0 || max_y < 0 || min_x >= bmp.width as i64 || min_y >= bmp.height as i64 {
+        return;
+    }
+
+    // Draw the glyph at the pen: its pixels are pen-absolute, so the
+    // cell column is `pixel - cell_left` for every character.
+    let glyph = gid.with_scale_and_position(scale, point(cell_left as f32, 0.0));
+    let Some(outlined) = face.outline_glyph(glyph) else {
+        return;
+    };
+    let b = outlined.px_bounds();
+    outlined.draw(|px, py, cov| {
+        if cov < 0.5 {
+            return;
+        }
+        // ab_glyph pixels are baseline-relative with y up: the glyph's
+        // horizontal offset plus the baseline-relative row.
+        let gx_w = b.min.x.floor() as i64 + px as i64;
+        let gy_up = b.min.y.floor() as i64 + py as i64;
+        let cell_rel_x = gx_w - cell_left;
+        // Display rows increase downward from the baseline (`gy_up` is the
+        // baseline-relative pixel row), so the row from the cell top is
+        // baseline + gy_up (the fitted ascent == baseline reaches the top).
+        let cell_rel_y = baseline + gy_up;
+        if cell_rel_x < 0 || cell_rel_x >= pen_adv || cell_rel_y < 0 || cell_rel_y >= cell {
+            return;
+        }
+        let (bx, by) = rotate_point(
+            cell_rel_x, cell_rel_y, line_top, cell_left, rotation, origin, cell,
+            baseline, box_right, block_h, last_pitch, pen_adv, first_adv,
+        );
+        bmp.set((bx + ox) as u32, (by + oy) as u32, black);
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A table where a middle slot is missing (0) and the space slot is
+    /// nonzero: missing characters advance like a space.
+    fn metrics_with_missing() -> FontMetrics {
+        let mut advances = vec![0u16; 95];
+        advances[0] = 12; // ' ' advance
+        advances[b'X' as usize - 32] = 20;
+        FontMetrics { cell_height: 15, baseline: 11, advances }
+    }
+
+    #[test]
+    fn advance_lookup_missing_char_uses_space() {
+        let m = metrics_with_missing();
+        assert_eq!(ref_advance(&m, ' '), 12, "space uses its own advance");
+        assert_eq!(ref_advance(&m, 'X'), 20, "present glyph uses its advance");
+        // 'Y' is absent from the table (0 entry) -> space advance.
+        assert_eq!(ref_advance(&m, 'Y'), 12, "0 entry prints as a space");
+        // Outside printable ASCII (e.g. codepage (C)) -> space advance too.
+        assert_eq!(ref_advance(&m, '\u{00A9}'), 12, "out-of-table char prints as space");
+        // A fully-zero table still cannot panic and collapses to 0.
+        let empty = FontMetrics { cell_height: 15, baseline: 11, advances: vec![0; 95] };
+        assert_eq!(ref_advance(&empty, 'X'), 0);
+    }
+
+    #[test]
+    fn fixed_width_overrides_proportional_advance() {
+        let m = metrics_with_missing();
+        let adv = Advancer { metrics: &m, eff: 1.0, fixed: 40 };
+        assert_eq!(adv.dots('X'), 40);
+        assert_eq!(adv.dots(' '), 40);
+    }
+}

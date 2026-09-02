@@ -4,8 +4,8 @@
 //! `render` walks `label.fields` in order and paints each drawing field
 //! (`^GB` rect, `^GC` circle, `^GD` diagonal, `^GE` ellipse) and graphic
 //! blit (`^GF` inline, `^XG`/`^IM`/`^IL` stored recall) into a
-//! [`Bitmap`]. Text and barcode fields are painted by Tasks 13/14 and are
-//! silently skipped here. The parser already decodes inline `^GF` payloads
+//! [`Bitmap`]. Text fields are painted by Task 13 (`text.rs`; block
+//! wrapping, rotation, reverse video); barcode fields by Task 14. The parser already decodes inline `^GF` payloads
 //! into packed bytes (`geom::graphic_field`), so the renderer only blits.
 //!
 //! The Task 6 mode arrives via [`RenderOptions::mode`] (a deliberate
@@ -20,13 +20,9 @@
 //! intersection only, and all width/height arithmetic is checkpointed
 //! against u32/i64/u128 overflow).
 //!
-//! Since Task 11, text fields resolve their font at render time: `^A@`
-//! names a downloaded font (looked up in `RenderOptions::memory`), any
-//! other field uses a built-in Zebra font from the font provider. Task 13
-//! paints the glyphs; resolution already happens so an unavailable font
-//! surfaces as a render warning in every caller.
 
 mod draw;
+pub(crate) mod text;
 
 use crate::fonts::{font_data_from_ttf, FontData, FontProvider, FontSpec};
 use crate::ir::{Field, GraphicKind, Label, TextField};
@@ -185,15 +181,13 @@ pub fn render(label: &Label, opts: &RenderOptions) -> Result<RenderOutcome, Rend
 
     for field in &label.fields {
         match field {
-            // Task 13 paints text; resolve the font now so a missing or
-            // unusable font surfaces as a render warning (the field is
-            // skipped until text painting lands).
             Field::Text(t) => {
                 let spec = field_font_spec(t);
-                if resolve_font(&spec, opts).is_none() {
-                    warnings.push(format!(
+                match resolve_font(&spec, opts) {
+                    Some(fd) => text::paint_text(&mut bmp, t, &fd, opts, &mut warnings),
+                    None => warnings.push(format!(
                         "font unavailable for text field ({spec:?}); field skipped"
-                    ));
+                    )),
                 }
             }
             // Task 14 (barcodes): nothing painted yet.
@@ -255,7 +249,7 @@ pub fn render(label: &Label, opts: &RenderOptions) -> Result<RenderOutcome, Rend
 /// the raw byte so it resolves to the scalable default font rather than
 /// the metrically different `A`; everything else is a built-in Zebra font
 /// by its canonical letter.
-fn field_font_spec(t: &TextField) -> FontSpec {
+pub(crate) fn field_font_spec(t: &TextField) -> FontSpec {
     if let Some(name) = &t.font_name {
         FontSpec::Downloaded(name.clone())
     } else if t.font == [b'A', b'0'] {
@@ -269,7 +263,7 @@ fn field_font_spec(t: &TextField) -> FontSpec {
 /// printer memory (`RenderOptions::memory`); built-ins come from the font
 /// provider. `None` means the font is unavailable (unknown letter, missing
 /// download, unparseable TTF) - the caller warns and skips the field.
-fn resolve_font(spec: &FontSpec, opts: &RenderOptions) -> Option<FontData> {
+pub(crate) fn resolve_font(spec: &FontSpec, opts: &RenderOptions) -> Option<FontData> {
     match spec {
         FontSpec::Zebra(_) => opts.fonts.get(spec),
         FontSpec::Downloaded(name) => opts.memory.fonts.get(name).and_then(|ttf| font_data_from_ttf(ttf)),
@@ -315,7 +309,11 @@ fn footprint(field: &Field, opts: &RenderOptions) -> (Option<u32>, Option<u32>) 
             },
             _ => (None, None),
         },
-        Field::Text(_) | Field::Barcode(_) => (None, None),
+        Field::Text(t) => match text::text_footprint(t, opts) {
+            Some((y, h)) => (Some(y), Some(h)),
+            None => (None, None),
+        },
+        Field::Barcode(_) => (None, None),
     }
 }
 
@@ -326,7 +324,7 @@ fn footprint(field: &Field, opts: &RenderOptions) -> (Option<u32>, Option<u32>) 
 /// and mirror reposition the field's far corner, not its origin. The
 /// transforms are applied to the final label image; 180deg + horizontal
 /// mirror compose into a vertical flip, so the two flips commute.
-fn place(
+pub(crate) fn place(
     mode: &PrinterMode,
     w: i64,
     h: i64,

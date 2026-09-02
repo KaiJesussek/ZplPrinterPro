@@ -68,7 +68,8 @@ pub(crate) fn draw_thick_vline(bm: &mut Bitmap, x: i64, y: i64, len: i64, thickn
 }
 
 /// A solid rectangle, clamped.
-fn fill_rect(bm: &mut Bitmap, x: i64, y: i64, w: i64, h: i64, color: u8) {
+/// A solid rectangle, clamped (reverse video fills the field box).
+pub(crate) fn fill_rect(bm: &mut Bitmap, x: i64, y: i64, w: i64, h: i64, color: u8) {
     let y0 = y.max(0);
     let y1 = (y + h).min(bm.height as i64);
     for ry in y0..y1 {
