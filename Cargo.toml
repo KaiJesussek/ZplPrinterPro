@@ -1,0 +1,3 @@
+[workspace]
+members = ["zpl", "zpl-server"]
+resolver = "2"
