@@ -398,6 +398,34 @@ fn accept_only_config_commands_never_warn_on_valid_params() {
 }
 
 #[test]
+fn oversized_darkness_params_warn_not_panic() {
+    // i32-overflow repros from review round 1: ^MD214748365 and
+    // ~SD999999999 overflow `w * 10` in `to_tenths` under debug builds.
+    // Checked arithmetic routes them into the warn + fallback path instead
+    // of panicking; the current darkness is kept.
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (_, ctx) = common::parse_ctx(b"^XA^MD214748365^XZ", &mut diags, &mut memory);
+    assert_eq!(ctx.diags.items.len(), 1, "expected one warning, got {0:?}", ctx.diags);
+    assert!(matches!(ctx.diags.items[0].severity, Severity::Warning));
+    assert_eq!(ctx.config.darkness, 0);
+
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (_, ctx) = common::parse_ctx(b"^XA^MD-214748365^XZ", &mut diags, &mut memory);
+    assert_eq!(ctx.diags.items.len(), 1, "expected one warning, got {0:?}", ctx.diags);
+    assert!(matches!(ctx.diags.items[0].severity, Severity::Warning));
+    assert_eq!(ctx.config.darkness, 0);
+
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (_, ctx) = common::parse_ctx(b"^XA~SD999999999^XZ", &mut diags, &mut memory);
+    assert_eq!(ctx.diags.items.len(), 1, "expected one warning, got {0:?}", ctx.diags);
+    assert!(matches!(ctx.diags.items[0].severity, Severity::Warning));
+    assert_eq!(ctx.config.darkness, 0);
+}
+
+#[test]
 fn config_malformed_params_warn_not_panic() {
     // The brief's headline case: ^XA^PQabc^XZ -> warning, parse completes.
     let (label, diags) = parse_one(b"^XA^PQabc^XZ");

@@ -110,7 +110,9 @@ fn to_tenths(p: &[u8]) -> Option<i32> {
     }
     let w: i32 = core::str::from_utf8(whole).ok()?.parse().ok()?;
     let f: i32 = frac.first().map(|&d| (d - b'0') as i32).unwrap_or(0);
-    Some(sign * (w * 10 + f))
+    // Checked: `w * 10` can overflow i32 (e.g. ^MD214748365); oversized input
+    // returns None and the caller warns + falls back, never panics.
+    Some(sign * (w.checked_mul(10)?.checked_add(f)?))
 }
 
 /// Darkness parameter (shared by ^MD and ~SD), parsed in tenths within
