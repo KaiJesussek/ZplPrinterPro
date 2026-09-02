@@ -4,3 +4,4 @@
 
 pub mod diag;
 pub mod error;
+pub mod scanner;
