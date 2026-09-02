@@ -828,3 +828,240 @@ fn auto_height_covers_rotated_ft_text() {
         "glyph bottom rows paint inside the auto-sized label"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Task 14: barcode rasterization - bars/modules -> bitmap, quiet zones,
+// interpret line, rotation. Quiet zone: guide "Basic Format for Bar Codes"
+// (p.1586): "The size of the quiet zone depends on the size of bar widths
+// (usually 10 times the width of the narrow bar)" - the Code 128 narrow
+// element is one module (ISO/IEC 15417), so the drawer reserves 10 x module
+// dots on each side and the film starts after it.
+// ---------------------------------------------------------------------------
+
+use zpl::bc::{barcode_field, Pattern};
+use zpl::ir::{BarcodeField, Field, Rotation};
+
+/// Parse + render a barcode-bearing format with the bundled fonts (the
+/// interpretation line needs them), returning the label too so tests can
+/// compare the painted bars against the Task 9 encoder output.
+fn render_bc(src: &[u8]) -> (zpl::ir::Label, RenderOutcome) {
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let mut ctx = ParseContext::new(&mut diags, &mut memory);
+    parse_stream(&mut Scanner::new(src), &mut ctx);
+    let label = ctx.pending_label.take().expect("no format closed by ^XZ");
+    let opts = RenderOptions {
+        dpi: 203,
+        fonts: &DefaultFontProvider::new(),
+        memory: &*ctx.memory,
+        mode: &ctx.mode,
+    };
+    let outcome = render(&label, &opts).expect("render failed structurally");
+    (label, outcome)
+}
+
+fn single_barcode(label: &zpl::ir::Label) -> &BarcodeField {
+    match &label.fields[0] {
+        Field::Barcode(f) => f,
+        other => panic!("expected a barcode field, got {other:?}"),
+    }
+}
+
+/// Is content dot `u` (field-relative, quiet zones included) part of a
+/// black bar? Mirrors the encoder's run list.
+fn bar_bit_at(bars: &[zpl::bc::Bar], quiet: u32, h: u32, u: u32, v: u32) -> bool {
+    let mut off = quiet;
+    for b in bars {
+        if b.black && v < h && u >= off && u < off + b.width {
+            return true;
+        }
+        off += b.width;
+    }
+    false
+}
+
+/// Golden brief case: `^FO0,0^BY2,3,60^BCN,60,N,N^FD12345678^FS` - the
+/// first black bar starts after the quiet zone, the bar run matches the
+/// Task 9 encoder output dot-for-dot, and the bars are 60 dots tall.
+#[test]
+fn barcode_first_bar_after_quiet_zone() {
+    let src = b"^XA^PW240^LL120^FO0,0^BY2,3,60^BCN,60,N,N^FD12345678^FS^XZ";
+    let (label, out) = render_bc(src);
+    assert!(out.warnings.is_empty(), "clean render: {:?}", out.warnings);
+    let f = single_barcode(&label);
+    let quiet = 10 * f.module; // 10 modules each side
+    assert_eq!((f.module, f.height), (2, 60), "^BY2,3,60 and ^BC h=60");
+
+    // Quiet zone: the first 20 columns are white (no bar starts at x=0).
+    assert!(
+        !(0..quiet).any(|x| (0..60).any(|y| out.bitmap.get(x, y))),
+        "left quiet zone stays white"
+    );
+    // First bar is 4 dots wide (elements 2,1,1,2,3,2 at module 2) and the
+    // full 60 dots tall; the space element after it is white.
+    assert!(out.bitmap.get(quiet, 0) && out.bitmap.get(quiet + 3, 59), "first bar");
+    assert!(!out.bitmap.get(quiet + 4, 0), "first space element");
+    // Row 60 is the bar-height boundary: nothing below (f=:N - no line).
+    assert!(
+        !(0..240).any(|x| (60..120).any(|y| out.bitmap.get(x, y))),
+        "nothing below the 60-dot bars"
+    );
+
+    // The painted bar run matches the T9 encoder output exactly.
+    let Pattern::Bars(bars) = barcode_field(f) else { panic!("Code 128 is a bar pattern") };
+    for x in 0..240 {
+        for y in 0..120 {
+            let expect = bar_bit_at(&bars, quiet, f.height, x, y);
+            assert_eq!(out.bitmap.get(x, y), expect, "pixel {x},{y} vs encoder");
+        }
+    }
+}
+
+/// Rotated barcode (`^BCR`, 90deg clockwise): the R0 content plane rotates
+/// about the field origin - the left quiet zone lands on top, the bars
+/// become horizontal rows running down the page, and the right quiet zone
+/// lands at the bottom. Every column inside the rotated bar area carries
+/// the same pattern, so a row scan equals the encoder's content scan.
+#[test]
+fn barcode_rotation_90() {
+    let src = b"^XA^PW240^LL240^FO0,0^BY2,3,60^BCR,60,N,N^FD12345678^FS^XZ";
+    let (label, out) = render_bc(src);
+    let f = single_barcode(&label);
+    assert_eq!(f.rotation, Rotation::R90);
+    let quiet = 10 * f.module;
+    let Pattern::Bars(bars) = barcode_field(f) else { panic!("Code 128 is a bar pattern") };
+    // fh = bar height (no interpret line).
+    let fh = f.height;
+
+    // Top: the left quiet zone (content u < quiet) rotates to rows y < quiet.
+    assert!(
+        !(0..quiet).any(|y| (0..240).any(|x| out.bitmap.get(x, y))),
+        "left quiet zone lands on top"
+    );
+    // Bottom: the right quiet zone (content u in [fh*... wait, right quiet
+    // zone = pattern width + quiet) lands at rows y >= 202.
+    let pat_w: u32 = bars.iter().map(|b| b.width).sum();
+    assert!(
+        !(quiet + pat_w..240).any(|y| (0..240).any(|x| out.bitmap.get(x, y))),
+        "right quiet zone lands at the bottom"
+    );
+    // Beyond the rotated bar height (columns x >= fh) everything is white.
+    assert!(
+        !(0..240).any(|y| (fh..240).any(|x| out.bitmap.get(x, y))),
+        "bar height rotates to the column axis"
+    );
+    // Row scan inside the bar area matches the encoder content scan; each
+    // row is uniform across the full bar-height columns.
+    for y in 0..240 {
+        let expect = bar_bit_at(&bars, quiet, fh, y, 0) && y < quiet + pat_w;
+        for x in 0..fh {
+            assert_eq!(out.bitmap.get(x, y), expect, "rotated pixel {x},{y}");
+        }
+    }
+}
+
+/// Interpret line below (`^BC f=Y`): the guide's `h = barcode height (in
+/// dots)` is the BAR height only - the interpretation line is added BELOW
+/// the bars, outside the height parameter. With the power-up ^CF font
+/// (A, 9x5) the line cell is 9 dots (8 digits x 5 = 40 dots wide).
+#[test]
+fn barcode_interpret_line_below_bars() {
+    let src = b"^XA^PW240^LL120^FO0,0^BY2,3,60^BCN,60,Y,N^FD12345678^FS^XZ";
+    let (label, out) = render_bc(src);
+    assert!(out.warnings.is_empty(), "clean render: {:?}", out.warnings);
+    let f = single_barcode(&label);
+    assert_eq!((f.line, f.interpret), (b'Y', false));
+
+    // The bars keep the full 60-dot height (the line is NOT inside it).
+    assert!(out.bitmap.get(20, 0) && out.bitmap.get(23, 59), "bars span 0..60");
+    // First line ink appears exactly below the bars: rows 60..69.
+    assert!(
+        (60..69).any(|y| (0..40).any(|x| out.bitmap.get(x, y))),
+        "line ink sits below the bar height, in rows 60..69"
+    );
+    // Nothing beneath the line cell and nothing right of its advance box.
+    assert!(
+        !(0..240).any(|x| (69..120).any(|y| out.bitmap.get(x, y))),
+        "no ink below the interpretation line"
+    );
+    assert!(
+        !(40..240).any(|x| (60..69).any(|y| out.bitmap.get(x, y))),
+        "line confined to 8 characters \u{00D7} 5-dot advance"
+    );
+}
+
+/// Interpret line above (`^BC g=Y`): the line prints ABOVE the bars,
+/// extending the field above its ^FO origin; the bars are unchanged.
+#[test]
+fn barcode_interpret_line_above_bars() {
+    let plain = b"^XA^PW240^LL120^FO0,15^BY2,3,60^BCN,60,N,N^FD12345678^FS^XZ";
+    let above = b"^XA^PW240^LL120^FO0,15^BY2,3,60^BCN,60,N,Y^FD12345678^FS^XZ";
+    let (_, out_plain) = render_bc(plain);
+    let (_, out_above) = render_bc(above);
+
+    // Without g=Y nothing paints above the field origin...
+    assert!(
+        !(0..15).any(|y| (0..240).any(|x| out_plain.bitmap.get(x, y))),
+        "plain: rows above the origin are white"
+    );
+    // ...with g=Y the 9-dot line cell occupies rows 6..15 (origin 15 - 9).
+    assert!(
+        (0..15).any(|y| (0..40).any(|x| out_above.bitmap.get(x, y))),
+        "line ink appears above the bars"
+    );
+    // Bars are unchanged below the origin.
+    assert!(
+        out_above.bitmap.get(20, 15) && out_above.bitmap.get(23, 74),
+        "bars still start at the ^FO origin"
+    );
+}
+
+/// Hostile hand-built IR: module = u32::MAX (the parser caps ^BY at 10;
+/// only hand-built IR reaches the renderer). The quiet zone (10 modules)
+/// and every bar resolve astronomically wide - the drawer must clamp to
+/// the canvas, paint nothing, and never allocate or loop unboundedly.
+#[test]
+fn barcode_hostile_module_never_panics() {
+    use zpl::ir::{BarcodeField, Label};
+    let make = |symbology: u8, rotation| BarcodeField {
+        x: 0,
+        y: 0,
+        symbology,
+        data: "12".into(),
+        module: u32::MAX,
+        ratio: 30,
+        height: 60,
+        line: b'N',
+        interpret: false,
+        ucc: false,
+        model: b'N',
+        font: [b'A', b' '],
+        font_height: 9,
+        font_width: 5,
+        font_name: None,
+        rotation,
+    };
+    let label = Label {
+        width_dots: 8,
+        height_dots: 12,
+        copies: 1,
+        fields: vec![
+            Field::Barcode(make(b'C', Rotation::R0)),
+            Field::Barcode(make(b'C', Rotation::R90)),
+            Field::Barcode(make(b'C', Rotation::R180)),
+            Field::Barcode(make(b'C', Rotation::R270)),
+        ],
+    };
+    let opts = RenderOptions {
+        dpi: 203,
+        fonts: &NoFonts,
+        memory: &Memory::default(),
+        mode: &zpl::state::PrinterMode::default(),
+    };
+    let out = render(&label, &opts).expect("hostile barcode IR is still a valid render");
+    assert_eq!((out.bitmap.width, out.bitmap.height), (8, 12));
+    assert!(
+        (0..8).all(|x| (0..12).all(|y| !out.bitmap.get(x, y))),
+        "u32::MAX-module bars never intersect the tiny canvas"
+    );
+}

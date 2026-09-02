@@ -60,7 +60,8 @@ use crate::render::{Bitmap, RenderOptions};
 /// cap draw at the cap.
 /// `ponytail:` per-scanline streaming would render true 32000-dot text;
 /// no label in scope needs it, and the cap keeps hostile input cheap.
-const MAX_GLYPH_CELL: u32 = 1024;
+/// Shared with the barcode interpret-line painting (Task 14).
+pub(crate) const MAX_GLYPH_CELL: u32 = 1024;
 
 /// `^GS` graphic symbols (guide p.217): the field prints one built-in
 /// symbol by the `^FD` letter instead of a text glyph.
@@ -77,7 +78,8 @@ fn symbol_for(c: char) -> char {
 /// a 0 entry in `advances` (a glyph absent from the font's cmap) - and
 /// any character outside the printable ASCII table the table covers -
 /// advances like a **space**, never as `.notdef`.
-fn ref_advance(m: &FontMetrics, c: char) -> u16 {
+/// Shared with the barcode interpret-line painting (Task 14).
+pub(crate) fn ref_advance(m: &FontMetrics, c: char) -> u16 {
     let u = c as u32;
     let slot = if (32..=126).contains(&u) {
         m.advances.get((u - 32) as usize).copied().unwrap_or(0)

@@ -78,6 +78,11 @@ fn bc128_auto_switches_and_checks() {
             interpret: false,
             ucc: false,
             model: b'N',
+            // No ^A in the format: the draft's ^CF power-up font (A, 9x5).
+            font: [b'A', b' '],
+            font_height: 9,
+            font_width: 5,
+            font_name: None,
             rotation: Rotation::R0,
         },
     );

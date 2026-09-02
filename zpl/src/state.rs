@@ -402,6 +402,14 @@ impl FieldDraft {
                     interpret: b.interpret,
                     ucc: b.ucc,
                     model: b.model,
+                    // The interpretation line prints in the field's font
+                    // (guide ^BC: "The interpretation line can be printed
+                    // in any font by placing the font command before the
+                    // barcode command") - captured at ^FS like text.
+                    font: self.font,
+                    font_height: self.font_height,
+                    font_width: self.font_width,
+                    font_name: self.font_name,
                     rotation: self.rotation,
                 }),
                 None => Field::Text(TextField {

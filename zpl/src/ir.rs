@@ -109,6 +109,19 @@ pub struct BarcodeField {
     /// (19-digit pad/trim), A = automatic subset selection, D = UCC/EAN
     /// mode (FNC1 prefix, parentheses/spaces stripped).
     pub model: u8,
+    /// `^A`/`^A@` font request for the interpretation line, captured when
+    /// the symbology field was parsed - guide ^BC p.94: "The interpretation
+    /// line can be printed in any font by placing the font command before
+    /// the barcode command" (the UCC/EAN section's Figure 12 shows the size
+    /// parameters, `^A0N,40,30`, applying too). Same shape as `TextField`'s.
+    pub font: [u8; 2],
+    /// `^A` character height in dots; 0 = standard font matrix.
+    pub font_height: u32,
+    /// `^A` character width in dots; 0 = standard font matrix.
+    pub font_width: u32,
+    /// `^A@`: the stored (downloaded) font the interpretation line prints
+    /// with, or `None` for a built-in font (draft `^CF` default).
+    pub font_name: Option<String>,
     pub rotation: Rotation,
 }
 
@@ -232,6 +245,10 @@ mod tests {
                     interpret: true,
                     ucc: true,
                     model: b'D',
+                    font: [b'0', b'1'],
+                    font_height: 30,
+                    font_width: 20,
+                    font_name: Some("E:HRFONT.TTF".into()),
                     rotation: Rotation::R180,
                 }),
                 Field::Box(BoxField {

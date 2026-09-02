@@ -21,9 +21,11 @@
 //! against u32/i64/u128 overflow).
 //!
 
+mod barcode;
 mod draw;
 pub(crate) mod text;
 
+use crate::bc;
 use crate::fonts::{font_data_from_ttf, FontData, FontProvider, FontSpec};
 use crate::ir::{Field, GraphicKind, Label, TextField};
 use crate::memory::Memory;
@@ -190,8 +192,10 @@ pub fn render(label: &Label, opts: &RenderOptions) -> Result<RenderOutcome, Rend
                     )),
                 }
             }
-            // Task 14 (barcodes): nothing painted yet.
-            Field::Barcode(_) => {}
+            Field::Barcode(b) => {
+                let pattern = bc::barcode_field(b);
+                barcode::paint(&mut bmp, b, &pattern, opts, &mut warnings);
+            }
             Field::Box(b) => {
                 let (fx, fy) = place(opts.mode, w, h, b.x, b.y, b.width, b.height);
                 draw_rect(&mut bmp, fx, fy, b.width, b.height, b.thickness, b.color);
@@ -244,19 +248,25 @@ pub fn render(label: &Label, opts: &RenderOptions) -> Result<RenderOutcome, Rend
     Ok(RenderOutcome { bitmap: bmp, warnings })
 }
 
-/// A text field's font request. `^A@` (`font_name` set - the parser strips
-/// the device) names a downloaded font; `^A0` keeps its identity through
-/// the raw byte so it resolves to the scalable default font rather than
-/// the metrically different `A`; everything else is a built-in Zebra font
-/// by its canonical letter.
-pub(crate) fn field_font_spec(t: &TextField) -> FontSpec {
-    if let Some(name) = &t.font_name {
+/// A font request from `^A`/`^A@` state. `^A@` (`font_name` set - the
+/// parser strips the device) names a downloaded font; `^A0` keeps its
+/// identity through the raw byte so it resolves to the scalable default
+/// font rather than the metrically different `A`; everything else is a
+/// built-in Zebra font by its canonical letter. Shared by text fields and
+/// the barcode interpret line (Task 14).
+pub(crate) fn font_spec(font: [u8; 2], font_name: &Option<String>) -> FontSpec {
+    if let Some(name) = font_name {
         FontSpec::Downloaded(name.clone())
-    } else if t.font == [b'A', b'0'] {
+    } else if font == [b'A', b'0'] {
         FontSpec::Zebra(b'0')
     } else {
-        FontSpec::Zebra(t.font[0])
+        FontSpec::Zebra(font[0])
     }
+}
+
+/// A text field's font request.
+pub(crate) fn field_font_spec(t: &TextField) -> FontSpec {
+    font_spec(t.font, &t.font_name)
 }
 
 /// Resolve a font request to concrete data. Downloaded fonts come from
@@ -313,7 +323,10 @@ fn footprint(field: &Field, opts: &RenderOptions) -> (Option<u32>, Option<u32>) 
             Some((y, h)) => (Some(y), Some(h)),
             None => (None, None),
         },
-        Field::Barcode(_) => (None, None),
+        // Barcode fields always print their bars (empty data aside); the
+        // footprint is (y, height) with the interpret line folded in.
+        Field::Barcode(b) => barcode::footprint(b, opts)
+            .map_or((None, None), |(y, h)| (Some(y), Some(h))),
     }
 }
 
