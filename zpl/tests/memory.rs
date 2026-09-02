@@ -79,8 +79,8 @@ fn dg_stores_and_xg_recalls() {
 }
 
 #[test]
-fn id_and_dn_prune() {
-    // ^ID with a '*' glob deletes matching names; ~DN clears all images.
+fn id_and_eg_prune() {
+    // ^ID with a '*' glob deletes matching names; ~EG erases all graphics.
     // `www` (images.len()) is truthful after each step.
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
@@ -95,9 +95,25 @@ fn id_and_dn_prune() {
         assert!(ctx.memory.images.contains_key("LOGO.GRF"));
         assert!(!ctx.memory.images.contains_key("OTHER.GRF"));
     }
-    let (_, ctx) = parse_ctx(b"~DNR:*.*^XA^XZ", &mut diags, &mut memory);
+    let (_, ctx) = parse_ctx(b"~EG^XA^XZ", &mut diags, &mut memory);
     assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
-    assert_eq!(ctx.memory.images.len(), 0, "~DN cleared the store (www=0)");
+    assert_eq!(ctx.memory.images.len(), 0, "~EG erased the store (www=0)");
+}
+
+#[test]
+fn dn_aborts_download_without_touching_images() {
+    // The guide defines ~DN as "Abort Download Graphic": it must NOT delete
+    // stored images (deletions go through ^ID / ~EG). `www` stays truthful.
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (_, ctx) = parse_ctx(
+        b"~DGR:LOGO.GRF,8,1,FF00000000000000~DNR:SAMPLE.GRF^XA^XZ",
+        &mut diags,
+        &mut memory,
+    );
+    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(ctx.memory.images.len(), 1, "~DN leaves stored images alone");
+    assert!(ctx.memory.images.contains_key("LOGO.GRF"));
 }
 
 #[test]
@@ -115,11 +131,29 @@ fn id_globs_across_stores() {
     assert!(ctx.memory.formats.contains_key("FMT.ZPL"), "formats survive *.GRF");
     assert!(ctx.memory.fonts.contains_key("ARIAL.TTF"), "fonts survive *.GRF");
 
-    let (_, ctx) = parse_ctx(b"^XA^IDR:FMT.ZPL^XZ~DNR:*.*", &mut diags, &mut memory);
+    let (_, ctx) = parse_ctx(b"^XA^IDR:FMT.ZPL^XZ~EG", &mut diags, &mut memory);
     assert!(!ctx.memory.formats.contains_key("FMT.ZPL"), "exact ^ID deletes the format");
-    // ~DN only touches images (the ~HS www count), not fonts/formats.
+    // ~EG erases graphics only (the ~HS www count), not fonts/formats.
     assert!(ctx.memory.fonts.contains_key("ARIAL.TTF"));
     assert_eq!(ctx.memory.images.len(), 0);
+}
+
+#[test]
+fn bare_id_defaults_to_unknown() {
+    // A name-less ^ID targets the UNKNOWN default object (guide p.245) and
+    // is accepted silently; an explicit UNKNOWN.* glob deletes it.
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (_, ctx) = parse_ctx(
+        b"~DGR:UNKNOWN.GRF,8,1,FF00000000000000^XA^ID^XZ",
+        &mut diags,
+        &mut memory,
+    );
+    assert_eq!(ctx.diags.items.len(), 0, "bare ^ID must not warn");
+    assert_eq!(ctx.memory.images.len(), 1, "pattern UNKNOWN does not match UNKNOWN.GRF");
+
+    let (_, ctx) = parse_ctx(b"^XA^IDR:UNKNOWN.*^XZ", &mut diags, &mut memory);
+    assert_eq!(ctx.memory.images.len(), 0, "UNKNOWN.* glob reaches the default image");
 }
 
 #[test]
@@ -195,7 +229,21 @@ fn aa_selects_downloaded_font() {
     assert_eq!(t.rotation, Rotation::R0);
     assert_eq!((t.font_height, t.font_width), (50, 50));
 
-    // Rotated form (^A@R) and no-name form (keeps default font).
+    // Carry-over (guide ^A@, main example): a name-less ^A@ keeps the last
+    // named font and applies its own orientation/size (R here).
+    let (label, ctx) = parse_ctx(
+        b"~DYE:FONTFILE.TTF,A,T,4,0,00FF00FF^XA^FO10,10^A@N,50,50,E:FONTFILE.TTF^FDHi^FS^FO10,60^A@R,40,40^FDx^FS^XZ",
+        &mut diags,
+        &mut memory,
+    );
+    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(label.fields.len(), 2);
+    let carried = text_field(&label, 1);
+    assert_eq!(carried.font_name.as_deref(), Some("FONTFILE.TTF"), "^A@ carries the named font");
+    assert_eq!(carried.rotation, Rotation::R90);
+    assert_eq!((carried.font_height, carried.font_width), (40, 40));
+
+    // Before any name is given, a name-less ^A@ keeps the ^CF default.
     let (label, ctx) = parse_ctx(b"^XA^FO10,10^A@R,40,40^FDx^FS^XZ", &mut diags, &mut memory);
     assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
     let t = text_field(&label, 0);

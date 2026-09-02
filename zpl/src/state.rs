@@ -55,6 +55,10 @@ pub struct PrinterMode {
     pub code_page: u8,
     /// `^CW` font assignments: character -> stored font name.
     pub font_assignments: BTreeMap<u8, String>,
+    /// `^A@` last named downloaded font; a later name-less `^A@` carries it
+    /// over (guide ^A@: "The font named carries over on all subsequent ^A@
+    /// commands without a font name").
+    pub downloaded_font: Option<String>,
     /// `^FC` Real-Time Clock indicator characters (primary power-up: `%`).
     pub clock_indicators: [u8; 3],
 }
@@ -77,6 +81,7 @@ impl Default for PrinterMode {
             fw_rotation: Rotation::R0,
             code_page: 0,
             font_assignments: BTreeMap::new(),
+            downloaded_font: None,
             clock_indicators: [b'%', 0, 0],
         }
     }

@@ -352,8 +352,10 @@ pub(crate) fn select_font(ctx: &mut ParseContext, params: &[u8]) {
 /// `^A@o,h,w,d:f.x` - call a stored font by name (guide p.62), e.g.
 /// `^A@N,50,50,E:CYRI_UB.FNT`. The orientation/size parameters behave like
 /// `^A`'s; the font name (device stripped) is recorded on the field as
-/// `TextField.font_name` (Task 11 maps it to `FontSpec::Downloaded`). A
-/// missing name keeps the `^CF` default.
+/// `TextField.font_name` (Task 11 maps it to `FontSpec::Downloaded`).
+/// A name-less `^A@` carries over the last named font (guide: "The font
+/// named carries over on all subsequent ^A@ commands without a font name");
+/// before any name was given it keeps the `^CF` default.
 fn select_downloaded_font(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
     let orientation = parts
@@ -365,12 +367,19 @@ fn select_downloaded_font(ctx: &mut ParseContext, params: &[u8]) {
         .flatten();
     let h = parse_size(parts.get(1).copied(), "A@", "height", ctx.diags, ctx.mode.default_font_h);
     let w = parse_size(parts.get(2).copied(), "A@", "width", ctx.diags, ctx.mode.default_font_w);
-    let name = parts
+    let named = parts
         .get(3)
         .copied()
         .map(crate::memory::strip_device)
         .filter(|p| !p.is_empty())
         .map(|p| String::from_utf8_lossy(p).into_owned());
+    let name = match named {
+        Some(n) => {
+            ctx.mode.downloaded_font = Some(n.clone());
+            Some(n)
+        }
+        None => ctx.mode.downloaded_font.clone(),
+    };
     if let Some(d) = draft_mut(ctx) {
         if let Some(r) = orientation {
             d.rotation = r;

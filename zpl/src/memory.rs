@@ -199,22 +199,44 @@ fn decode_graphic_data(data: &[u8], t: usize, w: usize) -> Option<Vec<u8>> {
             b';' => break,
             b',' | b'!' | b':' => {
                 if hi.is_some() {
-                    return None; // row op splits a byte
+                    // Guide p.1762 shorthand: a trailing run of an ODD
+                    // number of zeros is written "one zero and a single
+                    // comma" - the comma closes the dangling 0 nibble into
+                    // a 0x00 byte before filling the row. Any other
+                    // dangling nibble (or `!`/`:` there) is malformed.
+                    if c == b',' && hi == Some(0) {
+                        out.push(0x00);
+                        hi = None;
+                    } else {
+                        return None;
+                    }
                 }
-                let p = out.len() % w;
-                match c {
-                    b',' => extend_fill(&mut out, t, w - p, 0x00)?,
-                    b'!' => extend_fill(&mut out, t, w - p, 0xFF)?,
+                let fill = match c {
+                    b',' => 0x00,
+                    b'!' => 0xFF,
                     _ => {
-                        if p != 0 || out.len() < w {
-                            return None; // ':' needs a full previous row
+                        // ':' repeats the previous full row (row start only).
+                        if out.len() % w != 0 || out.len() < w {
+                            return None;
                         }
                         let prev = out.len() - w;
                         if out.len() + w > t {
                             return None;
                         }
                         out.extend_from_within(prev..prev + w);
+                        i += 1;
+                        continue;
                     }
+                };
+                // Row fill: zeros/ones to the end of the current row, never
+                // past the declared size (a row already complete at `t` -
+                // the nibble-close case - fills nothing).
+                if out.len() != t {
+                    let n = w - (out.len() % w);
+                    if out.len() + n > t {
+                        return None;
+                    }
+                    out.extend(std::iter::repeat(fill).take(n));
                 }
                 i += 1;
             }
@@ -265,14 +287,6 @@ fn decode_graphic_data(data: &[u8], t: usize, w: usize) -> Option<Vec<u8>> {
         return None; // odd nibble count
     }
     (out.len() == t).then_some(out)
-}
-
-fn extend_fill(out: &mut Vec<u8>, t: usize, n: usize, value: u8) -> Option<()> {
-    if n == 0 || out.len() + n > t {
-        return None; // row-fill would overshoot the declared size
-    }
-    out.extend(std::iter::repeat(value).take(n));
-    Some(())
 }
 
 /// Compression repeat-count letter -> count (guide p.1761): `G`..`Y` =
@@ -375,11 +389,10 @@ fn graphic_draft(mode: &PrinterMode, kind: GraphicKind) -> FieldDraft {
 /// images, fonts and formats stores. A pattern matching nothing is ignored
 /// (guide: the command is ignored when the object is not found).
 pub(crate) fn delete_object(ctx: &mut ParseContext, params: &[u8]) {
-    let pat = strip_device(params);
-    if pat.is_empty() {
-        ctx.diags.push(Diagnostic::warning("ID", "missing object name; nothing deleted"));
-        return;
-    }
+    // A name-less ^ID deletes the object stored under the UNKNOWN default
+    // (guide ^ID: "Default: if a name is not specified, UNKNOWN is used").
+    let stripped = strip_device(params);
+    let pat: &[u8] = if stripped.is_empty() { b"UNKNOWN" } else { stripped };
     ctx.memory.images.retain(|k, _| !glob_match(pat, k.as_bytes()));
     ctx.memory.fonts.retain(|k, _| !glob_match(pat, k.as_bytes()));
     ctx.memory.formats.retain(|k, _| !glob_match(pat, k.as_bytes()));
@@ -417,10 +430,15 @@ pub(crate) fn erase_graphics(ctx: &mut ParseContext, _params: &[u8]) {
     ctx.memory.images.clear();
 }
 
-/// `~DN` - clear the ~DG graphics mode (guide p.177; the plan's pruning
-/// command): every stored image is dropped, `www` returns to 0.
-pub(crate) fn abort_download(ctx: &mut ParseContext, _params: &[u8]) {
-    ctx.memory.images.clear();
+/// `~DN` - Abort Download Graphic (guide p.177): abort an in-progress ~DG
+/// transmission and return the printer to Print Mode. The guide's intent
+/// (per controller ruling) is that ~DN does NOT delete stored images -
+/// deletions go through ^ID / ~EG. In this tokenized parse model a ~DG
+/// payload arrives in a single command token, so there is nothing mid-flight
+/// to abort; the call is a deliberate no-op that leaves `Memory.images`
+/// untouched (`www` stays truthful).
+pub(crate) fn abort_download(_ctx: &mut ParseContext, _params: &[u8]) {
+    // no-op: nothing to abort in a tokenized ~DG model
 }
 
 /// `~DYd:f,b,x,t,w,data` - download an object (guide p.181): a font or
@@ -625,6 +643,15 @@ mod tests {
         // ';' terminates; trailing CR/LF are ignored.
         let term = decode_graphic_data(b"FF;\n", 1, 1).expect("terminator decode");
         assert_eq!(term, vec![0xFF]);
+        // Guide p.1762: an odd trailing zero is sent "one zero and a single
+        // comma" - `FFFF0,` closes the dangling 0 into a 0x00 byte and then
+        // fills the row to the declared size.
+        let oddzero = decode_graphic_data(b"FFFF0,", 3, 1).expect("odd-zero comma decodes");
+        assert_eq!(oddzero, vec![0xFF, 0xFF, 0x00]);
+        let oddzero_midrow = decode_graphic_data(b"FFFF0,", 4, 2).expect("odd-zero comma fills the row");
+        assert_eq!(oddzero_midrow, vec![0xFF, 0xFF, 0x00, 0x00]);
+        // A dangling NON-zero nibble before the comma is malformed.
+        assert!(decode_graphic_data(b"F,", 2, 1).is_none());
         // Malformed: odd nibble count, bad repeat digit, mid-byte ':'.
         assert!(decode_graphic_data(b"M6", 3, 1).is_none());
         assert!(decode_graphic_data(b"M", 1, 1).is_none());
