@@ -1,15 +1,14 @@
-//! Parser state: printer mode, memory stub, and the format state machine.
+//! Parser state: printer mode, storage memory, and the format state
+//! machine.
 
 use std::collections::BTreeMap;
 
 use crate::diag::Diagnostics;
-use crate::ir::{BarcodeField, Field, Label, OriginMode, Rotation, TextBlock, TextField};
+use crate::ir::{
+    BarcodeField, Field, GraphicField, GraphicKind, Label, OriginMode, Rotation, TextBlock, TextField,
+};
 
-/// Placeholder for stored images/fonts/formats memory; the real model lands
-/// in Task 7.
-// TODO(T7): replace with BTreeMap-backed Memory (images/fonts/formats).
-#[derive(Default)]
-pub struct Memory {}
+pub use crate::memory::{Image, Memory};
 
 /// Printer-wide geometry and text configuration, all defaults per the ZPL II
 /// guide's power-up tables (Task 6 verified them against the guide; see the
@@ -136,6 +135,15 @@ pub struct FieldDraft {
     pub data: Vec<u8>,
     pub block: Option<TextBlock>,
     pub symbology: Option<u8>,
+    /// `^XG`/`^IM`/`^IL`: the field recalls a stored graphic instead of
+    /// carrying text/barcode data.
+    pub graphic: Option<GraphicKind>,
+    /// `^A@`: the selected stored (downloaded) font name, or `None` for the
+    /// built-in `^CF` default. Task 11 maps it to `FontSpec::Downloaded`.
+    pub font_name: Option<String>,
+    /// `^GS`: the field prints a built-in graphic symbol ((C) (R) (TM) ...) from
+    /// its `^FD` character instead of a text glyph.
+    pub symbol: bool,
     /// `^FH` hex indicator while escapes are enabled for this field.
     pub hex: Option<u8>,
     /// `^FV` variable field: re-evaluated per copy.
@@ -194,19 +202,22 @@ impl FormatState {
     }
 
     /// ^FS: close an open field into the format's draft list, or finish a
-    /// ^DF download. No-op anywhere else.
-    pub(crate) fn end_field(&mut self) {
+    /// ^DF download - returning the captured bytes so the caller (cmd.rs)
+    /// can store them in `Memory.formats`. No-op anywhere else.
+    pub(crate) fn end_field(&mut self) -> Option<(String, Vec<u8>)> {
         let next = match core::mem::take(self) {
             Self::Field { draft, mut fields } => {
                 fields.push(draft);
                 Self::InFormat { fields }
             }
-            // ponytail: captured bytes are dropped until Task 7's Memory
-            // model gives them a home (formats map).
-            Self::DefFormat { .. } => Self::Outside,
+            Self::DefFormat { name, buf } => {
+                *self = Self::Outside;
+                return Some((name, buf));
+            }
             other => other,
         };
         *self = next;
+        None
     }
 
     /// ^DF (params = stored-format name): enter download capture.
@@ -241,6 +252,9 @@ impl FieldDraft {
             data: Vec::new(),
             block: None,
             symbology: None,
+            graphic: None,
+            font_name: None,
+            symbol: false,
             hex: None,
             re_eval: false,
             raw: Vec::new(),
@@ -256,31 +270,44 @@ impl FieldDraft {
         // Latin-1 until Task 12 applies the ^CI code page; bytes were
         // accumulated verbatim with ^FH escapes already expanded.
         let data: String = self.data.iter().map(|&b| b as char).collect();
-        match self.symbology {
-            Some(symbology) => Field::Barcode(BarcodeField {
+        match self.graphic {
+            // Stored-image recall (^XG/^IM/^IL): the renderer (Task 10)
+            // resolves the bytes from Memory.images by name.
+            Some(kind) => Field::Graphic(GraphicField {
                 x: self.x,
                 y: self.y,
-                symbology,
-                data,
-                // ponytail: ^BY defaults (module 2, height 10, line 1) until Task 9.
-                module: 2,
-                height: 10,
-                line: 1,
-                rotation: self.rotation,
+                kind,
+                data: Vec::new(),
+                bytes_per_row: 0,
             }),
-            None => Field::Text(TextField {
-                x: self.x,
-                y: self.y,
-                origin: self.origin,
-                rotation: self.rotation,
-                font: self.font,
-                font_height: self.font_height,
-                font_width: self.font_width,
-                reverse: self.reverse,
-                block: self.block,
-                data,
-                re_eval: self.re_eval,
-            }),
+            None => match self.symbology {
+                Some(symbology) => Field::Barcode(BarcodeField {
+                    x: self.x,
+                    y: self.y,
+                    symbology,
+                    data,
+                    // ponytail: ^BY defaults (module 2, height 10, line 1) until Task 9.
+                    module: 2,
+                    height: 10,
+                    line: 1,
+                    rotation: self.rotation,
+                }),
+                None => Field::Text(TextField {
+                    x: self.x,
+                    y: self.y,
+                    origin: self.origin,
+                    rotation: self.rotation,
+                    font: self.font,
+                    font_height: self.font_height,
+                    font_width: self.font_width,
+                    reverse: self.reverse,
+                    block: self.block,
+                    data,
+                    font_name: self.font_name,
+                    symbol: self.symbol,
+                    re_eval: self.re_eval,
+                }),
+            },
         }
     }
 }
@@ -295,6 +322,9 @@ pub struct ParseContext<'a> {
     pub config: PrinterConfig,
     /// The most recently completed label (^XZ), for the protocol layer.
     pub pending_label: Option<Label>,
+    /// Active ^XF stored-format recall depth (recursion cap 4; see
+    /// memory.rs `recall_format`).
+    pub recall_depth: u32,
 }
 
 impl<'a> ParseContext<'a> {
@@ -306,6 +336,7 @@ impl<'a> ParseContext<'a> {
             mode: PrinterMode::default(),
             config: PrinterConfig::default(),
             pending_label: None,
+            recall_depth: 0,
         }
     }
 }

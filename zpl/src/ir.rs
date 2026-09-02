@@ -51,6 +51,13 @@ pub struct TextField {
     pub reverse: bool,
     pub block: Option<TextBlock>,
     pub data: String,
+    /// `^A@`: the stored (downloaded) font this field prints with, or `None`
+    /// for the built-in `^CF` default font. Task 11 maps it to
+    /// `FontSpec::Downloaded`.
+    pub font_name: Option<String>,
+    /// `^GS`: the field prints a built-in graphic symbol ((C) (R) (TM) ... picked by
+    /// the `^FD` character) instead of a text glyph.
+    pub symbol: bool,
     /// `^FV` variable field: re-evaluated per copy.
     pub re_eval: bool,
 }
@@ -139,6 +146,8 @@ mod tests {
                         justification: Justification::Right,
                     }),
                     data: "Hello, ZPL".into(),
+                    font_name: Some("E:FONTFILE.TTF".into()),
+                    symbol: false,
                     re_eval: true,
                 }),
                 Field::Text(TextField {
@@ -152,6 +161,8 @@ mod tests {
                     reverse: false,
                     block: None,
                     data: "no block".into(),
+                    font_name: None,
+                    symbol: true, // ^GS symbol font
                     re_eval: false,
                 }),
                 Field::Barcode(BarcodeField {

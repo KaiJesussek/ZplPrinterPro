@@ -2,6 +2,7 @@
 
 use crate::config;
 use crate::diag::Diagnostic;
+use crate::memory;
 use crate::scanner::{Cmd, Scanner, Token};
 use crate::state::{FormatState, ParseContext};
 use crate::textfmt;
@@ -38,20 +39,48 @@ pub struct CommandSpec {
 }
 
 fn start_format(ctx: &mut ParseContext, _params: &[u8]) {
+    // A stored format being re-executed (^XF) must not open a nested label.
+    if ctx.recall_depth > 0 {
+        ctx.diags.push(Diagnostic::warning(
+            "XA",
+            "stored format contains ^XA; ignored (recall is inline)",
+        ));
+        return;
+    }
     ctx.state.start_format();
 }
 
 fn end_format(ctx: &mut ParseContext, _params: &[u8]) {
+    if ctx.recall_depth > 0 {
+        ctx.diags.push(Diagnostic::warning(
+            "XZ",
+            "stored format contains ^XZ; ignored (recall is inline)",
+        ));
+        return;
+    }
     if let Some(label) = ctx.state.end_format(&ctx.mode) {
         ctx.pending_label = Some(label);
     }
 }
 
 fn end_field(ctx: &mut ParseContext, _params: &[u8]) {
-    ctx.state.end_field();
+    // An open field closes into its format; a ^DF download hands its
+    // captured bytes over to Memory.formats.
+    if let Some((name, bytes)) = ctx.state.end_field() {
+        ctx.memory.formats.insert(memory::format_name(name.as_bytes()), bytes);
+    }
 }
 
 fn start_download(ctx: &mut ParseContext, params: &[u8]) {
+    // A stored format executing inline must not start a nested ^DF capture:
+    // it would swallow the rest of the outer stream.
+    if ctx.recall_depth > 0 {
+        ctx.diags.push(Diagnostic::warning(
+            "DF",
+            "stored format contains ^DF; ignored (recall is inline)",
+        ));
+        return;
+    }
     ctx.state.start_download(params);
 }
 
@@ -61,6 +90,23 @@ const TABLE: &[CommandSpec] = &[
     CommandSpec { mnemonic: *b"XZ", prefix: Prefix::Caret, kind: CmdKind::Format, handler: end_format },
     CommandSpec { mnemonic: *b"FS", prefix: Prefix::Caret, kind: CmdKind::Format, handler: end_field },
     CommandSpec { mnemonic: *b"DF", prefix: Prefix::Caret, kind: CmdKind::Format, handler: start_download },
+    // Task 7: printer storage. ^DF is the download half of this family (its
+    // ^FS ends the capture and stores the bytes); the tilde operations run
+    // any time; ^ID/^XG/^XF/^IL/^IM/^IS/^GS act on or inside a format.
+    CommandSpec { mnemonic: *b"XF", prefix: Prefix::Caret, kind: CmdKind::Format, handler: memory::recall_format },
+    CommandSpec { mnemonic: *b"XG", prefix: Prefix::Caret, kind: CmdKind::Format, handler: memory::recall_graphic },
+    CommandSpec { mnemonic: *b"ID", prefix: Prefix::Caret, kind: CmdKind::Format, handler: memory::delete_object },
+    CommandSpec { mnemonic: *b"IL", prefix: Prefix::Caret, kind: CmdKind::Format, handler: memory::image_load },
+    CommandSpec { mnemonic: *b"IM", prefix: Prefix::Caret, kind: CmdKind::Format, handler: memory::image_move },
+    CommandSpec { mnemonic: *b"IS", prefix: Prefix::Caret, kind: CmdKind::Format, handler: memory::image_save },
+    CommandSpec { mnemonic: *b"GS", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::graphic_symbol },
+    CommandSpec { mnemonic: *b"DG", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: memory::download_graphic },
+    CommandSpec { mnemonic: *b"DY", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: memory::download_object },
+    CommandSpec { mnemonic: *b"DS", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: memory::download_scalable_font },
+    CommandSpec { mnemonic: *b"DT", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: memory::download_bounded_font },
+    CommandSpec { mnemonic: *b"DU", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: memory::download_unbounded_font },
+    CommandSpec { mnemonic: *b"EG", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: memory::erase_graphics },
+    CommandSpec { mnemonic: *b"DN", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: memory::abort_download },
     // Task 5: text-field command set. The ^A mnemonic is single-letter, so
     // the scanner pads it to [A, space].
     CommandSpec { mnemonic: *b"FO", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::field_origin },
@@ -231,6 +277,9 @@ mod tests {
                 data: b"hello".to_vec(),
                 block: None,
                 symbology: None,
+                graphic: None,
+                font_name: None,
+                symbol: false,
                 hex: None,
                 re_eval: false,
                 raw: b"^FDhello".to_vec(),

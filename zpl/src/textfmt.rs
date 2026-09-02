@@ -19,10 +19,35 @@ pub(crate) fn split_commas(params: &[u8]) -> Vec<&[u8]> {
 }
 
 /// Strip ASCII whitespace from both ends of a parameter segment.
-fn trim_ws(p: &[u8]) -> &[u8] {
+pub(crate) fn trim_ws(p: &[u8]) -> &[u8] {
     let start = p.iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(p.len());
     let end = p.iter().rposition(|b| !b.is_ascii_whitespace()).map_or(start, |i| i + 1);
     &p[start..end]
+}
+
+/// Split params into the first `n` comma-separated segments (whitespace
+/// trimmed) plus the raw remainder - which keeps its commas. Storage
+/// commands (`~DG`) put graphic data after the header segments, and that
+/// data legitimately contains `,` (and `!`/`:`) compression characters, so
+/// it must not go through [`split_commas`].
+pub(crate) fn head_segments(params: &[u8], n: usize) -> (Vec<&[u8]>, &[u8]) {
+    let mut segs = Vec::with_capacity(n);
+    let mut start = 0;
+    let mut count = 0;
+    for (i, &b) in params.iter().enumerate() {
+        if b != b',' {
+            continue;
+        }
+        if count + 1 == n {
+            segs.push(trim_ws(&params[start..i]));
+            return (segs, &params[i + 1..]);
+        }
+        segs.push(trim_ws(&params[start..i]));
+        start = i + 1;
+        count += 1;
+    }
+    segs.push(trim_ws(&params[start..]));
+    (segs, &[])
 }
 
 /// Parse a decimal unsigned parameter; `None` for empty or malformed input.
@@ -107,8 +132,9 @@ fn ensure_field(ctx: &mut ParseContext) -> bool {
 }
 
 /// Mutable handle to the open field draft, creating a default-positioned one
-/// on the first field command of a format.
-fn draft_mut<'ctx>(ctx: &'ctx mut ParseContext<'_>) -> Option<&'ctx mut FieldDraft> {
+/// on the first field command of a format. Shared with the storage handlers
+/// (^XG/^IM in memory.rs), which recall graphics into the open field.
+pub(crate) fn draft_mut<'ctx>(ctx: &'ctx mut ParseContext<'_>) -> Option<&'ctx mut FieldDraft> {
     ensure_field(ctx);
     match &mut ctx.state {
         FormatState::Field { draft, .. } => Some(draft),
@@ -250,7 +276,7 @@ fn parse_justification(p: &[u8], diags: &mut Diagnostics) -> Justification {
 /// Parse an `^A`/`^CF` size parameter: explicit values (0 allowed, meaning
 /// "standard font matrix" per the guide) are used; missing segments fall
 /// back to the current printer default; garbage warns and falls back too.
-fn parse_size(
+pub(crate) fn parse_size(
     seg: Option<&[u8]>,
     cmd: &str,
     name: &str,
@@ -281,6 +307,11 @@ fn parse_size(
 /// (N/R/I/B per the guide); h/w default to the last ^CF values (9/5 at
 /// power-up), an explicit 0 keeps the standard font matrix.
 pub(crate) fn select_font(ctx: &mut ParseContext, params: &[u8]) {
+    // ^A@ (params start with `@`) selects a stored font by name instead of
+    // a ^A character.
+    if params.first() == Some(&b'@') {
+        return select_downloaded_font(ctx, params);
+    }
     // Params run `f[,o],h,w`: f is the first char of the first comma segment;
     // an optional orientation letter is the second char of that segment.
     let parts = split_commas(params);
@@ -311,6 +342,61 @@ pub(crate) fn select_font(ctx: &mut ParseContext, params: &[u8]) {
     if let Some(d) = draft_mut(ctx) {
         d.font = font;
         if let Some(r) = orientation {
+            d.rotation = r;
+        }
+        d.font_height = h;
+        d.font_width = w;
+    }
+}
+
+/// `^A@o,h,w,d:f.x` - call a stored font by name (guide p.62), e.g.
+/// `^A@N,50,50,E:CYRI_UB.FNT`. The orientation/size parameters behave like
+/// `^A`'s; the font name (device stripped) is recorded on the field as
+/// `TextField.font_name` (Task 11 maps it to `FontSpec::Downloaded`). A
+/// missing name keeps the `^CF` default.
+fn select_downloaded_font(ctx: &mut ParseContext, params: &[u8]) {
+    let parts = split_commas(params);
+    let orientation = parts
+        .first()
+        .and_then(|p| p.get(1))
+        .copied()
+        .filter(|o| matches!(o, b'N' | b'n' | b'R' | b'r' | b'I' | b'i' | b'B' | b'b'))
+        .map(|o| parse_rotation(&[o]))
+        .flatten();
+    let h = parse_size(parts.get(1).copied(), "A@", "height", ctx.diags, ctx.mode.default_font_h);
+    let w = parse_size(parts.get(2).copied(), "A@", "width", ctx.diags, ctx.mode.default_font_w);
+    let name = parts
+        .get(3)
+        .copied()
+        .map(crate::memory::strip_device)
+        .filter(|p| !p.is_empty())
+        .map(|p| String::from_utf8_lossy(p).into_owned());
+    if let Some(d) = draft_mut(ctx) {
+        if let Some(r) = orientation {
+            d.rotation = r;
+        }
+        d.font_height = h;
+        d.font_width = w;
+        d.font_name = name;
+    }
+}
+
+/// `^GSo,h,w` - graphic symbol (guide p.217): the field prints one of the
+/// built-in symbols ((C) (R) (TM) ... selected by the `^FD` character A-E) instead
+/// of a text glyph. Orientation/size behave like `^A`'s.
+pub(crate) fn graphic_symbol(ctx: &mut ParseContext, params: &[u8]) {
+    let parts = split_commas(params);
+    let rotation = parts
+        .first()
+        .and_then(|p| p.first())
+        .copied()
+        .map(|o| parse_rotation(&[o]))
+        .flatten();
+    let h = parse_size(parts.get(1).copied(), "GS", "height", ctx.diags, ctx.mode.default_font_h);
+    let w = parse_size(parts.get(2).copied(), "GS", "width", ctx.diags, ctx.mode.default_font_w);
+    if let Some(d) = draft_mut(ctx) {
+        d.symbol = true;
+        if let Some(r) = rotation {
             d.rotation = r;
         }
         d.font_height = h;

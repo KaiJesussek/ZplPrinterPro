@@ -8,6 +8,8 @@ use zpl::state::{Memory, ParseContext};
 
 /// Parse a complete ZPL format and return the finished label plus any
 /// diagnostics collected along the way. Panics if no `^XZ` closed a format.
+/// (Only the `parse.rs` test binary uses this helper; others share the file.)
+#[allow(dead_code)]
 pub fn parse_one(src: &[u8]) -> (Label, Diagnostics) {
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();

@@ -46,6 +46,18 @@ impl Diagnostic {
             offset: 0,
         }
     }
+
+    /// A command whose syntax is parsed and validated but whose action needs
+    /// machinery a later task provides (e.g. `^IS` rasterization). The
+    /// command is acknowledged, not silently dropped.
+    pub fn not_supported(command: &str, message: impl Into<String>) -> Self {
+        Diagnostic {
+            severity: Severity::NotSupported,
+            command: command.to_owned(),
+            message: message.into(),
+            offset: 0,
+        }
+    }
 }
 
 /// A collection of diagnostics from parsing a format.
