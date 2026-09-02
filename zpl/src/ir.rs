@@ -105,3 +105,80 @@ pub enum GraphicKind {
     Inline,
     Stored(String),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serde_round_trip_round_trips_every_field_variant() {
+        let label = Label {
+            width_dots: 400,
+            height_dots: 200,
+            copies: 2,
+            fields: vec![
+                Field::Text(TextField {
+                    x: 10,
+                    y: 20,
+                    origin: OriginMode::Dot,
+                    rotation: Rotation::R270,
+                    font: [b'A', b'0'],
+                    reverse: true,
+                    block: Some(TextBlock {
+                        width: 150,
+                        max_lines: 3,
+                        line_spacing: 4,
+                        justification: Justification::Right,
+                    }),
+                    data: "Hello, ZPL".into(),
+                }),
+                Field::Text(TextField {
+                    x: 10,
+                    y: 60,
+                    origin: OriginMode::Block,
+                    rotation: Rotation::R0,
+                    font: [b'0', b'1'],
+                    reverse: false,
+                    block: None,
+                    data: "no block".into(),
+                }),
+                Field::Barcode(BarcodeField {
+                    x: 10,
+                    y: 100,
+                    symbology: b'C',
+                    data: "123456".into(),
+                    module: 2,
+                    height: 50,
+                    line: 0,
+                    rotation: Rotation::R180,
+                }),
+                Field::Box(BoxField {
+                    x: 5,
+                    y: 5,
+                    width: 390,
+                    height: 190,
+                    thickness: 3,
+                    color: 7,
+                }),
+                Field::Graphic(GraphicField {
+                    x: 100,
+                    y: 100,
+                    kind: GraphicKind::Inline,
+                    data: vec![0b1010_1010, 0b1111_0000],
+                    bytes_per_row: 1,
+                }),
+                Field::Graphic(GraphicField {
+                    x: 200,
+                    y: 100,
+                    kind: GraphicKind::Stored("logo.grf".into()),
+                    data: vec![0xFF, 0x00],
+                    bytes_per_row: 2,
+                }),
+            ],
+        };
+
+        let json = serde_json::to_vec(&label).expect("serialize label");
+        let decoded: Label = serde_json::from_slice(&json).expect("deserialize label");
+        assert_eq!(label, decoded);
+    }
+}
