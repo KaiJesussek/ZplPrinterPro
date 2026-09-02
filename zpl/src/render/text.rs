@@ -178,7 +178,13 @@ fn wrap_words(data: &str, wrap_w: u64, adv: &Advancer<'_>, max_lines: u32) -> Ve
             cur.extend(word.chars());
             cur_w += word_w;
         } else {
-            flush(&mut lines, &mut cur, &mut cur_w);
+            // Only a non-empty line ends here; an empty `cur` must not
+            // become a leading blank line (default max_lines=1 would then
+            // drop all of an over-wide opening word). The at-least-one-line
+            // guarantee belongs to the final flush below.
+            if !cur.is_empty() {
+                flush(&mut lines, &mut cur, &mut cur_w);
+            }
             if capped(&lines) {
                 break;
             }
@@ -273,10 +279,22 @@ fn layout(t: &TextField, m: &FontMetrics, dpi: u32) -> Option<FieldLayout> {
 /// origin for `^FT` (block grows up from the baseline).
 fn extents(t: &TextField, l: &FieldLayout) -> (i64, u64, u64) {
     let block_h = l.block_height();
+    let last_pitch = (l.lines.len() as u64 - 1) * l.pitch;
     match t.rotation {
-        Rotation::R0 | Rotation::R180 => {
+        Rotation::R0 => {
             let y = if t.origin == OriginMode::Dot {
-                t.y as i64 - (l.baseline + (l.lines.len() as u64 - 1) * l.pitch) as i64
+                t.y as i64 - (l.baseline + last_pitch) as i64
+            } else {
+                t.y as i64
+            };
+            (y, l.box_right, block_h)
+        }
+        Rotation::R180 => {
+            // R180 ^FT mirrors the block so the baseline point sits at the
+            // origin: content spans [baseline - cell + 1, last_pitch +
+            // baseline) - BELOW the origin, not above it like R0.
+            let y = if t.origin == OriginMode::Dot {
+                t.y as i64 + l.baseline as i64 - l.cell as i64 + 1
             } else {
                 t.y as i64
             };
@@ -359,8 +377,12 @@ pub(crate) fn paint_text(
         .map(|c| adv.dots(*c) as i64)
         .unwrap_or(0);
 
+    // `^FT` R270 measures its baseline re-anchor from the last line's
+    // first character advance; the shrink term is that advance minus one
+    // (the advance column's last row).
+    let ft_adv = first_adv.saturating_sub(1);
     if t.reverse {
-        paint_reverse_box(bmp, ox, oy, &l, t);
+        paint_reverse_box(bmp, ox, oy, &l, t, ft_adv);
     }
 
     let glyph_black = !t.reverse; // reverse: white glyphs on the black box
@@ -389,7 +411,7 @@ pub(crate) fn paint_text(
                     l.box_right as i64,
                     l.block_h as i64,
                     last_pitch,
-                    first_adv,
+                    ft_adv,
                     glyph_black,
                 );
             }
@@ -400,24 +422,39 @@ pub(crate) fn paint_text(
 
 /// Fill the field's layout rectangle black (reverse video background),
 /// in rotated space.
-fn paint_reverse_box(bmp: &mut Bitmap, ox: i64, oy: i64, l: &FieldLayout, t: &TextField) {
+fn paint_reverse_box(
+    bmp: &mut Bitmap,
+    ox: i64,
+    oy: i64,
+    l: &FieldLayout,
+    t: &TextField,
+    ft_adv: i64,
+) {
     let box_w = (l.box_right - l.box_left) as i64;
     let n_lines = l.lines.len() as i64;
     let block_w = (n_lines - 1) * l.pitch as i64 + l.cell as i64;
-    let baseline_off = l.baseline as i64 + (n_lines - 1) * l.pitch as i64;
+    let baseline = l.baseline as i64;
+    let cell = l.cell as i64;
+    let last_pitch = (n_lines - 1) * l.pitch as i64;
+    // Box coordinates relative to the origin; the Dot arms use the same
+    // rotated re-anchor as `rotate_point` (the last line's baseline point
+    // lands on the origin).
     let (x, y, w, h) = match (t.rotation, t.origin) {
-        (Rotation::R0, _) => (l.box_left as i64, 0, box_w, l.block_h as i64),
+        (Rotation::R0, OriginMode::Block) => (l.box_left as i64, 0, box_w, l.block_h as i64),
+        (Rotation::R0, OriginMode::Dot) => {
+            (l.box_left as i64, -(baseline + last_pitch), box_w, l.block_h as i64)
+        }
         (Rotation::R90, OriginMode::Block) => (0, l.box_left as i64, block_w, box_w),
         (Rotation::R90, OriginMode::Dot) => {
-            (l.baseline as i64 - l.cell as i64 + 1, l.box_left as i64, block_w, box_w)
+            (baseline - last_pitch - cell + 1, l.box_left as i64, block_w, box_w)
         }
         (Rotation::R180, OriginMode::Block) => (0, 0, box_w, l.block_h as i64),
         (Rotation::R180, OriginMode::Dot) => {
-            (-(l.box_right as i64), -baseline_off, box_w, l.block_h as i64)
+            (-(l.box_right as i64 - 1), baseline - cell + 1, box_w, l.block_h as i64)
         }
         (Rotation::R270, OriginMode::Block) => (0, l.box_left as i64, block_w, box_w),
         (Rotation::R270, OriginMode::Dot) => {
-            (-baseline_off, l.box_left as i64, block_w, box_w)
+            (-(baseline + last_pitch), l.box_left as i64 - ft_adv, block_w, box_w)
         }
     };
     fill_rect(bmp, ox + x, oy + y, w, h, b'B');
@@ -512,6 +549,8 @@ fn paint_glyph(
     box_right: i64,
     block_h: i64,
     last_pitch: i64,
+    // `^FT` R270 baseline re-anchor shrink: last line's first char
+    // advance minus one.
     first_adv: i64,
     black: bool,
 ) {

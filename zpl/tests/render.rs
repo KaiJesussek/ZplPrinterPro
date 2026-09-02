@@ -693,3 +693,138 @@ fn hostile_text_never_panics() {
     // assert the bitmap is still coherent (deterministic pixel reads).
     assert!((0..64).all(|y| (0..64).all(|x| !out.bitmap.get(x, y) || out.bitmap.get(x, y))));
 }
+
+// ---------------------------------------------------------------------------
+// Task 13 review round 1: ^FR+^FT box re-anchoring, over-wide word wrap,
+// R180 ^FT footprint/auto height.
+// ---------------------------------------------------------------------------
+
+/// Font-0 cell/baseline in dots for height h (rounded like the renderer).
+fn font0_hv(h: u32) -> (u32, u32) {
+    let m = DefaultFontProvider::new()
+        .get(&FontSpec::Zebra(b'0'))
+        .expect("font 0 served");
+    let eff = h as f32 / m.metrics.cell_height as f32;
+    let cell = (m.metrics.cell_height as f32 * eff).round() as u32;
+    let baseline = (m.metrics.baseline as f32 * eff).round() as u32;
+    (cell, baseline)
+}
+
+/// Font-0 advance of `letter` in dots at height h (rounded like the renderer).
+fn font0_adv(h: u32, letter: char) -> u32 {
+    let m = DefaultFontProvider::new()
+        .get(&FontSpec::Zebra(b'0'))
+        .expect("font 0 served");
+    let eff = h as f32 / m.metrics.cell_height as f32;
+    (m.metrics.advances[letter as usize - 32] as f32 * eff).round() as u32
+}
+
+#[test]
+fn reverse_field_ft_box() {
+    // ^FR + ^FT (Dot origin): the R0 box must be re-anchored to the
+    // baseline - [0..adv) x [o.y-baseline .. o.y-baseline+cell). Every box
+    // pixel is the complement of the normal render; outside is unchanged.
+    let (cell, baseline) = font0_hv(40);
+    let adv = font0_adv(40, 'p');
+    let normal = render_text(b"^XA^PW90^LL90^FT60,20^A0N,40,0^FDp^FS^XZ");
+    let rev = render_text(b"^XA^PW90^LL90^FT60,20^FR^A0N,40,0^FDp^FS^XZ");
+    let (nb, rb) = (&normal.bitmap, &rev.bitmap);
+    // ^FT60,20: the field origin is (60, 20); the baseline-anchored box
+    // spans x [60, 60+adv) and y [20-baseline, 20-baseline+cell) = [-9, 31).
+    let y0 = 20i64 - baseline as i64;
+    let x0 = 60i64;
+    for y in 0..90 {
+        for x in 0..90 {
+            let in_box = (x as i64) >= x0
+                && (x as i64) < x0 + adv as i64
+                && (y as i64) >= y0
+                && (y as i64) < y0 + cell as i64;
+            if in_box {
+                assert_ne!(nb.get(x, y), rb.get(x, y), "box pixel {x},{y} flips");
+            } else {
+                assert_eq!(nb.get(x, y), rb.get(x, y), "outside pixel {x},{y} unchanged");
+            }
+        }
+    }
+    assert!(
+        (0..3).any(|y| (60..60 + adv).any(|x| rb.get(x, y))),
+        "the box's top rows are black"
+    );
+}
+
+#[test]
+fn reverse_field_ft_box_rotated() {
+    // ^FR + ^FT + ^FW90 with a 2-line ^FB block: the rotated Dot box is
+    // re-anchored by baseline AND last line pitch - the old code dropped
+    // the pitch term, shifting the box 20 dots right.
+    let (cell, baseline) = font0_hv(20);
+    let adv_p = font0_adv(20, 'p');
+    let adv_space = font0_adv(20, ' ');
+    let line_w = 2 * adv_p; // "pp" per wrapped line
+    let full_w = 2 * adv_p + adv_space + 2 * adv_p; // "pp pp" on one line
+    assert!(full_w > line_w, "wrap width can separate the words");
+    let wrap_w = full_w - 1; // forces the wrap into two "pp" lines
+    let src = |rev: bool| {
+        format!(
+            "^XA^PW90^LL90^FT40,20{}^FB{},2,0,L^A0R,20,0^FDpp pp^FS^XZ",
+            if rev { "^FR" } else { "" },
+            wrap_w
+        )
+    };
+    let normal = render_text(src(false).as_bytes());
+    let rev = render_text(src(true).as_bytes());
+    let (nb, rb) = (&normal.bitmap, &rev.bitmap);
+    // Box in rotated space: x = o.x + baseline - last_pitch - cell + 1 ...,
+    // width = cells (last_pitch + cell); y = [o.y + box_left, o.y + line_w).
+    let (cell, pitch) = (cell as i64, cell as i64);
+    let x0 = 40i64 + baseline as i64 - pitch - cell + 1;
+    let x1 = x0 + pitch + cell;
+    for y in 0..90 {
+        for x in 0..90 {
+            let in_box = (x as i64) >= x0 && (x as i64) < x1 && (y as i64) >= 20
+                && (y as i64) < 20 + line_w as i64;
+            if in_box {
+                assert_ne!(nb.get(x, y), rb.get(x, y), "box pixel {x},{y} flips");
+            } else {
+                assert_eq!(nb.get(x, y), rb.get(x, y), "outside pixel {x},{y} unchanged");
+            }
+        }
+    }
+}
+
+#[test]
+fn fb_overwide_word_breaks_without_empty_line() {
+    // "AAAAAAAAAA" at a 40-dot block: no leading empty line - max_lines 2
+    // char-breaks two lines, max_lines 1 prints the first fragment only.
+    let out = render_text(b"^XA^PW64^LL60^FO0,0^FB40,2,0,L^A0N,20,20^FDAAAAAAAAAA^FS^XZ");
+    let bmp = &out.bitmap;
+    let r1 = first_ink_row(bmp, 0..20).expect("first char-broken line has ink");
+    let r2 = first_ink_row(bmp, 20..40).expect("second char-broken line has ink");
+    assert_eq!(r2, r1 + 20, "second line one pitch below");
+    assert!((40..60).all(|y| (0..bmp.width).all(|x| !bmp.get(x, y))), "capped at max_lines");
+
+    let out1 = render_text(b"^XA^PW64^LL60^FO0,0^FB40,1,0,L^A0N,20,20^FDAAAAAAAAAA^FS^XZ");
+    let bmp1 = &out1.bitmap;
+    assert!(
+        first_ink_row(bmp1, 0..20).is_some(),
+        "default max_lines=1 still prints the first fragment"
+    );
+    assert!((20..60).all(|y| (0..bmp1.width).all(|x| !bmp1.get(x, y))), "one line only");
+}
+
+#[test]
+fn auto_height_covers_rotated_ft_text() {
+    // ^FT60,60 + R180 with no ^LL: the label auto-sizes to the R180 ^FT
+    // content, which lies BELOW the origin; the glyph's bottom rows must
+    // not be clipped off the label.
+    let out = render_text(b"^XA^PW200^FT60,60^A0I,40,40^FDp^FS^XZ");
+    assert!(
+        out.bitmap.height >= 76,
+        "auto height covers the R180 ^FT block, got {}",
+        out.bitmap.height
+    );
+    assert!(
+        (70..out.bitmap.height).any(|y| (0..200).any(|x| out.bitmap.get(x, y))),
+        "glyph bottom rows paint inside the auto-sized label"
+    );
+}
