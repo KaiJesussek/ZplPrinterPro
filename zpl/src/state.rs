@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 
 use crate::diag::Diagnostics;
 use crate::ir::{
-    BarcodeField, Field, GraphicField, GraphicKind, Label, OriginMode, Rotation, TextBlock, TextField,
+    BarcodeField, BoxField, CircleField, DiagonalField, EllipseField, Field, GraphicField,
+    GraphicKind, Label, OriginMode, Rotation, TextBlock, TextField,
 };
 
 pub use crate::memory::{Image, Memory};
@@ -124,6 +125,37 @@ impl Default for PrinterConfig {
     }
 }
 
+/// The shape a drawing-field command (`^GB ^GC ^GD ^GE`) deposits on the
+/// open draft; converted into the matching IR variant at ^FS/^XZ.
+#[derive(Debug, Clone)]
+pub enum Geometry {
+    Box {
+        width: u32,
+        height: u32,
+        thickness: u32,
+        color: u8,
+    },
+    Circle {
+        diameter: u32,
+        thickness: u32,
+        color: u8,
+    },
+    Diagonal {
+        width: u32,
+        height: u32,
+        thickness: u32,
+        color: u8,
+        /// `b'R'` right-leaning / `b'L'` left-leaning.
+        direction: u8,
+    },
+    Ellipse {
+        width: u32,
+        height: u32,
+        thickness: u32,
+        color: u8,
+    },
+}
+
 /// An in-progress field, accumulated by the ^FO/^FT/^FD/^A handlers (Task 5).
 #[derive(Debug, Clone)]
 pub struct FieldDraft {
@@ -143,6 +175,11 @@ pub struct FieldDraft {
     /// `^XG`/`^IM`/`^IL`: the field recalls a stored graphic instead of
     /// carrying text/barcode data.
     pub graphic: Option<GraphicKind>,
+    /// `^GF`: the inline bitmap's (bytes, bytes-per-row) when the open
+    /// field carries one; paired with `graphic: Some(Inline)`.
+    pub inline_data: Option<(Vec<u8>, u32)>,
+    /// `^GB`/`^GC`/`^GD`/`^GE`: the drawing-field shape on this draft.
+    pub geometry: Option<Geometry>,
     /// `^A@`: the selected stored (downloaded) font name, or `None` for the
     /// built-in `^CF` default. Task 11 maps it to `FontSpec::Downloaded`.
     pub font_name: Option<String>,
@@ -258,6 +295,8 @@ impl FieldDraft {
             block: None,
             symbology: None,
             graphic: None,
+            inline_data: None,
+            geometry: None,
             font_name: None,
             symbol: false,
             hex: None,
@@ -272,19 +311,43 @@ impl FieldDraft {
     /// (module/height/line) has no draft counterparts yet, so it falls back
     /// to the ^BY defaults until Task 9 wires ^BY onto the draft.
     fn into_field(self) -> Field {
+        // Drawing fields (^GB ^GC ^GD ^GE) carry their shape on the draft;
+        // the field origin comes from this draft's ^FO/^FT (or 0,0).
+        if let Some(shape) = self.geometry {
+            return match shape {
+                Geometry::Box { width, height, thickness, color } => {
+                    Field::Box(BoxField { x: self.x, y: self.y, width, height, thickness, color })
+                }
+                Geometry::Circle { diameter, thickness, color } => {
+                    Field::Circle(CircleField { x: self.x, y: self.y, diameter, thickness, color })
+                }
+                Geometry::Diagonal { width, height, thickness, color, direction } => {
+                    Field::Diagonal(DiagonalField {
+                        x: self.x,
+                        y: self.y,
+                        width,
+                        height,
+                        thickness,
+                        color,
+                        direction,
+                    })
+                }
+                Geometry::Ellipse { width, height, thickness, color } => {
+                    Field::Ellipse(EllipseField { x: self.x, y: self.y, width, height, thickness, color })
+                }
+            };
+        }
         // Latin-1 until Task 12 applies the ^CI code page; bytes were
         // accumulated verbatim with ^FH escapes already expanded.
         let data: String = self.data.iter().map(|&b| b as char).collect();
         match self.graphic {
-            // Stored-image recall (^XG/^IM/^IL): the renderer (Task 10)
-            // resolves the bytes from Memory.images by name.
-            Some(kind) => Field::Graphic(GraphicField {
-                x: self.x,
-                y: self.y,
-                kind,
-                data: Vec::new(),
-                bytes_per_row: 0,
-            }),
+            // Inline ^GF carries its bitmap on the draft; stored-image
+            // recall (^XG/^IM/^IL) leaves the bytes to the renderer, which
+            // resolves them from Memory.images by name (Task 10).
+            Some(kind) => {
+                let (data, bytes_per_row) = self.inline_data.unwrap_or_default();
+                Field::Graphic(GraphicField { x: self.x, y: self.y, kind, data, bytes_per_row })
+            }
             None => match self.symbology {
                 Some(symbology) => Field::Barcode(BarcodeField {
                     x: self.x,

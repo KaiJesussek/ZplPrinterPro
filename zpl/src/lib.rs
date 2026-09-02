@@ -7,6 +7,8 @@ pub mod config;
 pub mod diag;
 pub mod error;
 pub mod ir;
+mod geom;
+mod gfxdata;
 pub mod memory;
 pub mod scanner;
 pub mod state;

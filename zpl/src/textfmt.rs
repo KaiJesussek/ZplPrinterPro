@@ -60,8 +60,8 @@ pub(crate) fn to_u32(p: &[u8]) -> Option<u32> {
 
 /// Parse one numeric parameter segment: an empty/missing segment silently
 /// takes `fallback` (that is ZPL's default rule); garbage warns and falls
-/// back too, but never panics.
-fn p_u32(
+/// back too, but never panics. Shared with the Task 8 geometry handlers.
+pub(crate) fn p_u32(
     seg: Option<&[u8]>,
     cmd: &str,
     name: &str,

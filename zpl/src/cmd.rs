@@ -2,6 +2,7 @@
 
 use crate::config;
 use crate::diag::Diagnostic;
+use crate::geom;
 use crate::memory;
 use crate::scanner::{Cmd, Scanner, Token};
 use crate::state::{FormatState, ParseContext};
@@ -99,6 +100,14 @@ const TABLE: &[CommandSpec] = &[
     CommandSpec { mnemonic: *b"IL", prefix: Prefix::Caret, kind: CmdKind::Format, handler: memory::image_load },
     CommandSpec { mnemonic: *b"IM", prefix: Prefix::Caret, kind: CmdKind::Format, handler: memory::image_move },
     CommandSpec { mnemonic: *b"IS", prefix: Prefix::Caret, kind: CmdKind::Format, handler: memory::image_save },
+    // Task 8: drawing-field command set. ^GS was registered by Task 7 (it
+    // is the graphic-symbol *font style*, not a shape); ^GB ^GC ^GD ^GE
+    // draw shapes, ^GF carries an inline graphic field.
+    CommandSpec { mnemonic: *b"GB", prefix: Prefix::Caret, kind: CmdKind::Format, handler: geom::graphic_box },
+    CommandSpec { mnemonic: *b"GC", prefix: Prefix::Caret, kind: CmdKind::Format, handler: geom::graphic_circle },
+    CommandSpec { mnemonic: *b"GD", prefix: Prefix::Caret, kind: CmdKind::Format, handler: geom::graphic_diagonal },
+    CommandSpec { mnemonic: *b"GE", prefix: Prefix::Caret, kind: CmdKind::Format, handler: geom::graphic_ellipse },
+    CommandSpec { mnemonic: *b"GF", prefix: Prefix::Caret, kind: CmdKind::Format, handler: geom::graphic_field },
     CommandSpec { mnemonic: *b"GS", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::graphic_symbol },
     CommandSpec { mnemonic: *b"DG", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: memory::download_graphic },
     CommandSpec { mnemonic: *b"DY", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: memory::download_object },
@@ -278,6 +287,8 @@ mod tests {
                 block: None,
                 symbology: None,
                 graphic: None,
+                inline_data: None,
+                geometry: None,
                 font_name: None,
                 symbol: false,
                 hex: None,

@@ -18,6 +18,9 @@ pub enum Field {
     Barcode(BarcodeField),
     Box(BoxField),
     Graphic(GraphicField),
+    Circle(CircleField),
+    Diagonal(DiagonalField),
+    Ellipse(EllipseField),
 }
 
 /// Field rotation in 90deg steps.
@@ -92,9 +95,44 @@ pub struct BarcodeField {
     pub rotation: Rotation,
 }
 
-/// A box or line (`^GB`).
+/// A box or line (`^GB`); `thickness` 0 = filled box (renderer, Task 10).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct BoxField {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub thickness: u32,
+    /// `b'B'` black / `b'W'` white (the guide's `c` parameter letters).
+    pub color: u8,
+}
+
+/// A circle (`^GC`); thickness extends inward from the outline.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct CircleField {
+    pub x: u32,
+    pub y: u32,
+    pub diameter: u32,
+    pub thickness: u32,
+    pub color: u8,
+}
+
+/// A diagonal line (`^GD`) joining opposite corners of its bounding box.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct DiagonalField {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    /// `b'R'` right-leaning (`/`, the guide's default) / `b'L'` left-leaning (`\`).
+    pub direction: u8,
+    pub thickness: u32,
+    pub color: u8,
+}
+
+/// An ellipse (`^GE`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct EllipseField {
     pub x: u32,
     pub y: u32,
     pub width: u32,
@@ -181,7 +219,31 @@ mod tests {
                     width: 390,
                     height: 190,
                     thickness: 3,
-                    color: 7,
+                    color: b'B',
+                }),
+                Field::Circle(CircleField {
+                    x: 30,
+                    y: 30,
+                    diameter: 40,
+                    thickness: 2,
+                    color: b'B',
+                }),
+                Field::Diagonal(DiagonalField {
+                    x: 60,
+                    y: 60,
+                    width: 100,
+                    height: 50,
+                    direction: b'L',
+                    thickness: 4,
+                    color: b'W',
+                }),
+                Field::Ellipse(EllipseField {
+                    x: 90,
+                    y: 90,
+                    width: 120,
+                    height: 80,
+                    thickness: 3,
+                    color: b'B',
                 }),
                 Field::Graphic(GraphicField {
                     x: 100,
