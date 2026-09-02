@@ -1016,6 +1016,49 @@ fn barcode_interpret_line_above_bars() {
     );
 }
 
+/// f=Y AND g=Y on an auto-height label (no ^LL): each printed
+/// interpretation line adds its own cell, so the content spans
+/// [-lc, h+lc) relative to the origin and the auto-sized label must cover
+/// h + 2*lc - the below line would be clipped if only one cell were
+/// counted.
+#[test]
+fn barcode_both_interpret_lines_auto_height() {
+    // ^FO0,15 default font A 9x5: above line cell rows 6..15, bars rows
+    // 15..75, below line rows 75..84 -> auto height 15 - 9 + 60 + 9 = 84.
+    let (label, out) = render_bc(b"^XA^PW240^FO0,15^BY2,3,60^BCN,60,Y,Y^FD12345678^FS^XZ");
+    let f = single_barcode(&label);
+    assert_eq!((f.line, f.interpret), (b'Y', true));
+    let bmp = &out.bitmap;
+    assert_eq!(bmp.height, 84, "auto height covers both line cells + bars");
+    assert!((6..15).any(|y| (0..40).any(|x| bmp.get(x, y))), "above line ink");
+    assert!(bmp.get(20, 15) && bmp.get(23, 74), "bars span the full 60-dot height");
+    assert!((75..84).any(|y| (0..40).any(|x| bmp.get(x, y))), "below line ink (not clipped)");
+}
+
+/// ^POI (label rotated 180 deg): a barcode with BOTH interpretation lines
+/// flips as a unit - above line, bars, and below line all survive in
+/// flipped order (above stays above the bars; the footprint box covers
+/// the full [-lc, h+lc) span, so the far-corner math sees all the ink).
+#[test]
+fn barcode_poi_keeps_both_interpret_lines() {
+    // ^FO30,20: pattern width 158 (43 elements at module 2), quiet 20 each
+    // side -> fw = 198; fh = 60 + 2*9 = 78. Flipped origin
+    // (300-30-198, 300-20-78) = (72, 202): above-line rows [193,202) at
+    // cols [72,112), bars rows [202,262) at cols [92,250), below-line rows
+    // [262,271) at cols [72,112).
+    let (label, out) = render_bc(b"^XA^PW300^LL300^POI^FO30,20^BY2,3,60^BCN,60,Y,Y^FD12345678^FS^XZ");
+    let f = single_barcode(&label);
+    assert_eq!(f.rotation, Rotation::R0);
+    assert!(out.warnings.is_empty(), "clean: {:?}", out.warnings);
+    let bmp = &out.bitmap;
+    assert!(bmp.get(92, 202) && bmp.get(95, 261), "bars flipped intact");
+    assert!(!(72..92).any(|x| (202..262).any(|y| bmp.get(x, y))), "bar quiet zone inside the flipped field");
+    assert!((193..202).any(|y| (72..112).any(|x| bmp.get(x, y))), "above line survived the flip");
+    assert!((262..271).any(|y| (72..112).any(|x| bmp.get(x, y))), "below line survived the flip");
+    assert!(!(0..193).any(|y| (0..300).any(|x| bmp.get(x, y))), "nothing above the flipped field");
+    assert!(!(271..300).any(|y| (0..300).any(|x| bmp.get(x, y))), "nothing below the flipped field");
+}
+
 /// Hostile hand-built IR: module = u32::MAX (the parser caps ^BY at 10;
 /// only hand-built IR reaches the renderer). The quiet zone (10 modules)
 /// and every bar resolve astronomically wide - the drawer must clamp to

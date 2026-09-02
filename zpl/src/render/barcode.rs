@@ -126,9 +126,12 @@ fn extent(b: &BarcodeField, pat: &Pattern, fd: Option<&FontData>, dpi: u32) -> E
             let below = b.line == b'Y';
             let above = b.interpret;
             let lc = if below || above { line_cell(b, fd, dpi) as u128 } else { 0 };
-            // The above-line (^BC g=Y) placement is expressed at paint time
-            // as a negative box top; the rotation constants are unchanged.
-            let fh = height as u128 + lc;
+            // Each printed interpretation line adds its own cell: `f=Y` puts
+            // one below the bars (`v` in [h, h+lc)) and `g=Y` one above them
+            // (negative `v`), so the content box spans [-lc, h+lc) - the box
+            // height counts the two cells separately.
+            let lc_span = (u128::from(below) + u128::from(above)) * lc;
+            let fh = height as u128 + lc_span;
             let tw = if (below || above) && fd.is_some() {
                 line_width(b, fd.unwrap(), dpi) as u128
             } else {
@@ -156,9 +159,13 @@ pub(crate) fn footprint(b: &BarcodeField, opts: &RenderOptions) -> Option<(u32, 
     } else {
         0
     };
+    // Each printed line adds its own cell (f=Y below, g=Y above): the box
+    // covers [-lc, h+lc) relative to the origin, and label-level transforms
+    // (^POI/^PMY far corner, auto height) must see the full span.
+    let lc_span = (u32::from(b.line == b'Y') + u32::from(b.interpret)) * lc;
     let y_off = if b.interpret { -(lc as i64) } else { 0 };
     let y = (b.y as i64 + y_off).max(0) as u32;
-    Some((y, height.saturating_add(lc)))
+    Some((y, height.saturating_add(lc_span)))
 }
 
 /// Map a content dot through the field rotation (same orientation as
