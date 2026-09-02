@@ -8,3 +8,4 @@ pub mod error;
 pub mod ir;
 pub mod scanner;
 pub mod state;
+pub mod textfmt;

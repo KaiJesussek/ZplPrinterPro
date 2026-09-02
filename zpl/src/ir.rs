@@ -21,7 +21,7 @@ pub enum Field {
 }
 
 /// Field rotation in 90deg steps.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub enum Rotation {
     R0,
     R90,
@@ -30,7 +30,7 @@ pub enum Rotation {
 }
 
 /// Origin reference of a field: `^FO` is Block, `^FT` is Dot.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub enum OriginMode {
     Block,
     Dot,
@@ -47,6 +47,8 @@ pub struct TextField {
     pub reverse: bool,
     pub block: Option<TextBlock>,
     pub data: String,
+    /// `^FV` variable field: re-evaluated per copy.
+    pub re_eval: bool,
 }
 
 /// `^FB` block formatting of a text field.
@@ -131,6 +133,7 @@ mod tests {
                         justification: Justification::Right,
                     }),
                     data: "Hello, ZPL".into(),
+                    re_eval: true,
                 }),
                 Field::Text(TextField {
                     x: 10,
@@ -141,6 +144,7 @@ mod tests {
                     reverse: false,
                     block: None,
                     data: "no block".into(),
+                    re_eval: false,
                 }),
                 Field::Barcode(BarcodeField {
                     x: 10,

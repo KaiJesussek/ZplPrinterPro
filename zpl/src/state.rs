@@ -1,5 +1,7 @@
 //! Parser state: printer mode, memory stub, and the format state machine.
 
+use std::collections::BTreeMap;
+
 use crate::diag::Diagnostics;
 use crate::ir::{BarcodeField, Field, Label, OriginMode, Rotation, TextBlock, TextField};
 
@@ -9,11 +11,15 @@ use crate::ir::{BarcodeField, Field, Label, OriginMode, Rotation, TextBlock, Tex
 #[derive(Default)]
 pub struct Memory {}
 
-/// Printer-wide configuration (label geometry, orientation, shifts).
+/// Printer-wide configuration (label geometry, orientation, shifts, text
+/// defaults).
 ///
-/// Values start at their defaults until the ^PW/^LL/^LH/... handlers land in
-/// Task 8; all-zero defaults mean "unset" for now.
-#[derive(Clone, Debug, Default)]
+/// Geometry values start at their defaults until the ^PW/^LL/^LH/... handlers
+/// land in Task 8; all-zero defaults mean "unset" for now. The text defaults
+/// (^CF font, ^FW rotation, ^CI codepage, ^FC clock indicators) are live from
+/// Task 5 onward; their power-up values follow the guide (footnotes in the
+/// field docs).
+#[derive(Clone, Debug)]
 pub struct PrinterMode {
     pub pw_dots: u32,
     pub ll_dots: u32,
@@ -23,6 +29,36 @@ pub struct PrinterMode {
     pub label_top: u32,
     pub left_shift: u32,
     pub mirror: bool,
+    /// `^CF` default font as `[canonical, raw]` (power-up: A).
+    pub default_font: [u8; 2],
+    /// `^FW` default field rotation (power-up: N).
+    pub fw_rotation: Rotation,
+    /// `^CI` international character set (power-up: 0, U.S.A. 1).
+    pub code_page: u8,
+    /// `^CW` font assignments: character -> stored font name.
+    pub font_assignments: BTreeMap<u8, String>,
+    /// `^FC` Real-Time Clock indicator characters (primary power-up: `%`).
+    pub clock_indicators: [u8; 3],
+}
+
+impl Default for PrinterMode {
+    fn default() -> Self {
+        PrinterMode {
+            pw_dots: 0,
+            ll_dots: 0,
+            lh_x: 0,
+            lh_y: 0,
+            orientation: 0,
+            label_top: 0,
+            left_shift: 0,
+            mirror: false,
+            default_font: [b'A', b' '],
+            fw_rotation: Rotation::R0,
+            code_page: 0,
+            font_assignments: BTreeMap::new(),
+            clock_indicators: [b'%', 0, 0],
+        }
+    }
 }
 
 /// An in-progress field, accumulated by the ^FO/^FT/^FD/^A handlers (Task 5).
@@ -31,12 +67,16 @@ pub struct FieldDraft {
     pub x: u32,
     pub y: u32,
     pub origin: OriginMode,
-    pub rotation: u8,
+    pub rotation: Rotation,
     pub reverse: bool,
     pub font: [u8; 2],
     pub data: Vec<u8>,
     pub block: Option<TextBlock>,
     pub symbology: Option<u8>,
+    /// `^FH` hex indicator while escapes are enabled for this field.
+    pub hex: Option<u8>,
+    /// `^FV` variable field: re-evaluated per copy.
+    pub re_eval: bool,
     /// Raw command bytes of the field, for stored-format re-emission later.
     pub raw: Vec<u8>,
 }
@@ -124,20 +164,33 @@ impl FormatState {
 }
 
 impl FieldDraft {
+    /// A fresh field at the current printer defaults (^CF font, ^FW rotation).
+    pub(crate) fn open(mode: &PrinterMode) -> FieldDraft {
+        FieldDraft {
+            x: 0,
+            y: 0,
+            origin: OriginMode::Block,
+            rotation: mode.fw_rotation,
+            reverse: false,
+            font: mode.default_font,
+            data: Vec::new(),
+            block: None,
+            symbology: None,
+            hex: None,
+            re_eval: false,
+            raw: Vec::new(),
+        }
+    }
+
     /// Convert a closed draft into its IR field.
     ///
     /// Text fields carry all their geometry on the draft. Barcode geometry
     /// (module/height/line) has no draft counterparts yet, so it falls back
     /// to the ^BY defaults until Task 9 wires ^BY onto the draft.
     fn into_field(self) -> Field {
-        // ponytail: lossy UTF-8 until encoding_rs (Task 17) applies ^CI code pages.
-        let data = String::from_utf8_lossy(&self.data).into_owned();
-        // A draft rotation is a u8 (0-255); 270deg is not representable there.
-        let rotation = match self.rotation {
-            90 => Rotation::R90,
-            180 => Rotation::R180,
-            _ => Rotation::R0,
-        };
+        // Latin-1 until Task 12 applies the ^CI code page; bytes were
+        // accumulated verbatim with ^FH escapes already expanded.
+        let data: String = self.data.iter().map(|&b| b as char).collect();
         match self.symbology {
             Some(symbology) => Field::Barcode(BarcodeField {
                 x: self.x,
@@ -148,17 +201,18 @@ impl FieldDraft {
                 module: 2,
                 height: 10,
                 line: 1,
-                rotation,
+                rotation: self.rotation,
             }),
             None => Field::Text(TextField {
                 x: self.x,
                 y: self.y,
                 origin: self.origin,
-                rotation,
+                rotation: self.rotation,
                 font: self.font,
                 reverse: self.reverse,
                 block: self.block,
                 data,
+                re_eval: self.re_eval,
             }),
         }
     }

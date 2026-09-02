@@ -34,6 +34,18 @@ impl Diagnostic {
             offset,
         }
     }
+
+    /// Build a non-fatal warning for a command parameter issue (e.g. an
+    /// invalid `^FW` rotation). Offsets are 0 until the driver threads
+    /// scanner positions through, as for `unknown_command`.
+    pub fn warning(command: &str, message: impl Into<String>) -> Self {
+        Diagnostic {
+            severity: Severity::Warning,
+            command: command.to_owned(),
+            message: message.into(),
+            offset: 0,
+        }
+    }
 }
 
 /// A collection of diagnostics from parsing a format.

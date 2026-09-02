@@ -3,6 +3,7 @@
 use crate::diag::Diagnostic;
 use crate::scanner::{Cmd, Scanner, Token};
 use crate::state::{FormatState, ParseContext};
+use crate::textfmt;
 
 /// Command prefix: `^` (format commands) or `~` (printer operations).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +60,21 @@ const TABLE: &[CommandSpec] = &[
     CommandSpec { mnemonic: *b"XZ", prefix: Prefix::Caret, kind: CmdKind::Format, handler: end_format },
     CommandSpec { mnemonic: *b"FS", prefix: Prefix::Caret, kind: CmdKind::Format, handler: end_field },
     CommandSpec { mnemonic: *b"DF", prefix: Prefix::Caret, kind: CmdKind::Format, handler: start_download },
+    // Task 5: text-field command set. The ^A mnemonic is single-letter, so
+    // the scanner pads it to [A, space].
+    CommandSpec { mnemonic: *b"FO", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::field_origin },
+    CommandSpec { mnemonic: *b"FT", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::field_typeset },
+    CommandSpec { mnemonic: *b"FD", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::field_data },
+    CommandSpec { mnemonic: *b"FV", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::field_variable },
+    CommandSpec { mnemonic: *b"FH", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::field_hex },
+    CommandSpec { mnemonic: *b"FR", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::field_reverse },
+    CommandSpec { mnemonic: *b"FB", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::field_block },
+    CommandSpec { mnemonic: *b"FW", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::field_orientation },
+    CommandSpec { mnemonic: *b"A ", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::select_font },
+    CommandSpec { mnemonic: *b"CF", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::change_default_font },
+    CommandSpec { mnemonic: *b"CW", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::assign_font },
+    CommandSpec { mnemonic: *b"CI", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::change_international },
+    CommandSpec { mnemonic: *b"FC", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::set_clock_indicators },
 ];
 
 /// The command table: prefix+mnemonic -> handler. Rows accumulate across tasks.
@@ -84,10 +100,11 @@ pub fn dispatch(ctx: &mut ParseContext, cmd: Cmd) {
 /// Drive `scanner` through `dispatch` until the input is exhausted.
 ///
 /// While in a ^DF download, subsequent tokens (commands and data) are
-/// captured raw until the terminating ^FS.
-// TODO(T5): pass in-field-data (^FD) awareness to Scanner::next.
+/// captured raw until the terminating ^FS. While a text field is open, `~`
+/// is scanned as literal data - the ^FD body may contain it (Task 2's
+/// field-data model; `^FD` params absorb tildes until the next `^`).
 pub fn parse_stream(scanner: &mut Scanner, ctx: &mut ParseContext) {
-    while let Some(token) = scanner.next(false) {
+    while let Some(token) = scanner.next(matches!(ctx.state, FormatState::Field { .. })) {
         match token {
             Token::Cmd(cmd) => {
                 let ends_download = cmd.prefix == b'^' && cmd.mnemonic == *b"FS";
@@ -168,12 +185,14 @@ mod tests {
                 x: 10,
                 y: 20,
                 origin: OriginMode::Dot,
-                rotation: 90,
+                rotation: Rotation::R90,
                 reverse: true,
                 font: *b"A ",
                 data: b"hello".to_vec(),
                 block: None,
                 symbology: None,
+                hex: None,
+                re_eval: false,
                 raw: b"^FDhello".to_vec(),
             },
             fields: Vec::new(),
@@ -195,6 +214,7 @@ mod tests {
                 assert!(t.reverse);
                 assert_eq!(t.font, *b"A ");
                 assert_eq!(t.data, "hello");
+                assert!(!t.re_eval);
             }
             other => panic!("expected a text field, got {other:?}"),
         }
