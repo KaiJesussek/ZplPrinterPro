@@ -31,6 +31,10 @@ pub struct PrinterMode {
     pub mirror: bool,
     /// `^CF` default font as `[canonical, raw]` (power-up: A).
     pub default_font: [u8; 2],
+    /// `^CF` default character height in dots (power-up: 9).
+    pub default_font_h: u32,
+    /// `^CF` default character width in dots (power-up: 5).
+    pub default_font_w: u32,
     /// `^FW` default field rotation (power-up: N).
     pub fw_rotation: Rotation,
     /// `^CI` international character set (power-up: 0, U.S.A. 1).
@@ -53,6 +57,8 @@ impl Default for PrinterMode {
             left_shift: 0,
             mirror: false,
             default_font: [b'A', b' '],
+            default_font_h: 9,
+            default_font_w: 5,
             fw_rotation: Rotation::R0,
             code_page: 0,
             font_assignments: BTreeMap::new(),
@@ -70,6 +76,10 @@ pub struct FieldDraft {
     pub rotation: Rotation,
     pub reverse: bool,
     pub font: [u8; 2],
+    /// `^A` character height in dots; 0 = standard font matrix.
+    pub font_height: u32,
+    /// `^A` character width in dots; 0 = standard font matrix.
+    pub font_width: u32,
     pub data: Vec<u8>,
     pub block: Option<TextBlock>,
     pub symbology: Option<u8>,
@@ -173,6 +183,8 @@ impl FieldDraft {
             rotation: mode.fw_rotation,
             reverse: false,
             font: mode.default_font,
+            font_height: mode.default_font_h,
+            font_width: mode.default_font_w,
             data: Vec::new(),
             block: None,
             symbology: None,
@@ -209,6 +221,8 @@ impl FieldDraft {
                 origin: self.origin,
                 rotation: self.rotation,
                 font: self.font,
+                font_height: self.font_height,
+                font_width: self.font_width,
                 reverse: self.reverse,
                 block: self.block,
                 data,

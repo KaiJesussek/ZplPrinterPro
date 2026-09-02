@@ -235,13 +235,48 @@ fn parse_justification(p: &[u8], diags: &mut Diagnostics) -> Justification {
     }
 }
 
-/// `^Af,o,h,w`: font (+ optional orientation) for the open field. The letter
-/// right after the font name is the field orientation (N/R/I/B); h and w
-/// are dropped - the IR carries no size slot, Task 13 sizes text (the guide
-/// defaults: last accepted ^CF / 9 and 5).
+/// Parse an `^A`/`^CF` size parameter: explicit values (0 allowed, meaning
+/// "standard font matrix" per the guide) are used; missing segments fall
+/// back to the current printer default; garbage warns and falls back too.
+fn parse_size(
+    seg: Option<&[u8]>,
+    cmd: &str,
+    name: &str,
+    diags: &mut Diagnostics,
+    fallback: u32,
+) -> u32 {
+    match seg {
+        None => fallback,                     // ^Af or ^Af,o: no size given
+        Some(p) if p.is_empty() => fallback,  // trailing comma
+        Some(p) => match to_u32(p) {
+            Some(v) => v,
+            None => {
+                diags.push(Diagnostic::warning(
+                    cmd,
+                    format!(
+                        "invalid {name} '{}'; using current default",
+                        String::from_utf8_lossy(p)
+                    ),
+                ));
+                fallback
+            }
+        },
+    }
+}
+
+/// `^Af,o,h,w`: font (+ optional orientation, height, width) for the open
+/// field. The letter right after the font name is the field orientation
+/// (N/R/I/B per the guide); h/w default to the last ^CF values (9/5 at
+/// power-up), an explicit 0 keeps the standard font matrix.
 pub(crate) fn select_font(ctx: &mut ParseContext, params: &[u8]) {
-    let Some(&f) = params.first() else {
+    // Params run `f[,o],h,w`: f is the first char of the first comma segment;
+    // an optional orientation letter is the second char of that segment.
+    let parts = split_commas(params);
+    let Some(first) = parts.first().copied() else {
         return; // bare ^A keeps the ^CF default font
+    };
+    let Some(&f) = first.first() else {
+        return;
     };
     let font = match resolve_font(f) {
         Some(font) => font,
@@ -253,32 +288,58 @@ pub(crate) fn select_font(ctx: &mut ParseContext, params: &[u8]) {
             ctx.mode.default_font
         }
     };
-    let orientation = match params.get(1) {
+    let orientation = match first.get(1) {
         Some(&o) if matches!(o, b'N' | b'n' | b'R' | b'r' | b'I' | b'i' | b'B' | b'b') => {
             parse_rotation(&[o])
         }
         _ => None,
     };
+    let h = parse_size(parts.get(1).copied(), "A", "height", ctx.diags, ctx.mode.default_font_h);
+    let w = parse_size(parts.get(2).copied(), "A", "width", ctx.diags, ctx.mode.default_font_w);
     if let Some(d) = draft_mut(ctx) {
         d.font = font;
         if let Some(r) = orientation {
             d.rotation = r;
         }
+        d.font_height = h;
+        d.font_width = w;
     }
 }
 
-/// `^CFf,h,w`: printer-wide default font (power-up: A). h/w are dropped like
-/// ^A's (no IR slot).
+/// `^CFf,h,w`: printer-wide default font and default character height/width
+/// (power-up: A, 9, 5). h/w are the defaults bare ^A inherits; 0 keeps the
+/// standard font matrix.
 pub(crate) fn change_default_font(ctx: &mut ParseContext, params: &[u8]) {
-    match params.first() {
-        None => ctx.mode.default_font = [b'A', b' '], // bare ^CF resets
-        Some(&f) => match resolve_font(f) {
+    let parts = split_commas(params);
+    match parts.first().and_then(|p| p.first()).copied() {
+        None => ctx.mode.default_font = [b'A', b' '], // bare ^CF resets the font
+        Some(f) => match resolve_font(f) {
             Some(font) => ctx.mode.default_font = font,
             None => ctx.diags.push(Diagnostic::warning(
                 "CF",
                 format!("invalid font name '{}'; keeping current default", f as char),
             )),
         },
+    }
+    update_size(&mut ctx.mode.default_font_h, parts.get(1).copied(), "height", ctx.diags);
+    update_size(&mut ctx.mode.default_font_w, parts.get(2).copied(), "width", ctx.diags);
+}
+
+/// Apply an explicit ^CF size; missing/garbage keep the current default.
+fn update_size(slot: &mut u32, seg: Option<&[u8]>, name: &str, diags: &mut Diagnostics) {
+    let Some(p) = seg else { return };
+    if p.is_empty() {
+        return;
+    }
+    match to_u32(p) {
+        Some(v) => *slot = v,
+        None => diags.push(Diagnostic::warning(
+            "CF",
+            format!(
+                "invalid {name} '{}'; keeping current",
+                String::from_utf8_lossy(p)
+            ),
+        )),
     }
 }
 

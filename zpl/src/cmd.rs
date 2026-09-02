@@ -188,6 +188,8 @@ mod tests {
                 rotation: Rotation::R90,
                 reverse: true,
                 font: *b"A ",
+                font_height: 0,
+                font_width: 0,
                 data: b"hello".to_vec(),
                 block: None,
                 symbology: None,
@@ -213,6 +215,7 @@ mod tests {
                 assert_eq!(t.rotation, Rotation::R90);
                 assert!(t.reverse);
                 assert_eq!(t.font, *b"A ");
+                assert_eq!((t.font_height, t.font_width), (0, 0));
                 assert_eq!(t.data, "hello");
                 assert!(!t.re_eval);
             }

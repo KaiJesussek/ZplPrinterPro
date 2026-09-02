@@ -44,6 +44,10 @@ pub struct TextField {
     pub origin: OriginMode,
     pub rotation: Rotation,
     pub font: [u8; 2],
+    /// `^A` character height in dots; 0 = standard font matrix (guide ^A).
+    pub font_height: u32,
+    /// `^A` character width in dots; 0 = standard font matrix.
+    pub font_width: u32,
     pub reverse: bool,
     pub block: Option<TextBlock>,
     pub data: String,
@@ -125,6 +129,8 @@ mod tests {
                     origin: OriginMode::Dot,
                     rotation: Rotation::R270,
                     font: [b'A', b'0'],
+                    font_height: 24,
+                    font_width: 20,
                     reverse: true,
                     block: Some(TextBlock {
                         width: 150,
@@ -141,6 +147,8 @@ mod tests {
                     origin: OriginMode::Block,
                     rotation: Rotation::R0,
                     font: [b'0', b'1'],
+                    font_height: 0,
+                    font_width: 0,
                     reverse: false,
                     block: None,
                     data: "no block".into(),

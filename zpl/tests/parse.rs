@@ -24,8 +24,9 @@ fn fo_ft_fd_fs_build_field() {
     assert_eq!(t.origin, OriginMode::Block);
     // Font 0 is the default font (canonical A); the raw spec is kept in byte 1.
     assert_eq!(t.font, [b'A', b'0']);
-    // "N" in ^A0N is the orientation: normal rotation.
+    // "N" in ^A0N is the orientation: normal rotation. h/w are 30,30.
     assert_eq!(t.rotation, Rotation::R0);
+    assert_eq!((t.font_height, t.font_width), (30, 30));
     assert_eq!(t.data, "Hello");
     assert!(!t.re_eval);
 }
@@ -38,8 +39,10 @@ fn ft_sets_dot_origin_and_defaults_font() {
     assert_eq!(t.origin, OriginMode::Dot);
     assert_eq!((t.x, t.y), (50, 60));
     assert_eq!(t.data, "World");
-    // No ^A/^CF: the power-up default font A (raw byte unset).
+    // No ^A/^CF: the power-up default font A (raw byte unset) and its
+    // power-up character size 9x5 dots.
     assert_eq!(t.font, [b'A', b' ']);
+    assert_eq!((t.font_height, t.font_width), (9, 5));
     assert_eq!(t.rotation, Rotation::R0);
 }
 
@@ -95,9 +98,14 @@ fn fw_rotations() {
         assert_eq!(text_field(&label, 0).rotation, *want);
     }
 
-    // ^A's orientation overrides the ^FW default...
-    let (label, _) = parse_one(b"^XA^FW90^FO10,10^A0N^FDx^FS^XZ");
-    assert_eq!(text_field(&label, 0).rotation, Rotation::R0);
+    // ^A's orientation overrides the ^FW default (letter-font form: ^AAN =
+    // font A with orientation N; the scanner keeps the extra letter in
+    // params)...
+    let (label, _) = parse_one(b"^XA^FW90^FO10,10^AAN,30,30^FDx^FS^XZ");
+    let t = text_field(&label, 0);
+    assert_eq!(t.rotation, Rotation::R0);
+    assert_eq!(t.font, [b'A', b'A']);
+    assert_eq!((t.font_height, t.font_width), (30, 30));
     // ...and persists across formats (printer state, guide: until power off).
     let (label, _) = parse_one(b"^XA^FW90^XZ^XA^FO10,10^FDx^FS^XZ");
     assert_eq!(text_field(&label, 0).rotation, Rotation::R90);
@@ -152,6 +160,30 @@ fn multiple_fd_chunks_concatenate_into_one_field() {
     assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
     assert_eq!(label.fields.len(), 1);
     assert_eq!(text_field(&label, 0).data, "Hello");
+}
+
+#[test]
+fn font_sizes_flow_into_field() {
+    // Explicit 0 keeps the standard font matrix (guide ^A page).
+    let (label, diags) = parse_one(b"^XA^FO10,10^A0,0,0^FDx^FS^XZ");
+    assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
+    let t = text_field(&label, 0);
+    assert_eq!((t.font_height, t.font_width), (0, 0));
+
+    // A bare ^A inherits the current ^CF sizes (power-up 9x5).
+    let (label, _) = parse_one(b"^XA^FO10,10^A0^FDx^FS^XZ");
+    let t = text_field(&label, 0);
+    assert_eq!((t.font_height, t.font_width), (9, 5));
+
+    // ^CF h,w become the defaults for following fields.
+    let (label, _) = parse_one(b"^XA^CF0,24,20^FO10,10^FDx^FS^XZ");
+    let t = text_field(&label, 0);
+    assert_eq!((t.font_height, t.font_width), (24, 20));
+
+    // And an ^A with sizes overrides them.
+    let (label, _) = parse_one(b"^XA^CF0,24,20^FO10,10^A0,18,18^FDx^FS^XZ");
+    let t = text_field(&label, 0);
+    assert_eq!((t.font_height, t.font_width), (18, 18));
 }
 
 #[test]
