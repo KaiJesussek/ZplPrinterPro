@@ -19,11 +19,17 @@
 //! hangs on hostile field geometry (all loops range over the on-canvas
 //! intersection only, and all width/height arithmetic is checkpointed
 //! against u32/i64/u128 overflow).
+//!
+//! Since Task 11, text fields resolve their font at render time: `^A@`
+//! names a downloaded font (looked up in `RenderOptions::memory`), any
+//! other field uses a built-in Zebra font from the font provider. Task 13
+//! paints the glyphs; resolution already happens so an unavailable font
+//! surfaces as a render warning in every caller.
 
 mod draw;
 
-use crate::fonts::FontProvider;
-use crate::ir::{Field, GraphicKind, Label};
+use crate::fonts::{font_data_from_ttf, FontData, FontProvider, FontSpec};
+use crate::ir::{Field, GraphicKind, Label, TextField};
 use crate::memory::Memory;
 use crate::state::PrinterMode;
 use draw::{blit, draw_circle, draw_diagonal, draw_ellipse, draw_rect};
@@ -179,8 +185,19 @@ pub fn render(label: &Label, opts: &RenderOptions) -> Result<RenderOutcome, Rend
 
     for field in &label.fields {
         match field {
-            // Tasks 13 (text) / 14 (barcodes): nothing painted yet.
-            Field::Text(_) | Field::Barcode(_) => {}
+            // Task 13 paints text; resolve the font now so a missing or
+            // unusable font surfaces as a render warning (the field is
+            // skipped until text painting lands).
+            Field::Text(t) => {
+                let spec = field_font_spec(t);
+                if resolve_font(&spec, opts).is_none() {
+                    warnings.push(format!(
+                        "font unavailable for text field ({spec:?}); field skipped"
+                    ));
+                }
+            }
+            // Task 14 (barcodes): nothing painted yet.
+            Field::Barcode(_) => {}
             Field::Box(b) => {
                 let (fx, fy) = place(opts.mode, w, h, b.x, b.y, b.width, b.height);
                 draw_rect(&mut bmp, fx, fy, b.width, b.height, b.thickness, b.color);
@@ -231,6 +248,32 @@ pub fn render(label: &Label, opts: &RenderOptions) -> Result<RenderOutcome, Rend
     }
 
     Ok(RenderOutcome { bitmap: bmp, warnings })
+}
+
+/// A text field's font request. `^A@` (`font_name` set - the parser strips
+/// the device) names a downloaded font; `^A0` keeps its identity through
+/// the raw byte so it resolves to the scalable default font rather than
+/// the metrically different `A`; everything else is a built-in Zebra font
+/// by its canonical letter.
+fn field_font_spec(t: &TextField) -> FontSpec {
+    if let Some(name) = &t.font_name {
+        FontSpec::Downloaded(name.clone())
+    } else if t.font == [b'A', b'0'] {
+        FontSpec::Zebra(b'0')
+    } else {
+        FontSpec::Zebra(t.font[0])
+    }
+}
+
+/// Resolve a font request to concrete data. Downloaded fonts come from
+/// printer memory (`RenderOptions::memory`); built-ins come from the font
+/// provider. `None` means the font is unavailable (unknown letter, missing
+/// download, unparseable TTF) - the caller warns and skips the field.
+fn resolve_font(spec: &FontSpec, opts: &RenderOptions) -> Option<FontData> {
+    match spec {
+        FontSpec::Zebra(_) => opts.fonts.get(spec),
+        FontSpec::Downloaded(name) => opts.memory.fonts.get(name).and_then(|ttf| font_data_from_ttf(ttf)),
+    }
 }
 
 /// Auto label height (`^LL` omitted, `Label.height_dots == 0`, guide
