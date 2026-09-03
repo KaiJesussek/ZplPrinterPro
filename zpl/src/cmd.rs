@@ -5,6 +5,7 @@ use crate::bc1d;
 use crate::config;
 use crate::diag::Diagnostic;
 use crate::geom;
+use crate::ir::Label;
 use crate::memory;
 use crate::scanner::{Cmd, Scanner, Token};
 use crate::state::{FieldDraft, FormatState, ParseContext};
@@ -46,6 +47,10 @@ fn start_format(ctx: &mut ParseContext, _params: &[u8]) {
         ));
         return;
     }
+    // Record where this ^XA sits in the global input stream (driver-set
+    // token offsets + stream_base); the archive (Task 19) slices the raw
+    // .zpl span [format_start, ^XZ end) for the completed label.
+    ctx.format_start = ctx.token_start;
     ctx.state.start_format();
 }
 
@@ -501,6 +506,64 @@ pub fn parse_stream(scanner: &mut Scanner, ctx: &mut ParseContext) {
     }
 }
 
+/// A completed label plus its raw input span: global byte offsets of the
+/// `^XA` ... `^XZ` token range (`stream_base` + chunk-local scanner
+/// positions), for the server archive's `.zpl` file.
+#[derive(Debug)]
+pub struct ParsedLabel {
+    pub label: Label,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// Like [`parse_stream`], but yields every label closed by a `^XZ` in this
+/// input (in order) instead of leaving only the most recent one in
+/// `ctx.pending_label`, and each entry carries the label's raw-input span.
+/// The TCP session driver (Task 19) calls this per read chunk, so a single
+/// chunk containing several formats archives each and stores exact raw
+/// bytes; [`parse_stream`] keeps its last-label-wins postcondition for
+/// whole-stream parsing.
+pub fn parse_stream_collect(
+    scanner: &mut Scanner,
+    ctx: &mut ParseContext,
+    labels: &mut Vec<ParsedLabel>,
+) {
+    scanner.set_chars(ctx.mode.cmd_char, ctx.mode.tilde_char);
+    while let Some(token) = scanner.next(matches!(ctx.state, FormatState::Field { .. })) {
+        // This token's global span: token_start carries over from the
+        // previous token (or the session's chunk base); token_end is the
+        // current scanner position plus the bytes consumed by earlier
+        // chunks, so spans survive chunk boundaries.
+        ctx.token_start = ctx.token_end;
+        ctx.token_end = ctx.stream_base + scanner.pos();
+        match token {
+            Token::Cmd(cmd) => {
+                let ends_download = cmd.prefix == ctx.mode.cmd_char && cmd.mnemonic == *b"FS";
+                if matches!(ctx.state, FormatState::DefFormat { .. }) && !ends_download {
+                    ctx.state.capture(&cmd_bytes(&cmd));
+                } else {
+                    dispatch(ctx, cmd);
+                    // ^CC/^CT handlers may have written new prefix
+                    // characters into the mode; re-sync the scanner so the
+                    // next token scans with them.
+                    scanner.set_chars(ctx.mode.cmd_char, ctx.mode.tilde_char);
+                    if let Some(label) = ctx.pending_label.take() {
+                        // token_end is just past this ^XZ token; format_start
+                        // was set by the matching ^XA.
+                        labels.push(ParsedLabel {
+                            label,
+                            start: ctx.format_start,
+                            end: ctx.token_end,
+                        });
+                    }
+                }
+            }
+            // Outside a download, capture is a no-op.
+            Token::Data(data) => ctx.state.capture(data),
+        }
+    }
+}
+
 /// Reconstruct one command token as its raw input bytes (dropping the
 /// scanner's mnemonic padding), for ^DF capture.
 fn cmd_bytes(cmd: &Cmd) -> Vec<u8> {
@@ -610,5 +673,44 @@ mod tests {
             }
             other => panic!("expected a text field, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn collect_yields_every_label_with_exact_spans() {
+        let mut diags = Diagnostics::default();
+        let mut mem = Memory::default();
+        let mut ctx = ParseContext::new(&mut diags, &mut mem);
+        let mut labels = Vec::new();
+        let src = b"^XA^GB50,50,2,B^XZ^XA^GB20,20,2,B^XZ";
+        parse_stream_collect(&mut Scanner::new(src), &mut ctx, &mut labels);
+        assert_eq!(labels.len(), 2, "each ^XZ yields one label");
+        assert_eq!(&src[labels[0].start..labels[0].end], b"^XA^GB50,50,2,B^XZ");
+        assert_eq!(&src[labels[1].start..labels[1].end], b"^XA^GB20,20,2,B^XZ");
+        assert!(labels[0].end <= labels[1].start);
+        assert!(ctx.pending_label.is_none(), "collect drains pending_label");
+    }
+
+    #[test]
+    fn collect_spans_cross_chunk_boundaries() {
+        let mut diags = Diagnostics::default();
+        let mut mem = Memory::default();
+        let mut ctx = ParseContext::new(&mut diags, &mut mem);
+        let mut labels = Vec::new();
+        ctx.stream_base = 0;
+        parse_stream_collect(&mut Scanner::new(b"^XA^FO10,10"), &mut ctx, &mut labels);
+        assert!(labels.is_empty());
+        assert!(ctx.state.is_partial()); // 11 bytes in; no ^XZ yet
+        // Second chunk: ^XZ completes the format opened in chunk 1. The
+        // span must start at chunk 1's ^XA (offset 0), not the chunk base.
+        ctx.stream_base = 11;
+        parse_stream_collect(&mut Scanner::new(b"^XZ"), &mut ctx, &mut labels);
+        assert_eq!(labels.len(), 1);
+        // ^XZ is a 3-byte token (prefix + 2-letter mnemonic), so the span
+        // ends at 11 + 3.
+        assert_eq!((labels[0].start, labels[0].end), (0, 11 + 3));
+        assert_eq!(
+            &b"^XA^FO10,10^XZ"[labels[0].start..labels[0].end],
+            b"^XA^FO10,10^XZ"
+        );
     }
 }

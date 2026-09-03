@@ -520,6 +520,21 @@ pub struct ParseContext<'a> {
     /// fields in its format, in the same order as the drafts at ^XZ. The
     /// server persists these across sessions (Task 21).
     pub serial_counters: BTreeMap<u8, i64>,
+    /// Global byte offset of the token currently being dispatched
+    /// (`stream_base` + chunk-local scanner position). Maintained by the
+    /// parse driver (Task 19) so the ^XA/^XZ handlers can record a label's
+    /// raw-input span for the archive.
+    pub token_start: usize,
+    /// Global byte offset just past the token currently being dispatched.
+    pub token_end: usize,
+    /// Bytes of input consumed by earlier chunks of this stream. The TCP
+    /// session sets this before each parse call so token offsets survive
+    /// chunk boundaries.
+    pub stream_base: usize,
+    /// Global offset of the open format's `^XA` (set from `token_start` by
+    /// the ^XA handler); the start of the raw `.zpl` span archived with the
+    /// label closed by `^XZ`.
+    pub format_start: usize,
 }
 
 impl<'a> ParseContext<'a> {
@@ -533,6 +548,10 @@ impl<'a> ParseContext<'a> {
             pending_label: None,
             recall_depth: 0,
             serial_counters: BTreeMap::new(),
+            token_start: 0,
+            token_end: 0,
+            stream_base: 0,
+            format_start: 0,
         }
     }
 }

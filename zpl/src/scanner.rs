@@ -77,6 +77,13 @@ impl<'a> Scanner<'a> {
         self.tilde_char = tilde_char;
     }
 
+    /// Current scan offset within the input slice. pub(crate): the parse
+    /// driver uses it to compute raw-label spans for the server archive
+    /// (Task 19).
+    pub(crate) fn pos(&self) -> usize {
+        self.pos
+    }
+
     /// in_field_data: when true, '~' does NOT start a command (literal data).
     pub fn next(&mut self, in_field_data: bool) -> Option<Token<'a>> {
         if self.pos >= self.src.len() {
