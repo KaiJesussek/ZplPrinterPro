@@ -127,10 +127,15 @@ pub(crate) fn graphic_ellipse(ctx: &mut ParseContext, params: &[u8]) {
 /// - `a` = compression type: **A** ASCII hex (default; "follows the format
 ///   for other download commands", so the `~DG` data grammar - repeat
 ///   letters, `,`/`!`/`:` row ops, `;` terminator, CR/LF - applies via the
-///   shared decoder), **B** binary, **C** compressed binary. Only A is
-///   supported here: B/C payloads cannot ride a ZPL text stream (any `^`/`~`
-///   byte splits the token - the guide itself marks them as download
-///   aborts) and C's scheme is host-side and undocumented. Others warn and
+///   shared decoder), **B** binary, **C** compressed binary, **P** ZB64
+///   PNG. B and C carry `b` strictly-binary bytes after `d` - the parse
+///   driver raw-frames them ([`gf_binary_len`]/[`gf_binary_handler`]),
+///   since the payload may legally contain `^`/`~` ("all control prefixes
+///   are ignored until the total number of bytes needed ... is sent").
+///   P is the ZB64 base64 encoding of a PNG (p.1602), printable ASCII
+///   only - it rides the tokenizer; dimensions come from the PNG itself.
+///   C's decompression scheme is host-side and undocumented, so its
+///   payload is framed but not decoded (warn + skip). Others warn and
 ///   skip.
 /// - `b` = binary byte count (bytes transmitted; "for ASCII download, the
 ///   parameter should match" c), `c` = graphic field count (total image
@@ -138,7 +143,7 @@ pub(crate) fn graphic_ellipse(ctx: &mut ParseContext, params: &[u8]) {
 ///   1..99999, out-of-range set to the nearest limit; a missing b/c/d is
 ///   "command is ignored" -> warning + skip.
 /// - `data` = ASCII hex, two digits per image byte; any data after the
-///   count (c) is satisfied is ignored.
+///   count (c) is satisfied is ignored - or the ZB64 PNG for a=P.
 ///
 /// The decoded bitmap lands on the open field draft as
 /// `GraphicKind::Inline` with its bytes; position comes from `^FO`/`^FT`.
@@ -149,6 +154,22 @@ pub(crate) fn graphic_field(ctx: &mut ParseContext, params: &[u8]) {
         .and_then(|p| p.first())
         .copied()
         .unwrap_or(b'A');
+    // P: ZB64-encoded PNG (guide p.1602 - base64 emits only printable
+    // ASCII, so the payload rides the tokenizer with no raw framing; the
+    // PNG header itself carries the dimensions). Decode first, then open
+    // the draft only on success, like every other ^GF path.
+    if matches!(comp, b'P' | b'p') {
+        match zb64_png_bitmap(data) {
+            Ok((w, _h, bits)) => {
+                if let Some(draft) = draft_mut(ctx) {
+                    draft.graphic = Some(GraphicKind::Inline);
+                    draft.inline_data = Some((bits, crate::memory::packed_row_bytes(w) as u32));
+                }
+            }
+            Err(why) => ctx.diags.push(Diagnostic::warning("GF", why)),
+        }
+        return;
+    }
     let Some(b) = segs.get(1).and_then(|p| to_u32(p)) else {
         ctx.diags.push(Diagnostic::warning(
             "GF",
@@ -181,11 +202,15 @@ pub(crate) fn graphic_field(ctx: &mut ParseContext, params: &[u8]) {
         ));
         return;
     }
+    // B/C with a parseable byte count never reach the table handler (the
+    // driver frames them via gf_binary_len/gf_binary_handler); landing
+    // here means `b` was missing - already warned above. Unknown letters
+    // warn here.
     if !matches!(comp, b'A' | b'a') {
         ctx.diags.push(Diagnostic::warning(
             "GF",
             format!(
-                "compression type '{comp}': only ASCII hexadecimal (A) is supported; binary and compressed-binary payloads cannot be carried by a ZPL text stream and the compressed scheme is undocumented \u{2014} field skipped"
+                "compression type '{comp}': only ASCII hex (A), binary (B), compressed-binary (C), and ZB64 PNG (P) are supported; field skipped"
             ),
         ));
         return;
@@ -203,4 +228,144 @@ pub(crate) fn graphic_field(ctx: &mut ParseContext, params: &[u8]) {
         draft.graphic = Some(GraphicKind::Inline);
         draft.inline_data = Some((bytes, d));
     }
+}
+
+/// ^GF binary framing (used by the parse driver): for `a` = B/C, returns
+/// `(declared byte count, payload bytes the token's params run already
+/// absorbed)`. The scanner stops the params run at the first `^`/`~` -
+/// which may sit inside the payload - so the driver consumes the remaining
+/// `declared - already` bytes raw before the next token. `None` for A/P
+/// (text payloads) and malformed byte counts.
+pub(crate) fn gf_binary_len(params: &[u8]) -> Option<(usize, usize)> {
+    let (segs, already) = head_segments(params, 4);
+    let comp = segs
+        .first()
+        .and_then(|p| p.first())
+        .copied()
+        .unwrap_or(b'A');
+    if !matches!(comp, b'B' | b'b' | b'C' | b'c') {
+        return None;
+    }
+    let declared = segs
+        .get(1)
+        .and_then(|p| to_u32(p))?
+        .clamp(1, MAX_GF_PARAM) as usize;
+    Some((declared, already.len()))
+}
+
+/// ^GF B/C payload receiver: reconstructs the full payload (the token's
+/// data segments plus the raw tail the driver took), validates the header
+/// exactly as the A path does, and lands the bitmap on the open field
+/// draft. Uncompressed B data *is* the bitmap (`b` should equal `c`;
+/// extras are ignored, a short payload warns and skips). C's
+/// decompression scheme is not documented by the guide ("compressed on
+/// the host side using Zebra's compression algorithm"), so C warns and
+/// skips - never a panic, never a partial draft.
+pub(crate) fn gf_binary_handler(ctx: &mut ParseContext, params: &[u8], tail: &[u8]) {
+    let (segs, already) = head_segments(params, 4);
+    let comp = segs
+        .first()
+        .and_then(|p| p.first())
+        .copied()
+        .unwrap_or(b'A');
+    let Some(b) = segs.get(1).and_then(|p| to_u32(p)) else {
+        ctx.diags.push(Diagnostic::warning(
+            "GF",
+            "missing binary byte count (b); field skipped",
+        ));
+        return;
+    };
+    let Some(c) = segs.get(2).and_then(|p| to_u32(p)) else {
+        ctx.diags.push(Diagnostic::warning(
+            "GF",
+            "missing graphic field count (c); field skipped",
+        ));
+        return;
+    };
+    let Some(d) = segs.get(3).and_then(|p| to_u32(p)) else {
+        ctx.diags.push(Diagnostic::warning(
+            "GF",
+            "missing bytes per row (d); field skipped",
+        ));
+        return;
+    };
+    let declared = b.clamp(1, MAX_GF_PARAM) as usize;
+    let c = c.clamp(1, MAX_GF_PARAM) as usize;
+    let d = d.clamp(1, MAX_GF_PARAM) as usize;
+    if !c.is_multiple_of(d) {
+        ctx.diags.push(Diagnostic::warning(
+            "GF",
+            format!("{c} total bytes is not a multiple of {d} bytes per row; field skipped"),
+        ));
+        return;
+    }
+    // Payload = what the token absorbed (already) + the raw tail, capped
+    // at the declared count. The driver guarantees the full count except
+    // in the truncated case (warned there, dropped here).
+    let mut payload = Vec::with_capacity(already.len().min(declared));
+    payload.extend_from_slice(&already[..already.len().min(declared)]);
+    payload.extend_from_slice(&tail[..tail.len().min(declared - payload.len())]);
+    let Some(bytes) = (payload.len() == declared).then_some(payload) else {
+        return;
+    };
+    match comp {
+        b'B' | b'b' if bytes.len() >= c => {
+            // Extras past the graphic count are ignored, mirroring the A
+            // path's "any data after the count is satisfied is ignored".
+            if let Some(draft) = draft_mut(ctx) {
+                draft.graphic = Some(GraphicKind::Inline);
+                draft.inline_data = Some((bytes[..c].to_vec(), d as u32));
+            }
+        }
+        b'B' | b'b' => {
+            ctx.diags.push(Diagnostic::warning(
+                "GF",
+                format!(
+                    "binary payload is {declared} bytes, graphic count (c) is {c}; field skipped"
+                ),
+            ));
+        }
+        b'C' | b'c' => {
+            // The guide defines C's data as "compressed on the host side
+            // using Zebra's compression algorithm" but never specifies the
+            // scheme (~DY adds "used only by Zebra's BAR-ONE"); there is
+            // nothing to decompress against, so the payload is framed
+            // correctly and dropped with a warning.
+            ctx.diags.push(Diagnostic::warning(
+                "GF",
+                "compressed binary (C) is not supported; field skipped",
+            ));
+        }
+        _ => {}
+    }
+}
+
+/// Decode a ZB64-encoded PNG (guide p.1602-1603): an optional `:B64:`/
+/// `:Z64:` lead-in and a trailing `:crc` are stripped, the interior is
+/// MIME base64, and the PNG opens into the 1bpp row-packed bitmap model.
+/// Z64 (LZ77-compressed) payloads are acknowledged but not decompressed -
+/// the inflater is out of scope for what is practically always B64 data.
+fn zb64_png_bitmap(data: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
+    let body = if let Some(rest) = data.strip_prefix(b":B64:") {
+        rest
+    } else if data.starts_with(b":Z64:") {
+        return Err("Z64-compressed PNG is not supported; field skipped".into());
+    } else {
+        data
+    };
+    // The appendix tags the encoded stream with `:crc` (four hex digits);
+    // the CRC polynomial is unspecified, so the trailer is stripped but
+    // not verified.
+    let body = if body.len() >= 5
+        && body[body.len() - 5] == b':'
+        && body[body.len() - 4..].iter().all(|b| b.is_ascii_hexdigit())
+    {
+        &body[..body.len() - 5]
+    } else {
+        body
+    };
+    let raw = crate::gfxdata::decode_base64(body)
+        .ok_or_else(|| "malformed ZB64 data; field skipped".to_string())?;
+    crate::gfxdata::png_to_bitmap(&raw)
+        .ok_or_else(|| "malformed PNG data; field skipped".to_string())
 }

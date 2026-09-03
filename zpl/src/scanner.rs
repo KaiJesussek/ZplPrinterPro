@@ -81,6 +81,28 @@ impl<'a> Scanner<'a> {
         self.pos
     }
 
+    /// Bytes of input not yet scanned. The parse driver checks this before
+    /// [`Self::raw_take`] so a truncated binary payload (declared byte
+    /// count beyond the stream) warns instead of consuming short.
+    pub(crate) fn remaining(&self) -> usize {
+        self.src.len() - self.pos
+    }
+
+    /// Consume the next `n` bytes of the *raw* input, skipping command
+    /// recognition entirely, and return them. The payload of a `^GF` B/C
+    /// or `~DY` B command may legally contain `^`/`~`/`^FS` bytes (guide
+    /// p.215/p.181: "all control prefixes are ignored until the total
+    /// number of bytes needed ... is sent"); the driver takes it *before*
+    /// the scanner's next [`Self::next`] call so those bytes never
+    /// tokenize. Takes at most `n` bytes (the caller has already checked
+    /// [`Self::remaining`]); never panics.
+    pub(crate) fn raw_take(&mut self, n: usize) -> &'a [u8] {
+        let end = self.pos.saturating_add(n).min(self.src.len());
+        let bytes = &self.src[self.pos..end];
+        self.pos = end;
+        bytes
+    }
+
     /// in_field_data: when true, '~' does NOT start a command (literal data).
     pub fn next(&mut self, in_field_data: bool) -> Option<Token<'a>> {
         if self.pos >= self.src.len() {

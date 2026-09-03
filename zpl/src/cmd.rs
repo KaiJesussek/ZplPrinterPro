@@ -28,6 +28,15 @@ pub enum CmdKind {
     PrinterOp,
 }
 
+/// A binary command's declared payload framing: `(declared byte count,
+/// bytes of the payload the token's params run already absorbed)` - see
+/// [`CommandSpec::binary_len`].
+pub type BinaryFraming = (usize, usize);
+/// Binary payload framing decoder - see [`CommandSpec::binary_len`].
+pub type BinaryLen = Option<fn(&[u8]) -> Option<BinaryFraming>>;
+/// Raw-payload receiver - see [`CommandSpec::binary_handler`].
+pub type BinaryHandler = Option<fn(&mut ParseContext, &[u8], &[u8])>;
+
 /// One row of the static command table.
 pub struct CommandSpec {
     /// Two-byte mnemonic as scanned, e.g. `[b'X', b'A']` for ^XA;
@@ -36,6 +45,24 @@ pub struct CommandSpec {
     pub prefix: Prefix,
     pub kind: CmdKind,
     pub handler: fn(&mut ParseContext, &[u8]),
+    /// Raw-byte framing for binary payloads (`^GF` B/C, `~DY` B - guide
+    /// p.215/p.181: binary data's "control prefixes are ignored until the
+    /// total number of bytes needed ... is sent", so the payload may
+    /// legally contain `^`/`~`/`^FS` bytes that the scanner must never
+    /// tokenize). Given the command's scanned `params`, returns
+    /// `(declared, already)`: the byte count the host declared and how
+    /// much of the payload the params run already absorbed (the scanner
+    /// stops it at the first command character, which may sit inside the
+    /// payload). The parse driver raw-consumes the remaining
+    /// `declared - already` bytes from the stream before the next token
+    /// and hands them to `binary_handler`. `None` on every other command.
+    pub binary_len: BinaryLen,
+    /// Receiver for a framed binary payload. Runs *instead of* `handler`
+    /// with `(ctx, params, tail)`: `tail` is the raw bytes taken from the
+    /// stream (the `declared - already` remainder); the payload itself is
+    /// the data segments of `params` plus `tail`. Used with `binary_len`
+    /// by exactly the rows above.
+    pub binary_handler: BinaryHandler,
 }
 
 fn start_format(ctx: &mut ParseContext, _params: &[u8]) {
@@ -47,6 +74,18 @@ fn start_format(ctx: &mut ParseContext, _params: &[u8]) {
         ));
         return;
     }
+    // A ^DF download still open when ^XA arrives is aborted here:
+    // start_format() replaces the capture state, dropping the stored
+    // bytes. Warn so the operator sees the crossover.
+    if matches!(ctx.state, FormatState::DefFormat { .. }) {
+        ctx.diags.push(Diagnostic::warning(
+            "XA",
+            "^XA while a format download is open; download aborted",
+        ));
+    }
+    // A previous format's closed label must not leak into this one:
+    // pending_label is only Some between a ^XZ and the next ^XA/drain.
+    ctx.pending_label = None;
     // Record where this ^XA sits in the global input stream (driver-set
     // token offsets + stream_base); the archive (Task 19) slices the raw
     // .zpl span [format_start, ^XZ end) for the completed label. The
@@ -280,6 +319,15 @@ fn start_download(ctx: &mut ParseContext, params: &[u8]) {
         ));
         return;
     }
+    // ^DF while a format is open destroys the open format (capture state
+    // replaces it); warn, but still enter the download - the guide's own
+    // pattern embeds ^DF right after ^XA.
+    if ctx.state.is_partial() {
+        ctx.diags.push(Diagnostic::warning(
+            "DF",
+            "format download while a format is open; download started",
+        ));
+    }
     ctx.state.start_download(params);
 }
 
@@ -366,24 +414,32 @@ const TABLE: &[CommandSpec] = &[
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: start_format,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"XZ",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: end_format,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"FS",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: end_field,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"DF",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: start_download,
+        binary_len: None,
+        binary_handler: None,
     },
     // Task 7: printer storage. ^DF is the download half of this family (its
     // ^FS ends the capture and stores the bytes); the tilde operations run
@@ -393,36 +449,48 @@ const TABLE: &[CommandSpec] = &[
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: memory::recall_format,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"XG",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: memory::recall_graphic,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"ID",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: memory::delete_object,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"IL",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: memory::image_load,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"IM",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: memory::image_move,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"IS",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: memory::image_save,
+        binary_len: None,
+        binary_handler: None,
     },
     // Task 8: drawing-field command set. ^GS was registered by Task 7 (it
     // is the graphic-symbol *font style*, not a shape); ^GB ^GC ^GD ^GE
@@ -432,36 +500,48 @@ const TABLE: &[CommandSpec] = &[
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: geom::graphic_box,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"GC",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: geom::graphic_circle,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"GD",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: geom::graphic_diagonal,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"GE",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: geom::graphic_ellipse,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"GF",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: geom::graphic_field,
+        binary_len: Some(geom::gf_binary_len),
+        binary_handler: Some(geom::gf_binary_handler),
     },
     CommandSpec {
         mnemonic: *b"GS",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: textfmt::graphic_symbol,
+        binary_len: None,
+        binary_handler: None,
     },
     // Task 9: barcode field framework. ^BY sets the ^B* defaults (module
     // width, ratio, height); ^BC (Code 128) is the first symbology and the
@@ -471,12 +551,16 @@ const TABLE: &[CommandSpec] = &[
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: bc::bar_code_defaults,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"BC",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: bc::code_128,
+        binary_len: None,
+        binary_handler: None,
     },
     // Task 15: the remaining 1D symbologies. ^B1..^B9 scan as the
     // one-letter mnemonic `B ` with the symbology digit as the first
@@ -488,12 +572,16 @@ const TABLE: &[CommandSpec] = &[
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: bc::barcode_digit,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"BA",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: bc::code93_field,
+        binary_len: None,
+        binary_handler: None,
     },
     // Task 16: 2D symbologies. ^B0 (Aztec) and ^B7 (PDF417) scan through
     // the digit route; ^BQ (QR) and ^BX (DataMatrix) are two-letter.
@@ -502,78 +590,104 @@ const TABLE: &[CommandSpec] = &[
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: bc::qr_field,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"BX",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: bc::datamatrix_field,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"BK",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: bc::codabar_field,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"BE",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: bc::ean13_field,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"BU",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: bc::upca_field,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"BM",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: bc::msi_field,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"DG",
         prefix: Prefix::Tilde,
         kind: CmdKind::PrinterOp,
         handler: memory::download_graphic,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"DY",
         prefix: Prefix::Tilde,
         kind: CmdKind::PrinterOp,
         handler: memory::download_object,
+        binary_len: Some(memory::dy_binary_len),
+        binary_handler: Some(memory::dy_binary_handler),
     },
     CommandSpec {
         mnemonic: *b"DS",
         prefix: Prefix::Tilde,
         kind: CmdKind::PrinterOp,
         handler: memory::download_scalable_font,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"DT",
         prefix: Prefix::Tilde,
         kind: CmdKind::PrinterOp,
         handler: memory::download_bounded_font,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"DU",
         prefix: Prefix::Tilde,
         kind: CmdKind::PrinterOp,
         handler: memory::download_unbounded_font,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"EG",
         prefix: Prefix::Tilde,
         kind: CmdKind::PrinterOp,
         handler: memory::erase_graphics,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"DN",
         prefix: Prefix::Tilde,
         kind: CmdKind::PrinterOp,
         handler: memory::abort_download,
+        binary_len: None,
+        binary_handler: None,
     },
     // Task 5: text-field command set. The ^A mnemonic is single-letter, so
     // the scanner pads it to [A, space].
@@ -582,78 +696,104 @@ const TABLE: &[CommandSpec] = &[
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: textfmt::field_origin,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"FT",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: textfmt::field_typeset,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"FD",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: textfmt::field_data,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"FV",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: textfmt::field_variable,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"FH",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: textfmt::field_hex,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"FR",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: textfmt::field_reverse,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"FB",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: textfmt::field_block,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"FW",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: textfmt::field_orientation,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"A ",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: textfmt::select_font,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"CF",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: textfmt::change_default_font,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"CW",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: textfmt::assign_font,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"CI",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: textfmt::change_international,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"FC",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: textfmt::set_clock_indicators,
+        binary_len: None,
+        binary_handler: None,
     },
     // Task 6: label configuration commands. Geometry config is stored in
     // PrinterMode; darkness/media/units/ZPL-mode in PrinterConfig; the rest
@@ -663,168 +803,224 @@ const TABLE: &[CommandSpec] = &[
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::label_home,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"LL",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::label_length,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"PW",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::print_width,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"PO",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::print_orientation,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"PM",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::mirror_image,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"LS",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::label_shift,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"LT",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::label_top,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"MD",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::media_darkness,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"PQ",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::print_quantity,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"PR",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::print_rate,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"PH",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::slew_to_home,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"MN",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::media_tracking,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"MT",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::media_type,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"MM",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::print_mode,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"MU",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::units,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"MF",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::media_feed,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"MI",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::maintenance_message,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"ML",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::max_label_length,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"MP",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::mode_protection,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"MW",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::head_cold_warning,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"PA",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::advanced_text,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"PF",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::slew_rows,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"SC",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::serial_comms,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"SZ",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::zpl_mode,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"ZZ",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::printer_sleep,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"XB",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::suppress_backfeed,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"XS",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::dynamic_calibration,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"PN",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::present_now,
+        binary_len: None,
+        binary_handler: None,
     },
     // Tilde printer operations from the same config family: darkness and
     // slew-to-home have ^- and ~-forms in the guide (^PH ~PH p.317; ~SD p.333
@@ -834,12 +1030,16 @@ const TABLE: &[CommandSpec] = &[
         prefix: Prefix::Tilde,
         kind: CmdKind::PrinterOp,
         handler: config::set_darkness,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"PH",
         prefix: Prefix::Tilde,
         kind: CmdKind::PrinterOp,
         handler: config::slew_to_home,
+        binary_len: None,
+        binary_handler: None,
     },
     // Task 17: command-character switches (^CC/^CT), serial numbers (^SN),
     // and the accept-only remainder (^SQ ^SR ^SS ^ST ^SX ^TB ^TO ^FX ^HY ^HZ
@@ -851,126 +1051,168 @@ const TABLE: &[CommandSpec] = &[
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: change_command_char,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"CC",
         prefix: Prefix::Tilde,
         kind: CmdKind::PrinterOp,
         handler: change_command_char,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"CT",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: change_tilde_char,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"CT",
         prefix: Prefix::Tilde,
         kind: CmdKind::PrinterOp,
         handler: change_tilde_char,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"SN",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: textfmt::serial_number,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"TB",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: textfmt::text_block,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"SQ",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::halt_zebranet_alert,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"SR",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::set_head_resistance,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"SS",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::set_media_sensors,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"ST",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::set_clock,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"SX",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::set_zebranet_alert,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"TO",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: memory::transfer_object,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"FX",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: comment,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"HY",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: host_upload_graphic,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"HZ",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: host_description,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"HU",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: host_get_alerts,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"HU",
         prefix: Prefix::Tilde,
         kind: CmdKind::PrinterOp,
         handler: host_get_alerts,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"JZ",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: config::reprint_after_error,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"WC",
         prefix: Prefix::Tilde,
         kind: CmdKind::PrinterOp,
         handler: print_config_label,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"TA",
         prefix: Prefix::Tilde,
         kind: CmdKind::PrinterOp,
         handler: config::tear_off_adjust,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"JR",
         prefix: Prefix::Tilde,
         kind: CmdKind::PrinterOp,
         handler: power_on_reset,
+        binary_len: None,
+        binary_handler: None,
     },
     // Task 20: host queries (~HS ~HQ ~WD ~HI) and numbered fields
     // (^FN / ^HV). ~HS is the byte-exact status centerpiece; the rest are
@@ -981,36 +1223,48 @@ const TABLE: &[CommandSpec] = &[
         prefix: Prefix::Tilde,
         kind: CmdKind::PrinterOp,
         handler: query_host_status,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"HQ",
         prefix: Prefix::Tilde,
         kind: CmdKind::PrinterOp,
         handler: query_head_status,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"WD",
         prefix: Prefix::Tilde,
         kind: CmdKind::PrinterOp,
         handler: query_config_dump,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"HI",
         prefix: Prefix::Tilde,
         kind: CmdKind::PrinterOp,
         handler: query_model_id,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"FN",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: textfmt::field_number,
+        binary_len: None,
+        binary_handler: None,
     },
     CommandSpec {
         mnemonic: *b"HV",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: textfmt::host_value,
+        binary_len: None,
+        binary_handler: None,
     },
 ];
 
@@ -1019,22 +1273,26 @@ pub fn command_table() -> &'static [CommandSpec] {
     TABLE
 }
 
-/// Look up `cmd` in the table and run its handler; unknown commands become a
-/// diagnostic. Handlers receive the raw parameter bytes.
-///
-/// Prefix matching is against the mode's *current* command/tilde characters,
-/// not the literal caret/tilde bytes: after a `^CC/` the scan of `/FO...`
-/// must still find the caret rows (the scanner records the raw prefix byte).
-pub fn dispatch(ctx: &mut ParseContext, cmd: Cmd) {
-    for spec in command_table() {
+/// The table row for a scanned command token (prefix matched against the
+/// mode's *current* command/tilde characters under `^CC`/`^CT`, not the
+/// literal caret/tilde bytes), shared by [`dispatch`] and the parse
+/// driver's binary framing so the two cannot pick different rows.
+fn spec_for(ctx: &ParseContext, cmd: &Cmd) -> Option<&'static CommandSpec> {
+    command_table().iter().find(|spec| {
         let prefix_matches = match spec.prefix {
             Prefix::Caret => cmd.prefix == ctx.mode.cmd_char,
             Prefix::Tilde => cmd.prefix == ctx.mode.tilde_char,
         };
-        if prefix_matches && spec.mnemonic == cmd.mnemonic {
-            (spec.handler)(ctx, cmd.params);
-            return;
-        }
+        prefix_matches && spec.mnemonic == cmd.mnemonic
+    })
+}
+
+/// Look up `cmd` in the table and run its handler; unknown commands become a
+/// diagnostic. Handlers receive the raw parameter bytes.
+pub fn dispatch(ctx: &mut ParseContext, cmd: Cmd) {
+    if let Some(spec) = spec_for(ctx, &cmd) {
+        (spec.handler)(ctx, cmd.params);
+        return;
     }
     // The command token carries no input offset; diagnostics report 0 until
     // the driver threads scanner positions through.
@@ -1058,21 +1316,94 @@ pub fn parse_stream(scanner: &mut Scanner, ctx: &mut ParseContext) {
     while let Some(token) = scanner.next(matches!(ctx.state, FormatState::Field { .. })) {
         match token {
             Token::Cmd(cmd) => {
-                let ends_download = cmd.prefix == ctx.mode.cmd_char && cmd.mnemonic == *b"FS";
-                if matches!(ctx.state, FormatState::DefFormat { .. }) && !ends_download {
-                    ctx.state.capture(&cmd_bytes(&cmd));
-                } else {
-                    dispatch(ctx, cmd);
-                    // ^CC/^CT handlers may have written new prefix
-                    // characters into the mode; re-sync the scanner so the
-                    // next token scans with them.
-                    scanner.set_chars(ctx.mode.cmd_char, ctx.mode.tilde_char);
-                }
+                // Not collecting: the label closed by ^XZ stays in
+                // ctx.pending_label (last-label-wins postcondition).
+                run_cmd_token(scanner, ctx, cmd, false);
             }
             // Outside a download, capture is a no-op.
             Token::Data(data) => ctx.state.capture(data),
         }
     }
+}
+
+/// Drive one scanned command token - shared by [`parse_stream`] and
+/// [`parse_stream_collect`] so the two drivers cannot drift. While a ^DF
+/// download is open the token is captured raw (a `^XA` aborts the download
+/// and dispatches instead, so the ^XA handler can warn); otherwise it
+/// dispatches - after any raw binary payload (`^GF` B/C, `~DY` B) is
+/// consumed from the scanner. Returns the label closed by this token for
+/// the collect driver's archive.
+fn run_cmd_token(
+    scanner: &mut Scanner,
+    ctx: &mut ParseContext,
+    cmd: Cmd,
+    collect: bool,
+) -> Option<ParsedLabel> {
+    let ends_download = cmd.prefix == ctx.mode.cmd_char && cmd.mnemonic == *b"FS";
+    let aborts_download = cmd.prefix == ctx.mode.cmd_char && cmd.mnemonic == *b"XA";
+    // `(declared byte count, payload bytes the token's params run already
+    // absorbed)` - None for non-binary commands (see CommandSpec).
+    let framed = spec_for(ctx, &cmd)
+        .and_then(|s| s.binary_len)
+        .and_then(|f| f(cmd.params));
+    if matches!(ctx.state, FormatState::DefFormat { .. }) && !ends_download && !aborts_download {
+        // Captured verbatim - cmd_bytes already covers the payload bytes
+        // inside the token; the tail after it rides along so the stored
+        // format replays the same binary framing when recalled.
+        let mut bytes = cmd_bytes(&cmd);
+        if let Some((declared, already)) = framed {
+            bytes.extend_from_slice(scanner.raw_take(declared.saturating_sub(already)));
+        }
+        ctx.state.capture(&bytes);
+        return None;
+    }
+    if let (Some((declared, already)), Some(handler)) =
+        (framed, spec_for(ctx, &cmd).and_then(|s| s.binary_handler))
+    {
+        let want = declared.saturating_sub(already);
+        if want > scanner.remaining() {
+            ctx.diags.push(Diagnostic::warning(
+                core::str::from_utf8(&cmd.mnemonic[..]).unwrap_or("??"),
+                format!(
+                    "truncated binary data: expected {declared} bytes, got {}",
+                    already + scanner.remaining()
+                ),
+            ));
+            return None;
+        }
+        // The payload's tail: the `^`/`~`/`^FS` bytes the declared count
+        // still owes, taken raw so they never tokenize (guide p.215/p.181:
+        // "all control prefixes are ignored until the total number of bytes
+        // needed ... is sent"). Span accounting must cover them, or the
+        // archive's raw .zpl slice would not re-parse to the same payload.
+        let tail = scanner.raw_take(want);
+        ctx.token_end = ctx.stream_base + scanner.pos();
+        handler(ctx, cmd.params, tail);
+        return None;
+    }
+    let closes_format = cmd.prefix == ctx.mode.cmd_char && cmd.mnemonic == *b"XZ";
+    dispatch(ctx, cmd);
+    // ^CC/^CT handlers may have written new prefix characters into the
+    // mode; re-sync the scanner so the next token scans with them.
+    scanner.set_chars(ctx.mode.cmd_char, ctx.mode.tilde_char);
+    if collect && closes_format {
+        if let Some(label) = ctx.pending_label.take() {
+            // token_end is just past this ^XZ token; format_start and
+            // diag_start were set by the matching ^XA. The window closes
+            // after the ^XZ dispatch so anything raised at ^XZ
+            // (barcode/UTF-16/serial checks) stays attributed to this
+            // label.
+            let diag_end = ctx.diags.items.len();
+            return Some(ParsedLabel {
+                label,
+                start: ctx.format_start,
+                end: ctx.token_end,
+                diag_start: ctx.diag_start,
+                diag_end,
+            });
+        }
+    }
+    None
 }
 
 /// A completed label plus its raw input span: global byte offsets of the
@@ -1109,35 +1440,15 @@ pub fn parse_stream_collect(
         // This token's global span: token_start carries over from the
         // previous token (or the session's chunk base); token_end is the
         // current scanner position plus the bytes consumed by earlier
-        // chunks, so spans survive chunk boundaries.
+        // chunks, so spans survive chunk boundaries. A binary payload
+        // consumed inside the token re-pins token_end past the raw bytes,
+        // so the next token's start lands after them.
         ctx.token_start = ctx.token_end;
         ctx.token_end = ctx.stream_base + scanner.pos();
         match token {
             Token::Cmd(cmd) => {
-                let ends_download = cmd.prefix == ctx.mode.cmd_char && cmd.mnemonic == *b"FS";
-                if matches!(ctx.state, FormatState::DefFormat { .. }) && !ends_download {
-                    ctx.state.capture(&cmd_bytes(&cmd));
-                } else {
-                    dispatch(ctx, cmd);
-                    // ^CC/^CT handlers may have written new prefix
-                    // characters into the mode; re-sync the scanner so the
-                    // next token scans with them.
-                    scanner.set_chars(ctx.mode.cmd_char, ctx.mode.tilde_char);
-                    if let Some(label) = ctx.pending_label.take() {
-                        // token_end is just past this ^XZ token; format_start
-                        // and diag_start were set by the matching ^XA. The
-                        // window closes after the ^XZ dispatch so anything
-                        // raised at ^XZ (barcode/UTF-16/serial checks) stays
-                        // attributed to this label.
-                        let diag_end = ctx.diags.items.len();
-                        labels.push(ParsedLabel {
-                            label,
-                            start: ctx.format_start,
-                            end: ctx.token_end,
-                            diag_start: ctx.diag_start,
-                            diag_end,
-                        });
-                    }
+                if let Some(parsed) = run_cmd_token(scanner, ctx, cmd, true) {
+                    labels.push(parsed);
                 }
             }
             // Outside a download, capture is a no-op.
@@ -1364,4 +1675,117 @@ mod tests {
             b"^XA^FO10,10^XZ"
         );
     }
+
+    #[test]
+    fn df_during_format_warns_and_download_starts() {
+        let mut diags = Diagnostics::default();
+        let mut mem = Memory::default();
+        let mut ctx = ParseContext::new(&mut diags, &mut mem);
+        // ^DF while a format is open: exactly one crossover warning, and
+        // the download still enters capture (body stored on ^FS; ^XZ then
+        // finds no open format).
+        parse_stream(&mut Scanner::new(b"^XA^DFR:F^FO10,10^FS^XZ"), &mut ctx);
+        assert_eq!(
+            ctx.diags.items.len(),
+            1,
+            "only the crossover warning: {diags:?}"
+        );
+        assert_eq!(ctx.diags.items[0].command, "DF");
+        assert!(matches!(ctx.diags.items[0].severity, Severity::Warning));
+        assert!(ctx.memory.formats.contains_key("F.ZPL"), "download stored");
+        assert!(ctx.pending_label.is_none());
+    }
+
+    #[test]
+    fn xa_aborts_open_download() {
+        let mut diags = Diagnostics::default();
+        let mut mem = Memory::default();
+        let mut ctx = ParseContext::new(&mut diags, &mut mem);
+        // ^XA while a ^DF download is open: exactly one crossover
+        // warning, the captured bytes are dropped, and the new format
+        // parses normally.
+        parse_stream(&mut Scanner::new(b"^DFR:F^FDx^XA^FO1^FDy^FS^XZ"), &mut ctx);
+        assert_eq!(
+            ctx.diags.items.len(),
+            1,
+            "only the crossover warning: {diags:?}"
+        );
+        assert_eq!(ctx.diags.items[0].command, "XA");
+        assert!(matches!(ctx.diags.items[0].severity, Severity::Warning));
+        assert!(
+            !ctx.memory.formats.contains_key("F.ZPL"),
+            "download aborted: captured bytes dropped"
+        );
+        let label = ctx.pending_label.as_ref().expect("the new format completed");
+        assert_eq!(label.fields.len(), 1);
+    }
+
+    #[test]
+    fn plain_flows_stay_silent() {
+        // "No new warnings on valid input": a plain format, a plain
+        // download, and ^XA outside any download must not warn.
+        let mut diags = Diagnostics::default();
+        let mut mem = Memory::default();
+        let mut ctx = ParseContext::new(&mut diags, &mut mem);
+        parse_stream(
+            &mut Scanner::new(b"^XA^FDx^FS^XZ^DFR:F^FO10,10^FS^XA^GB20,20,2,B^XZ"),
+            &mut ctx,
+        );
+        assert!(ctx.diags.items.is_empty(), "unexpected: {diags:?}");
+        assert!(ctx.pending_label.is_some());
+    }
+
+    #[test]
+    fn stale_pending_label_dropped_at_xa() {
+        let mut diags = Diagnostics::default();
+        let mut mem = Memory::default();
+        let mut ctx = ParseContext::new(&mut diags, &mut mem);
+        // A closed format leaves its label pending; a new ^XA must drop
+        // the stale one even when the new format never closes (EOF).
+        // Before the fix, label 1 leaked into the partial format 2.
+        parse_stream(&mut Scanner::new(b"^XA^GB10,10,2,B^XZ^XA^FO10,10"), &mut ctx);
+        assert!(ctx.pending_label.is_none(), "stale label dropped at ^XA");
+        assert!(ctx.state.is_partial(), "the second format is open");
+    }
+
+    #[test]
+    fn binary_payload_survives_archive_round_trip() {
+        let mut diags = Diagnostics::default();
+        let mut mem = Memory::default();
+        let mut ctx = ParseContext::new(&mut diags, &mut mem);
+        let mut labels = Vec::new();
+        let payload = [0x5Eu8, 0x58, 0x5A, 0x7E, 0x41, 0x42]; // "^XZ~AB"
+        let mut src = b"^XA^GFB,6,6,2,".to_vec();
+        src.extend_from_slice(&payload);
+        src.extend_from_slice(b"^FS^XZ");
+        parse_stream_collect(&mut Scanner::new(&src), &mut ctx, &mut labels);
+        assert_eq!(labels.len(), 1);
+        assert!(
+            src[labels[0].start..labels[0].end] == src[..],
+            "the raw span covers the format incl. the binary payload"
+        );
+        match &labels[0].label.fields[0] {
+            Field::Graphic(g) => {
+                assert_eq!(g.data, payload.to_vec());
+                assert_eq!(g.bytes_per_row, 2);
+            }
+            other => panic!("expected graphic field, got {other:?}"),
+        }
+        // Re-parse the archived raw span with a fresh context: the binary
+        // framing and decode must be identical.
+        let mut diags2 = Diagnostics::default();
+        let mut mem2 = Memory::default();
+        let mut ctx2 = ParseContext::new(&mut diags2, &mut mem2);
+        parse_stream(&mut Scanner::new(&src[labels[0].start..labels[0].end]), &mut ctx2);
+        assert!(ctx2.diags.items.is_empty(), "no diagnostics on re-parse");
+        let label2 = ctx2.pending_label.expect("re-parsed format closes");
+        match &label2.fields[0] {
+            Field::Graphic(g) => {
+                assert_eq!(g.data, payload.to_vec());
+                assert_eq!(g.bytes_per_row, 2);
+            }
+            other => panic!("expected graphic field, got {other:?}"),
+        }
+    }
 }
+

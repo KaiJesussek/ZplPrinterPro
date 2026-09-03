@@ -564,3 +564,91 @@ fn total_memory_cap_warns_and_drops() {
     assert_eq!(diags.items.len(), 3, "the shrink fit, no new warning");
     assert_eq!(memory.images.len(), 8, "www unchanged by the overwrite");
 }
+
+#[test]
+fn dy_b_binary_font_keeps_caret_bytes() {
+    // ~DY format B carries raw binary (guide p.181: "all control prefixes
+    // and flow control characters are ignored until the total number of
+    // bytes needed ... is received"): ^ and ^XZ bytes inside the payload
+    // are data - stored verbatim, closing nothing, raising nothing.
+    //
+    // The guide's two-stream form (`~DY...,SIZE,,` + payload; the data
+    // may even arrive in a separate transmission) drops the payload right
+    // after the empty w field:
+    let payload = [0x70u8, 0x5E, 0x58, 0x5A, 0x7E, 0x71]; // "p^XZ~q"
+    let mut src = b"~DYE:FONTFILE.BIN,B,T,6,,".to_vec();
+    src.extend_from_slice(&payload);
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    define(&src, &mut diags, &mut memory);
+    assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
+    assert_eq!(
+        memory.fonts.get("FONTFILE.BIN").map(Vec::as_slice),
+        Some(payload.as_slice()),
+        "font bytes stored verbatim"
+    );
+
+    // The full six-field form (w present) frames the same way.
+    let mut src = b"~DYE:F.BIN,B,T,6,0,".to_vec();
+    src.extend_from_slice(&payload);
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    define(&src, &mut diags, &mut memory);
+    assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
+    assert_eq!(
+        memory.fonts.get("F.BIN").map(Vec::as_slice),
+        Some(payload.as_slice())
+    );
+}
+
+#[test]
+fn dy_b_truncated_warns_and_stores_nothing() {
+    // Declared byte count beyond the stream: warn, store nothing, and
+    // keep parsing - never a panic.
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (label, ctx) = parse_ctx(
+        b"~DYE:F.BIN,B,T,99,AB^XA^FO10,10^FDx^FS^XZ",
+        &mut diags,
+        &mut memory,
+    );
+    let dy_warns = ctx
+        .diags
+        .items
+        .iter()
+        .filter(|d| d.command == "DY")
+        .count();
+    assert_eq!(dy_warns, 1, "one truncation warning: {diags:?}");
+    assert!(
+        ctx.diags.items.iter().all(|d| d.severity == Severity::Warning),
+        "{diags:?}"
+    );
+    assert!(
+        ctx.diags.items[0].message.contains("99"),
+        "{diags:?}"
+    );
+    assert!(ctx.memory.fonts.is_empty(), "no partial store");
+    // The input after the truncation point still parses.
+    assert_eq!(label.fields.len(), 1);
+    match &label.fields[0] {
+        Field::Text(t) => assert_eq!(t.data, "x"),
+        other => panic!("expected text field, got {other:?}"),
+    }
+}
+
+#[test]
+fn dy_b_with_grf_extension_warns_hex_required() {
+    // ext = G routes ~DY to the stored-image path, which needs ASCII-hex
+    // data even for format B (a raw-binary .GRF is not a supported store)
+    // - warn and drop, never store into fonts or images.
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let mut ctx = ParseContext::new(&mut diags, &mut memory);
+    parse_stream(
+        &mut Scanner::new(b"~DYE:LOGO.GRF,B,G,6,1,^XZ~AB"),
+        &mut ctx,
+    );
+    assert!(ctx.diags.items.iter().any(|d| d.command == "DY"));
+    assert!(ctx.memory.fonts.is_empty());
+    assert!(ctx.memory.images.is_empty());
+}

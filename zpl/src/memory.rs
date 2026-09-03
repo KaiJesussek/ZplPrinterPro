@@ -493,6 +493,69 @@ pub(crate) fn download_object(ctx: &mut ParseContext, params: &[u8]) {
     ctx.memory.fonts.insert(name, bytes);
 }
 
+/// ~DY binary framing (used by the parse driver): for format `B`, returns
+/// `(declared byte count, payload bytes the token's params run already
+/// absorbed)`. The guide's binary data ignores "all control prefixes and
+/// flow control characters until the total number of bytes needed for the
+/// graphic format is received" (p.181), so the payload may contain `^`/`~`
+/// bytes; the driver raw-consumes the remaining `declared - already` bytes
+/// before the next token. `None` for other formats (A/P are text) and
+/// malformed headers. The guide's `w` field is semantics-free for a binary
+/// payload - its comma and anything up to the next command char count
+/// toward `already`, exactly as a real printer streaming the "command and
+/// data as two separate data streams" would behave.
+pub(crate) fn dy_binary_len(params: &[u8]) -> Option<(usize, usize)> {
+    let (segs, already) = head_segments(params, 5);
+    if segs.get(1).and_then(|p| p.first()).copied() != Some(b'B') {
+        return None;
+    }
+    let declared = segs.get(3).and_then(|p| to_u32(p))? as usize;
+    Some((declared, already.len()))
+}
+
+/// ~DY format B payload receiver: the declared `t` raw bytes are stored
+/// verbatim in `Memory.fonts` under the normalized name (guide p.181).
+/// `download_object` cannot see a well-formed B payload - the driver
+/// routes it here before any `^`/`~` byte can split the token - so this
+/// mirrors that handler's checks: `.GRF` extension needs ASCII hex, empty
+/// payloads and memory-full drop with a warning; anything short of the
+/// declared count (stream ended mid-payload, warned by the driver) stores
+/// nothing.
+pub(crate) fn dy_binary_handler(ctx: &mut ParseContext, params: &[u8], tail: &[u8]) {
+    let (segs, already) = head_segments(params, 5);
+    let raw_name = segs.first().copied().unwrap_or(&[]);
+    let name = String::from_utf8_lossy(raw_name).into_owned();
+    if matches!(
+        segs.get(2).and_then(|p| p.first()).copied(),
+        Some(b'G') | Some(b'g')
+    ) {
+        warn_drop(ctx, "DY", &name, "graphic downloads need ASCII-hex data");
+        return;
+    }
+    let Some(t) = segs.get(3).and_then(|p| to_u32(p)).map(|v| v as usize) else {
+        warn_drop(ctx, "DY", &name, "missing byte count");
+        return;
+    };
+    let name = font_key(raw_name);
+    // Payload = what the token absorbed (already) + the raw tail. The
+    // driver guarantees the full count except in the truncated case
+    // (warned there, stored nothing here).
+    let mut payload = Vec::with_capacity(already.len().min(t));
+    payload.extend_from_slice(&already[..already.len().min(t)]);
+    payload.extend_from_slice(&tail[..tail.len().min(t - payload.len())]);
+    if payload.len() != t {
+        return; // truncated at the driver; it already warned
+    }
+    if payload.is_empty() {
+        warn_drop(ctx, "DY", &name, "empty object");
+        return;
+    }
+    if !fits_total(ctx.memory, &name, payload.len()) {
+        warn_memory_full(ctx, "DY", &name);
+        return;
+    }
+    ctx.memory.fonts.insert(name, payload);
+}
 /// `~DSd:o.x,s,data` - download a scalable (Intellifont) font (guide
 /// p.178): `s` bytes of ASCII hex. Stored in `fonts` like ~DY; -- note the
 /// plan sketch read ~DS as a delete command, which the guide does not

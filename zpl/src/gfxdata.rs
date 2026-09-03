@@ -145,3 +145,133 @@ fn repeat_count(c: u8) -> Option<usize> {
         _ => None,
     }
 }
+
+/// Decode MIME Base64 - the `B64` form of Zebra's ZB64 encoding (guide
+/// p.1602: the same MIME scheme used in e-mail; it emits only printable
+/// ASCII, which is why a ZB64 payload never needs binary framing). The
+/// standard alphabet plus `=` padding; CR/LF and other ASCII whitespace
+/// are ignored (the guide permits new-lines inside encoded data). A final
+/// 2- or 3-char group without padding also decodes. Any other byte is
+/// malformed -> `None`.
+pub(crate) fn decode_base64(data: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(data.len() / 4 * 3);
+    let mut acc: u32 = 0;
+    let mut nbits: u32 = 0;
+    for &b in data {
+        if b.is_ascii_whitespace() {
+            continue;
+        }
+        let v = match b {
+            b'A'..=b'Z' => u32::from(b - b'A'),
+            b'a'..=b'z' => u32::from(b - b'a') + 26,
+            b'0'..=b'9' => u32::from(b - b'0') + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => break, // padding ends the stream
+            _ => return None,
+        };
+        acc = (acc << 6) | v;
+        nbits += 6;
+        if nbits >= 8 {
+            nbits -= 8;
+            out.push((acc >> nbits) as u8);
+        }
+    }
+    Some(out)
+}
+
+/// Decode a PNG file into the emulator's 1bpp row-packed bitmap model
+/// (MSB-first, `1` = black, rows padded to whole bytes - the same layout
+/// `~DG`/`^GF` A-format builds). Any color type and bit depth are
+/// accepted: pixels are luminance-thresholded at 50%, because printable
+/// graphics are monochrome (guide ~DY: "graphic files must be monochrome
+/// (black and white) or dithered"). Fully transparent pixels print white.
+/// Returns `(width, height, data)`; `None` on malformed PNG data.
+pub(crate) fn png_to_bitmap(png: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    let mut decoder = png::Decoder::new(png);
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0u8; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).ok()?;
+    let (width, height) = (info.width as usize, info.height as usize);
+    let channels = match info.color_type {
+        png::ColorType::Grayscale => 1,
+        png::ColorType::GrayscaleAlpha => 2,
+        png::ColorType::Rgb => 3,
+        png::ColorType::Rgba => 4,
+        _ => return None, // paletted input is expanded by normalize_to_color8
+    };
+    let row = crate::memory::packed_row_bytes(info.width);
+    let mut out = vec![0u8; row * height];
+    for y in 0..height {
+        for x in 0..width {
+            let off = (y * width + x) * channels;
+            let dark = channel_dark(&buf[off..off + channels]);
+            // Only RGBA carries a real alpha channel (the expansion keeps
+            // grayscale+alpha as two); fully transparent pixels are white.
+            let opaque = channels != 4 || buf[off + 3] >= 128;
+            if dark && opaque {
+                out[y * row + x / 8] |= 0x80 >> (x % 8);
+            }
+        }
+    }
+    Some((info.width, info.height, out))
+}
+
+/// Whether a pixel's color is dark: the gray sample alone (gray/alpha) or
+/// luminance below half (RGB/RGBA).
+fn channel_dark(px: &[u8]) -> bool {
+    match px.len() {
+        1 | 2 => px[0] < 128,
+        _ => luma(px) < 128,
+    }
+}
+
+/// Perceptual luminance of an RGB pixel (Rec. 601 weights), 0-255.
+fn luma(rgb: &[u8]) -> u8 {
+    ((u32::from(rgb[0]) * 299 + u32::from(rgb[1]) * 587 + u32::from(rgb[2]) * 114) / 1000) as u8
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base64_round_trips_with_and_without_padding() {
+        let data = b"hello, binary world!";
+        // 24 bytes: padded, unpadded, and whitespace-laced forms decode
+        // to the same bytes.
+        assert_eq!(decode_base64(b"aGVsbG8sIGJpbmFyeSB3b3JsZCE=").as_deref(), Some(data.as_slice()));
+        assert_eq!(decode_base64(b"aGVsbG8sIGJpbmFyeSB3b3JsZCE").as_deref(), Some(data.as_slice()));
+        assert_eq!(decode_base64(b"aGVsbG8s\nIGJpbmFyeSB3b3JsZCE=").as_deref(), Some(data.as_slice()));
+        assert_eq!(decode_base64(b"aG!sbG8"), None); // '!' is not base64
+    }
+
+    #[test]
+    fn png_to_bitmap_thresholds_gray_to_1bpp() {
+        // 10x8 1-bit gray PNG (the shape ^GF P test payloads use): a
+        // filled row decodes back to the same packed bits MSB-first.
+        let mut png = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut png, 10, 8);
+            enc.set_color(png::ColorType::Grayscale);
+            enc.set_depth(png::BitDepth::One);
+            let mut w = enc.write_header().unwrap();
+            // PNG grayscale: 0 = black, 1 = white (the ZPL model is the
+            // inverse). Rows of 10 pixels: 8 black then 2 white, packed
+            // MSB-first -> [0x00, 0xC0]; decoding flips them to 1-bits ->
+            // [0xFF, 0x00].
+            let row = [0x00u8, 0xC0];
+            let data: Vec<u8> = (0..8).flat_map(|_| row).collect();
+            w.write_image_data(&data).unwrap();
+        }
+        let (w, h, bits) = png_to_bitmap(&png).expect("valid PNG decodes");
+        assert_eq!((w, h), (10, 8));
+        let mut expect = Vec::new();
+        for _ in 0..8 {
+            expect.extend_from_slice(&[0xFF, 0x00]);
+        }
+        assert_eq!(bits, expect);
+        assert_eq!(png_to_bitmap(b"not a png"), None);
+    }
+}

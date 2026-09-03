@@ -222,12 +222,13 @@ fn gf_missing_size_params_ignores_command() {
 
 #[test]
 fn gf_unsupported_compression_warns_and_skips() {
-    // Only ASCII hex (a=A) is supported. Binary (B) and compressed-binary
-    // (C) payloads cannot ride a ZPL text stream (any ^/~ byte would split
-    // the token) and C's scheme is host-side/undocumented - both warn and
-    // skip, never panic. Unknown letters warn and skip too.
+    // C is compressed binary: the guide defines its scheme only as
+    // "compressed on the host side using Zebra's compression algorithm"
+    // (undocumented; ~DY adds "used only by Zebra's BAR-ONE"), so C's
+    // payload is framed correctly but dropped with a warning. Unknown
+    // letters warn and skip too. B is supported (its own tests decode
+    // it), so it no longer belongs in the warning list.
     for src in [
-        b"^XA^GFB,4,4,2,FFFF^FS^XZ".as_slice(),
         b"^XA^GFC,4,4,2,FFFF^FS^XZ".as_slice(),
         b"^XA^GFZ,4,4,2,FFFF^FS^XZ".as_slice(),
     ] {
@@ -277,4 +278,121 @@ fn drawing_fields_position_from_fo() {
     assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
     let b = box_field(&label, 0);
     assert_eq!((b.x, b.y), (30, 40));
+}
+#[test]
+fn gf_binary_payload_accepts_caret_and_tilde_bytes() {
+    // ^GF B declares its payload length (b = 6): `^`, `~`, and `^FS`
+    // bytes inside the payload are raw data (guide p.215: "all control
+    // prefixes are ignored until the total number of bytes needed ... is
+    // sent"), never commands - so zero diagnostics can fire, the bitmap
+    // bytes are exact, and a command after the payload parses normally.
+    let payload = [0x41u8, 0x42, 0x5E, 0x7E, 0x01, 0xFE]; // "AB^~\x01\xFE"
+    let mut src = b"^XA^FO5,5^GFB,6,6,2,".to_vec();
+    src.extend_from_slice(&payload);
+    src.extend_from_slice(b"^FS^FO20,20^FDafter^FS^XZ");
+    let (label, diags) = parse_one(&src);
+    assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
+    assert_eq!(label.fields.len(), 2, "binary field plus the trailing field");
+    let g = graphic_field(&label, 0);
+    assert_eq!((g.x, g.y), (5, 5));
+    assert!(matches!(g.kind, GraphicKind::Inline));
+    assert_eq!(g.data, payload.to_vec(), "bitmap bytes are exact");
+    assert_eq!(g.bytes_per_row, 2, "16 dots wide, 3 rows tall");
+    match &label.fields[1] {
+        Field::Text(t) => assert_eq!(t.data, "after", "command after the payload parses"),
+        other => panic!("expected text field, got {other:?}"),
+    }
+}
+
+#[test]
+fn gf_binary_truncated_warns_and_parses_on() {
+    // Declared byte count beyond the stream: one warning, no field, no
+    // panic - and the input after the truncation point still parses
+    // (the dangling ^FS closes nothing, ^XZ closes the empty format, and
+    // a fresh ^XA starts the next label cleanly).
+    let (label, diags) = parse_one(b"^XA^GFB,99,8,2,AB^FS^XZ^XA^FO10,10^FDhi^FS^XZ");
+    let gf_warns = diags.items.iter().filter(|d| d.command == "GF").count();
+    assert_eq!(gf_warns, 1, "exactly one truncation warning: {diags:?}");
+    assert!(diags.items.iter().all(|d| d.severity == Severity::Warning));
+    assert!(diags.items[0].message.contains("99"), "{diags:?}");
+    assert_eq!(label.fields.len(), 1, "the abandoned format left nothing");
+    match &label.fields[0] {
+        Field::Text(t) => assert_eq!(t.data, "hi"),
+        other => panic!("expected the second format's text field, got {other:?}"),
+    }
+}
+
+#[test]
+fn gf_p_zb64_png_graphic() {
+    // ^GF P carries a ZB64-encoded PNG (guide p.1602: base64 emits only
+    // printable ASCII, so no raw framing is needed); width/height come
+    // from the PNG itself, not the declared b/c/d.
+    let png = tiny_gray_png();
+    let b64 = base64(&png);
+    let mut src = b"^XA^GFP,10,10,2,".to_vec();
+    src.extend_from_slice(b64.as_bytes());
+    src.extend_from_slice(b"^FS^XZ");
+    let (label, diags) = parse_one(&src);
+    assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
+    let g = graphic_field(&label, 0);
+    assert_eq!(g.bytes_per_row, 2, "10 dots wide -> 2 bytes per row");
+    let mut expect = Vec::new();
+    for _ in 0..8 {
+        expect.extend_from_slice(&[0xFF, 0x00]); // 8 black + 2 white per row
+    }
+    assert_eq!(g.data, expect, "PNG decodes to the same 1bpp rows");
+}
+
+#[test]
+fn gf_p_malformed_warns_and_skips() {
+    let (label, diags) = parse_one(b"^XA^GFP,1,1,1,!!!not-base64!!!^FS^XZ");
+    assert!(diags.items.iter().any(|d| d.command == "GF"));
+    assert!(diags.items.iter().all(|d| d.severity == Severity::Warning));
+    assert_eq!(label.fields.len(), 0, "no partial field on malformed P");
+}
+
+/// 10x8, 1-bit grayscale PNG: 8 black then 2 white pixels per row. PNG
+/// packs 0 = black; decoding flips to ZPL's 1 = black convention.
+fn tiny_gray_png() -> Vec<u8> {
+    let mut out = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut out, 10, 8);
+        enc.set_color(png::ColorType::Grayscale);
+        enc.set_depth(png::BitDepth::One);
+        let mut w = enc.write_header().unwrap();
+        let row = [0x00u8, 0xC0];
+        let data: Vec<u8> = (0..8).flat_map(|_| row).collect();
+        w.write_image_data(&data).unwrap();
+    }
+    out
+}
+
+/// Minimal MIME base64 encoder for test fixtures (the crate's decoder is
+/// crate-internal; integration tests build the payload themselves).
+fn base64(data: &[u8]) -> String {
+    const TABLE: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in data.chunks(3) {
+        let mut n = (chunk[0] as u32) << 16;
+        if chunk.len() > 1 {
+            n |= (chunk[1] as u32) << 8;
+        }
+        if chunk.len() > 2 {
+            n |= chunk[2] as u32;
+        }
+        out.push(TABLE[(n >> 18) as usize & 0x3F] as char);
+        out.push(TABLE[(n >> 12) as usize & 0x3F] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[(n >> 6) as usize & 0x3F] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[n as usize & 0x3F] as char
+        } else {
+            '='
+        });
+    }
+    out
 }
