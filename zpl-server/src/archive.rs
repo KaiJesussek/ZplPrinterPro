@@ -68,8 +68,14 @@ impl Archive {
 
     /// Archive one label: writes `{id}.zpl` / `{id}.json` / `{id}.png`,
     /// bumps `meta.json`, and returns the assigned id. `row.id` is filled
-    /// in here (the caller cannot know it before the push). On any file
-    /// error the id is not consumed, so a retry re-uses it.
+    /// in here (the caller cannot know it before the push).
+    ///
+    /// Error semantics: the id is consumed only once a file for it exists.
+    /// A failure before `next_id` advances re-uses the id on retry; the
+    /// `meta.json` commit is written last - if THAT write fails, the files
+    /// for the id are already on disk, so the in-process counter advances
+    /// anyway and a restart repairs the count via the `labels/` scan (the
+    /// id is never re-written with different content).
     pub fn push(&mut self, row: &mut LabelRow, raw: &[u8], ir: &Label, png: &[u8]) -> io::Result<u64> {
         let id = self.next_id;
         let labels = self.dir.join("labels");

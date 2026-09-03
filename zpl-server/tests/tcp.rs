@@ -155,6 +155,35 @@ async fn labels_across_read_chunks_keep_exact_spans_after_a_drain() {
 }
 
 #[tokio::test]
+async fn label_split_across_reads_excludes_preamble_from_raw() {
+    let dir = test_dir("split");
+    let _keep = Cleanup(dir.clone());
+    let (addr, state) = spawn(dir.clone()).await;
+
+    let mut sock = TcpStream::connect(addr).await.unwrap();
+    // Read 1: junk preamble (must NOT end up in the raw .zpl) then a
+    // format that is left OPEN (no ^XZ). Read 2 closes it.
+    let preamble = b"\x00\x01\x02junk-before-the-label";
+    let label = b"^XA^GB50,50,2,B";
+    sock.write_all(&[&preamble[..], &label[..]].concat()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await; // separate reads
+    sock.write_all(b"^XZ").await.unwrap();
+    sock.shutdown().await.unwrap();
+
+    wait_labels(&state, 1).await;
+    let raw = std::fs::read(dir.join("labels/1.zpl")).unwrap();
+    assert_eq!(
+        raw,
+        b"^XA^GB50,50,2,B^XZ",
+        "raw .zpl must be the exact label span \u{2014} preamble excluded"
+    );
+    // LabelRow.bytes == raw.len() (the archived file's length).
+    assert_eq!(raw.len(), b"^XA^GB50,50,2,B^XZ".len());
+    let ir: Label = serde_json::from_slice(&std::fs::read(dir.join("labels/1.json")).unwrap()).unwrap();
+    assert_eq!(ir.fields.len(), 1, "the ^GB parsed into one field");
+}
+
+#[tokio::test]
 async fn garbage_and_unknown_commands_do_not_kill_the_connection() {
     let dir = test_dir("garbage");
     let _keep = Cleanup(dir.clone());

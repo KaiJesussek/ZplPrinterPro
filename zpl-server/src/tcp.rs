@@ -32,6 +32,11 @@ struct Persist {
     mode: PrinterMode,
     config: PrinterConfig,
     serials: BTreeMap<u8, i64>,
+    /// Global offset of the open format's ^XA. `ParseContext::new` re-inits
+    /// `format_start` to 0, so a label opened in one read chunk and closed
+    /// by ^XZ in a later one would otherwise archive from offset 0 - which
+    /// includes any retained preamble before the ^XA.
+    format_start: usize,
 }
 
 impl Default for Persist {
@@ -41,6 +46,7 @@ impl Default for Persist {
             mode: PrinterMode::default(),
             config: PrinterConfig::default(),
             serials: BTreeMap::new(),
+            format_start: 0,
         }
     }
 }
@@ -51,6 +57,7 @@ impl Persist {
         mem::swap(&mut ctx.mode, &mut self.mode);
         mem::swap(&mut ctx.config, &mut self.config);
         ctx.serial_counters = mem::take(&mut self.serials);
+        ctx.format_start = self.format_start;
     }
 
     fn hand_out(&mut self, ctx: &mut ParseContext) {
@@ -58,6 +65,7 @@ impl Persist {
         mem::swap(&mut self.mode, &mut ctx.mode);
         mem::swap(&mut self.config, &mut ctx.config);
         self.serials = mem::take(&mut ctx.serial_counters);
+        self.format_start = ctx.format_start;
     }
 }
 
@@ -237,9 +245,14 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
         // Free everything before the last completed label: spans are only
         // read during the loop above, and a partial format started before
         // the drain is fine (its ^XA offset -> format_start is refreshed by
-        // any later ^XA; the next chunk's token offsets are re-based below).
+        // any later ^XA; the next chunk's token offsets are re-based
+        // below). Keep `format_start` pointing at the same format: a live
+        // partial format's ^XA always sits after the drain point (labels
+        // close an open format before a new ^XA can open one), but clamp
+        // defensively so the offset is never stale if the driver evolves.
         if let Some(last) = labels.last() {
             input.drain(..last.end);
+            persist.format_start = persist.format_start.saturating_sub(last.end);
         }
     }
 
