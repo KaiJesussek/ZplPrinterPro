@@ -81,11 +81,11 @@ fn qr_roundtrip_unicode_and_masks() {
     // Unicode text (UTF-8 bytes) round-trips verbatim.
     let pat = modules_of(b"^CI28^BQN,2,2,Q", "H\u{00E9}llo W\u{00F6}rld \u{2705}".as_bytes());
     assert_eq!(decode_qr(&pat).unwrap(), "H\u{00E9}llo W\u{00F6}rld \u{2705}");
-    // Longer payload forces version 2 (25+8 = 33 modules).
+    // 44 bytes at level Q -> version 4 (33+8 = 41 modules).
     let long = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     let pat = modules_of(b"^BQN,2,2,Q", long);
     if let Pattern::Modules { width, .. } = pat {
-        assert_eq!(width, 41, "version 2 symbol");
+        assert_eq!(width, 41, "version 4 symbol");
     }
     let pat = modules_of(b"^BQN,2,2,Q", long);
     assert_eq!(decode_qr(&pat).unwrap(), String::from_utf8_lossy(long));
@@ -114,6 +114,28 @@ fn qr_version_info_and_big_payload() {
         assert!(matches!(width, 65), "v10 at level H (110 bytes), got {width}");
     }
     assert_eq!(decode_qr(&pat).unwrap(), "k".repeat(110), "v10 round-trip");
+}
+
+#[test]
+fn qr_v9_v10_m_level_roundtrip_uneven_ec() {
+    // Versions 9 and 10 at level M split the EC codewords unevenly across
+    // the blocks (v9-M: 112 EC / 5 blocks; v10-M: 148 EC / 5 blocks).
+    // ISO/IEC 18004 8.6 gives the trailing blocks one extra EC codeword -
+    // an encoder that floors ecc_cw/blocks and drops the remainder emits
+    // an undecodable symbol (rqrr fails) - so these round-trips are the
+    // regression gate for that split.
+    let payload = vec![b'x'; 170]; // v9-M byte capacity 178
+    let pat = modules_of(b"^BQN,2,2,M", &payload);
+    if let Pattern::Modules { width, .. } = &pat {
+        assert!(matches!(width, 61), "v9 at level M (170 bytes), got {width}");
+    }
+    assert_eq!(decode_qr(&pat).unwrap(), "x".repeat(170), "v9-M round-trip");
+    let payload = vec![b'y'; 190]; // v10-M byte capacity 195
+    let pat = modules_of(b"^BQN,2,2,M", &payload);
+    if let Pattern::Modules { width, .. } = &pat {
+        assert!(matches!(width, 65), "v10 at level M (190 bytes), got {width}");
+    }
+    assert_eq!(decode_qr(&pat).unwrap(), "y".repeat(190), "v10-M round-trip");
 }
 
 // --- QR: hostile inputs ---------------------------------------------------
@@ -173,12 +195,21 @@ fn dm_hello_is_12x12_with_finder() {
 
 #[test]
 fn dm_digits_compress_and_grow_symbol() {
-    // 22 digits -> 11 codewords -> 18x18 (18 data) is chosen before 14x14 (8).
-    // Digits -> pairs -> 11 cws -> 14x14 holds only 8 -> 18x18 ... wait: the
-    // 12x12 holds 5, 14x14 holds 8, 16x16 holds 12 -> 18x18 (18).
+    // 22 digits -> 11 codewords -> the 16x16 symbol (12 data cws).
     let pat = modules_of(b"^BXN,1,200", b"1234567890123456789012");
     let Pattern::Modules { width, .. } = &pat else { panic!() };
     assert_eq!(*width, 16 + 2, "16x16 symbol + quiet zone");
+}
+
+#[test]
+fn dm_largest_symbol_144x144_never_panics() {
+    // 1400 ASCII characters -> 1400 codewords -> only the 144x144 symbol
+    // fits (1558 data cws). Its EC skew writes into the tail of the
+    // codeword buffer - a regression gate for writing out of bounds.
+    let payload = vec![b'a'; 1400];
+    let pat = modules_of(b"^BXN,1,200", &payload);
+    let Pattern::Modules { width, height, .. } = &pat else { panic!() };
+    assert_eq!((*width, *height), (146, 146), "144x144 symbol + quiet zone");
 }
 
 #[test]

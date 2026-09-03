@@ -94,9 +94,17 @@ fn pdf_row_height(f: &BarcodeField) -> usize {
 // ---------------------------------------------------------------------
 
 /// Data codewords per EC level (rows L, M, Q, H) and version 1..10.
+///
+/// Note: v9-M / v10-M are 182 / 216 data codewords, NOT 180 / 198: the
+/// EC codewords must divide evenly across the 5 blocks (v9-M 110 = 5x22,
+/// v10-M 130 = 5x26 per ISO/IEC 18004 Table 9; the 180/112 and 198/148
+/// variants that float around do not divide and cannot be interleaved -
+/// they produce undecodable symbols). Cross-checked against the zxing/
+/// rqrr version tables (v9-M: 3 short x 36 data + 2 long x 37 data;
+/// v10-M: 4 x 43 + 1 x 44) and Nayuki's qrcodegen tables.
 const QR_DATA: [[u16; 10]; 4] = [
     [19, 34, 55, 80, 108, 136, 156, 194, 232, 274], // L
-    [16, 28, 44, 64, 86, 108, 124, 154, 180, 198], // M
+    [16, 28, 44, 64, 86, 108, 124, 154, 182, 216], // M
     [13, 22, 34, 48, 62, 76, 88, 110, 132, 154],   // Q
     [9, 16, 26, 36, 46, 60, 66, 86, 100, 122],     // H
 ];
@@ -186,6 +194,12 @@ fn qr_interleave(level: usize, version: usize, data: &[u8]) -> Result<Vec<u8>, S
     let blocks = QR_BLOCKS[level][version - 1] as usize;
     let short_len = data_cw / blocks;
     let qty_short = blocks - data_cw % blocks;
+    // ISO/IEC 18004 8.6: the EC codewords divide EVENLY across the blocks
+    // (each block gets ecc_cw/blocks); when the DATA codewords do not
+    // divide evenly, the last (data_cw % blocks) blocks carry one extra
+    // data codeword, emitted right after the uniform data columns, before
+    // the EC interleave. (The v9-M/v10-M table values enforce the even EC
+    // split; a floor/ceil EC split leaves symbols undecodable.)
     let ecc_len = ecc_cw / blocks;
     let rs = Rs::new(Field::Binary(0x11d), ecc_len, 0)?;
     let mut block_data: Vec<&[u8]> = Vec::with_capacity(blocks);
@@ -205,6 +219,7 @@ fn qr_interleave(level: usize, version: usize, data: &[u8]) -> Result<Vec<u8>, S
             out.push(block_data[b][col]);
         }
     }
+    // The long blocks' extra data codewords (they are not EC).
     for b in qty_short..blocks {
         out.push(block_data[b][short_len]);
     }
@@ -650,6 +665,12 @@ fn dm_ecc(binary: &mut Vec<u8>, bytes: usize, datablock: usize, rsblock: usize, 
     let blocks = (bytes + 2) / datablock;
     let rs = Rs::new(Field::Binary(0x12d), rsblock, 1)?;
     let total_ec = rsblock * blocks;
+    // The skew branch writes EC codewords into the transmitted stream at
+    // bytes + n +/- {2,8} - beyond the data region - so grow the buffer
+    // first (the biggest symbol needs 1558 + 620 + 2 bytes).
+    if skew {
+        binary.resize(bytes + total_ec + 2, 0);
+    }
     let mut ecc = vec![0u8; total_ec];
     for b in 0..blocks {
         let mut buf = Vec::with_capacity(datablock);
@@ -662,6 +683,10 @@ fn dm_ecc(binary: &mut Vec<u8>, bytes: usize, datablock: usize, rsblock: usize, 
         let mut p = 0;
         let mut n = b;
         while n < total_ec {
+            // The 144x144 symbol inverts the usual data/ECC ordering: the
+            // EC tail is displaced by +2 (blocks 0..7) / -8 (rest) within
+            // the transmitted stream, so the buffer needs the ECC space
+            // beyond the data codewords (zint's 2200-byte binary array).
             if skew {
                 if b < 8 {
                     binary[bytes + n + 2] = ec[p] as u8;
@@ -808,14 +833,17 @@ pub fn pdf417(f: &BarcodeField, data: &[u8]) -> Result<Pattern, String> {
         }
         (c, r.max(3))
     } else {
-        // Auto: roughly square, like the reference.
+        // Auto: roughly square, like the reference; never grow past the
+        // 30-column limit - a payload that cannot fit leaves the guard
+        // below to produce the Err (and the parse-time capacity check to
+        // warn).
         let total = payload.len() + 1 + ecc_cws;
         let mut c = (((total as f64) - 1.0) / 3.0).sqrt().round() as usize;
         if c < 1 {
             c = 1;
         }
         let mut r = (total + c - 1) / c;
-        while r > 90 || r * c > 928 {
+        while (r > 90 || r * c > 928) && c < 30 {
             c += 1;
             r = (total + c - 1) / c;
         }
@@ -924,13 +952,31 @@ fn az_codeword_size(layers: usize) -> usize {
     }
 }
 
-/// Pure binary data: per <=31-byte chunk, B/S (31, 5 bits) + count (5) +
-/// 8 bits per byte. Bit-identical to the reference encoder's byte runs.
+/// Pure-binary encodation: one B/S run over the whole payload, with the
+/// reference encoder's count rules (ISO/IEC 24778): <= 31 bytes get a
+/// 5-bit count, 32..62 get two B/S latches (31 + rest), and longer runs
+/// get a single B/S with the extended 16-bit (count - 31) prefix.
 fn az_binary_bits(data: &[u8], out: &mut Vec<bool>) {
-    for chunk in data.chunks(31) {
+    let count = data.len();
+    pushn(out, 31, 5); // B/S
+    if count <= 31 {
+        pushn(out, count as u32, 5);
+        for &b in data {
+            pushn(out, b as u32, 8);
+        }
+    } else if count <= 62 {
         pushn(out, 31, 5);
-        pushn(out, chunk.len() as u32, 5);
-        for &b in chunk {
+        for &b in &data[..31] {
+            pushn(out, b as u32, 8);
+        }
+        pushn(out, 31, 5); // B/S
+        pushn(out, (count - 31) as u32, 5);
+        for &b in &data[31..] {
+            pushn(out, b as u32, 8);
+        }
+    } else {
+        pushn(out, (count - 31) as u32, 16);
+        for &b in data {
             pushn(out, b as u32, 8);
         }
     }
@@ -1070,7 +1116,18 @@ pub fn size_error(symbology: u8, qr_ec: u8, _qr_mask: u8, pdf_security: u8, len:
             }
         }
         b'7' => {
-            if len + 2 + (2usize << pdf_security as usize) > 928 {
+            // Real byte-compaction codeword count (SD + latch + 6-to-5
+            // groups + tail) like the encoder, not a bytes ~ codewords
+            // estimate.
+            let payload_cws = if len == 0 {
+                0
+            } else if len == 1 {
+                2
+            } else {
+                1 + 5 * (len / 6) + (len % 6)
+            };
+            let total = 1 + payload_cws + (2usize << pdf_security as usize);
+            if total > 928 {
                 Some(format!("PDF417: {len} bytes exceed the 928 codeword capacity"))
             } else {
                 None
@@ -1219,12 +1276,12 @@ pub fn aztec(f: &BarcodeField, data: &[u8]) -> Result<Pattern, String> {
                 MapSrc::Compact => COMPACT_MAP[row * 27 + col] as isize,
                 MapSrc::Full(m) => m[row * 151 + col] as isize,
             };
-            if v == 1 || (v >= 2 && bit_pattern[(v - 2) as usize] == 1) {
+                        if v == 1 || (v >= 2 && bit_pattern[(v - 2) as usize] == 1) {
                 grid.set(col - offset, row - offset, true);
             }
         }
     }
-    // Quiet zone 1 module.
+    // Quiet zone. 1 module.
     Ok(grid.pattern(1, 1, 1, 1))
 }
 
@@ -1237,10 +1294,12 @@ enum MapSrc {
     Full(Vec<i16>),
 }
 
-/// Aztec full-symbol offsets (dim = 151 - 2*offset).
+/// Aztec full-symbol offsets (dim = 151 - 2*offset); the staggered
+/// ISO/IEC 24778 sequence - dims 19,21,...,149,151 (the layer-12
+/// offset drops by 3, not 2, and layers 26+/29+ drop by 3 too).
 const AZTEC_OFFSET: [usize; 32] = [
-    66, 64, 62, 60, 57, 55, 53, 51, 49, 47, 45, 43, 41, 39, 37, 35, 33, 31, 29, 27, 25, 23, 21, 19,
-    17, 15, 13, 11, 9, 7, 5, 3,
+    66, 64, 62, 60, 57, 55, 53, 51, 49, 47, 45, 42, 40, 38, 36, 34, 32, 30, 28, 25, 23, 21, 19, 17,
+    15, 13, 10, 8, 6, 4, 2, 0,
 ];
 
 fn az_avoid(output: usize) -> usize {
@@ -1262,14 +1321,18 @@ fn az_populate_map(layers: usize, offset: usize) -> Vec<i16> {
         let mut end = start + length;
         let mut x: isize = 64 - (layer as isize) * 2;
         let mut y: isize = 63 - (layer as isize) * 2;
+        // The reference places the two members of each ring pair with
+        // CONSECUTIVE codeword numbers (n, n+1), one per outer and inner
+        // ring cell - not the same number on both.
         // top
         let av0 = az_avoid(y as usize) * 151;
         let av1 = az_avoid((y - 1) as usize) * 151;
         while n < end {
             let ax = az_avoid(x as usize);
             map[av0 + ax] = n as i16;
+            n += 1;
             map[av1 + ax] = n as i16;
-            n += 2;
+            n += 1;
             x += 1;
         }
         // right
@@ -1281,8 +1344,9 @@ fn az_populate_map(layers: usize, offset: usize) -> Vec<i16> {
         while n < end {
             let ay = az_avoid(y as usize) * 151;
             map[ay + av0] = n as i16;
+            n += 1;
             map[ay + av1] = n as i16;
-            n += 2;
+            n += 1;
             y += 1;
         }
         // bottom
@@ -1294,8 +1358,9 @@ fn az_populate_map(layers: usize, offset: usize) -> Vec<i16> {
         while n < end {
             let ax = az_avoid(x as usize);
             map[av0 + ax] = n as i16;
+            n += 1;
             map[av1 + ax] = n as i16;
-            n += 2;
+            n += 1;
             x -= 1;
         }
         // left
@@ -1307,8 +1372,9 @@ fn az_populate_map(layers: usize, offset: usize) -> Vec<i16> {
         while n < end {
             let ay = az_avoid(y as usize) * 151;
             map[ay + av0] = n as i16;
+            n += 1;
             map[ay + av1] = n as i16;
-            n += 2;
+            n += 1;
             y -= 1;
         }
     }
@@ -1330,5 +1396,6 @@ fn az_populate_map(layers: usize, offset: usize) -> Vec<i16> {
     map
 }
 
-/// First reference grid line per offset band.
-const AZTEC_GRID_Y: [usize; 5] = [11, 27, 43, 59, 75];
+/// First reference grid line per offset band (only reached for
+/// offset > 11; bands are 16 wide like the offsets themselves).
+const AZTEC_GRID_Y: [usize; 8] = [27, 43, 59, 75, 91, 107, 123, 139];
