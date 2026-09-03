@@ -141,10 +141,62 @@ pub trait FontProvider {
     fn get(&self, spec: &FontSpec) -> Option<FontData>;
 }
 
-/// The bundled face, embedded at compile time: DejaVu fonts 2.37
-/// `DejaVuSansCondensed.ttf` (Bitstream Vera-licensed; the license text is
-/// committed beside the font at `zpl/tests/fixtures/LICENSE-DejaVu.txt`).
-const BUNDLED_TTF: &[u8] = include_bytes!("../tests/fixtures/DejaVuSansCondensed.ttf");
+/// The bundled faces, embedded at compile time, one per built-in font
+/// letter. Each is open-licensed and its license text is committed beside
+/// it (the `LICENSE-*` files in the fixtures directory):
+/// * `0` - DejaVuSansCondensed (Bitstream Vera license, Gaussian
+///   distribution): its narrow proportions match the reference's
+///   low-advance bitmap font 0 best of the measured faces.
+/// * `A`-`D`, `G`, `H` - Noto Sans (SIL OFL 1.1), the generic sans.
+/// * `E`, `F` - IBM Plex Mono (SIL OFL 1.1), the OCR-style fixed-pitch
+///   stand-in for the OCR letter sets.
+const BUNDLED_FACES: &[(u8, &str, &[u8])] = &[
+    (
+        b'0',
+        "DejaVu Sans Condensed",
+        include_bytes!("../tests/fixtures/DejaVuSansCondensed.ttf"),
+    ),
+    (
+        b'A',
+        "Noto Sans",
+        include_bytes!("../tests/fixtures/NotoSans-Regular.ttf"),
+    ),
+    (
+        b'B',
+        "Noto Sans",
+        include_bytes!("../tests/fixtures/NotoSans-Regular.ttf"),
+    ),
+    (
+        b'C',
+        "Noto Sans",
+        include_bytes!("../tests/fixtures/NotoSans-Regular.ttf"),
+    ),
+    (
+        b'D',
+        "Noto Sans",
+        include_bytes!("../tests/fixtures/NotoSans-Regular.ttf"),
+    ),
+    (
+        b'E',
+        "IBM Plex Mono",
+        include_bytes!("../tests/fixtures/IBMPlexMono-Regular.ttf"),
+    ),
+    (
+        b'F',
+        "IBM Plex Mono",
+        include_bytes!("../tests/fixtures/IBMPlexMono-Regular.ttf"),
+    ),
+    (
+        b'G',
+        "Noto Sans",
+        include_bytes!("../tests/fixtures/NotoSans-Regular.ttf"),
+    ),
+    (
+        b'H',
+        "Noto Sans",
+        include_bytes!("../tests/fixtures/NotoSans-Regular.ttf"),
+    ),
+];
 
 /// Guide-anchored (letter, cell height, baseline, cap model) entries.
 ///
@@ -206,7 +258,7 @@ pub(crate) fn cap_units(face: &FontVec, upem: f32) -> f32 {
 /// ppem. `baseline` keeps the guide value (the default-cell cap rows).
 fn builtin_metric(
     face: &FontVec,
-    letter: u8,
+    _letter: u8,
     cell_height: u32,
     baseline: u32,
     cap: &CapModel,
@@ -218,9 +270,9 @@ fn builtin_metric(
     let ppem = (b * upem / cap_units(face, upem)).max(1.0);
     // Font 0's reference advances run ~0.917x the face's at the cap
     // scale (the bitmap's M advances 11 dots at the default cell where
-    // the face measures 12): fit the advance table to the reference. The
-    // other letters have no measured advance data yet - 1.0.
-    let adv_fit = if letter == b'0' { 11.0 / 12.0 } else { 1.0 };
+    // the face measures 12): fit the advance table to the reference.
+    // The other letters have no measured advance data yet - 1.0.
+    let adv_fit = if _letter == b'0' { 11.0 / 12.0 } else { 1.0 };
     FontMetrics {
         cell_height,
         baseline,
@@ -240,15 +292,20 @@ pub struct DefaultFontProvider {
 }
 
 impl DefaultFontProvider {
-    /// Parse the bundled face and precompute the per-letter metric tables.
+    /// Parse the bundled faces and precompute the per-letter metric tables.
     /// Panics only if the committed fixture stops parsing (a build-time
     /// programming error, not a runtime condition).
     pub fn new() -> Self {
-        let face = FontVec::try_from_vec(BUNDLED_TTF.to_vec())
-            .expect("bundled font (DejaVuSansCondensed.ttf) failed to parse");
         let metrics = GUIDE_CELLS
             .iter()
             .map(|&(letter, cell, baseline, ref cap)| {
+                let bytes = BUNDLED_FACES
+                    .iter()
+                    .find(|&&(c, _, _)| c == letter)
+                    .map(|&(_, _, b)| b)
+                    .expect("every guide letter has a bundled face");
+                let face = FontVec::try_from_vec(bytes.to_vec())
+                    .expect("bundled font failed to parse");
                 builtin_metric(&face, letter, cell, baseline, cap)
             })
             .collect();
@@ -265,8 +322,13 @@ impl FontProvider for DefaultFontProvider {
             FontSpec::Downloaded(_) => return None,
         };
         let idx = GUIDE_CELLS.iter().position(|&(c, _, _, _)| c == letter)?;
+        let bytes = BUNDLED_FACES
+            .iter()
+            .find(|&&(c, _, _)| c == letter)
+            .map(|&(_, _, b)| b)
+            .expect("every guide letter has a bundled face");
         Some(FontData {
-            ttf: BUNDLED_TTF.to_vec(),
+            ttf: bytes.to_vec(),
             metrics: self.metrics[idx].clone(),
         })
     }

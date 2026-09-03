@@ -653,12 +653,13 @@ fn text_paints_black_pixels_in_cell() {
 
 #[test]
 fn fb_wraps_at_width() {
-    // ^FB24 width, ^A0N,20,20: "AA AA" wraps to two lines of "AA" at the
+    // ^FB35 width, ^A0N,20,20: "AA AA" wraps to two lines of "AA" at the
     // word's proportional width (the built-in bitmap-style font ignores the
     // ^A width parameter - the reference renders it proportionally); with 0
     // line spacing the second line starts exactly one cell (20 dots) below
-    // the first.
-    let out = render_text(b"^XA^PW64^LL60^FO0,0^FB24,2,0,L^A0N,20,20^FDAA AA^FS^XZ");
+    // the first. 35 fits the bundled face's two A advances at the 20-dot
+    // size (2 x ~15 dots), 27 does not.
+    let out = render_text(b"^XA^PW64^LL60^FO0,0^FB35,2,0,L^A0N,20,20^FDAA AA^FS^XZ");
     let bmp = &out.bitmap;
     let r1 = first_ink_row(bmp, 0..20).expect("first line has ink");
     let r2 = first_ink_row(bmp, 20..40).expect("second wrapped line has ink");
@@ -1122,15 +1123,15 @@ fn fb_block_narrower_than_font_does_not_print() {
         "sub-font width warns like width 0: {0:?}",
         w5.warnings
     );
-    let w20 = blank(20);
+    let w27 = blank(27);
     assert!(
-        (0..60).any(|y| (0..64).any(|x| w20.bitmap.get(x, y))),
-        "width = one advance still prints"
+        (0..60).any(|y| (0..64).any(|x| w27.bitmap.get(x, y))),
+        "width above the font width still prints"
     );
     assert!(
-        w20.warnings.is_empty(),
+        w27.warnings.is_empty(),
         "no warning when the field prints: {0:?}",
-        w20.warnings
+        w27.warnings
     );
 }
 
