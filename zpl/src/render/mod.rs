@@ -279,8 +279,13 @@ pub(crate) fn font_spec(font: [u8; 2], font_name: &Option<String>) -> FontSpec {
     }
 }
 
-/// A text field's font request.
+/// A text field's font request. `^GS` symbol fields do not carry a `^A`
+/// letter (guide p.217 uses its own command); they route to the bundled
+/// graphic-symbol face.
 pub(crate) fn field_font_spec(t: &TextField) -> FontSpec {
+    if t.symbol {
+        return FontSpec::Zebra(crate::fonts::SYMBOL_KEY);
+    }
     font_spec(t.font, &t.font_name)
 }
 

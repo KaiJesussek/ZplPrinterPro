@@ -13,35 +13,46 @@ mod common;
 /// `LICENSE-DejaVu.txt`). Tests never fetch it.
 const FIXTURE_TTF: &[u8] = include_bytes!("fixtures/DejaVuSansCondensed.ttf");
 
-/// Guide-anchored (letter, cell height, baseline, cap model) entries: cell
-/// heights are Table 31 "8 dot/mm (203 dpi) Printhead" character matrices,
-/// baselines are Table 29 "Intercharacter Gap and Baseline Parameters"
-/// (both ZPL II Programming Guide, "Fonts and Barcodes") - the default-cell
-/// cap in rows - and the cap model is the parity-calibrated bitmap rule
-/// (font 0: 75%; font F: 21 rows per 30-dot band). This duplicates the
-/// tables in `zpl/src/fonts.rs`; a change to either side is a review event.
-const GUIDE_CELLS: &[(u8, u32, u32, CapModel)] = &[
-    (b'A', 9, 7, CapModel::Snap { base: 15, divisor: 9 }),
-    (b'B', 11, 11, CapModel::Ratio { percent: 100 }),
-    (b'C', 18, 14, CapModel::Ratio { percent: 78 }),
-    (b'D', 18, 14, CapModel::Ratio { percent: 78 }),
-    (b'E', 28, 23, CapModel::Ratio { percent: 82 }),
-    (b'F', 26, 21, CapModel::Snap { base: 21, divisor: 30 }),
-    (b'G', 60, 48, CapModel::Ratio { percent: 80 }),
-    (b'H', 21, 21, CapModel::Ratio { percent: 100 }),
-    (b'0', 15, 11, CapModel::Ratio { percent: 75 }),
+/// Calibrated (letter, cell height, cap model) entries: cell heights are
+/// Table 31 "8 dot/mm (203 dpi) Printhead" character matrices, and the cap
+/// model is the parity-calibrated bitmap rule - font 0's 75% ratio,
+/// font F's 21-rows-per-30-dot band, and the probe-calibrated matrix faces
+/// (cap `base x ceil(cell/divisor)` rows plus the face's top `pad`, all
+/// measured from the parity corpus cases 20-29). Default-cell baselines
+/// follow from the cap models (`pad + cap - 1` rows). This duplicates the
+/// tables in `zpl/src/fonts.rs`; a change to either side is a review
+/// event.
+const GUIDE_CELLS: &[(u8, u32, CapModel)] = &[
+    (b'A', 9, CapModel::Matrix { base: 7, divisor: 9, pad: 0, lp: 0 }),
+    (b'B', 11, CapModel::Matrix { base: 11, divisor: 11, pad: 0, lp: 0 }),
+    (b'C', 18, CapModel::Matrix { base: 14, divisor: 18, pad: 0, lp: 0 }),
+    (b'D', 18, CapModel::Matrix { base: 14, divisor: 18, pad: 0, lp: 0 }),
+    (b'E', 28, CapModel::Matrix { base: 20, divisor: 28, pad: 3, lp: 0 }),
+    (b'F', 26, CapModel::Snap { base: 21, divisor: 30 }),
+    (b'G', 60, CapModel::Matrix { base: 48, divisor: 60, pad: 0, lp: 6 }),
+    (b'H', 21, CapModel::Matrix { base: 21, divisor: 21, pad: 0, lp: 0 }),
+    (zpl::fonts::SYMBOL_KEY, 24, CapModel::Matrix { base: 15, divisor: 24, pad: 0, lp: 0 }),
+    (b'P', 20, CapModel::Matrix { base: 12, divisor: 20, pad: 3, lp: 1 }),
+    (b'Q', 28, CapModel::Matrix { base: 17, divisor: 28, pad: 4, lp: 2 }),
+    (b'R', 35, CapModel::Matrix { base: 21, divisor: 35, pad: 5, lp: 2 }),
+    (b'S', 40, CapModel::Matrix { base: 25, divisor: 40, pad: 6, lp: 3 }),
+    (b'T', 48, CapModel::Matrix { base: 30, divisor: 48, pad: 7, lp: 3 }),
+    (b'U', 59, CapModel::Matrix { base: 37, divisor: 59, pad: 9, lp: 4 }),
+    (b'V', 80, CapModel::Matrix { base: 50, divisor: 80, pad: 12, lp: 4 }),
+    (b'0', 15, CapModel::Ratio { percent: 75 }),
 ];
 
 fn provider() -> DefaultFontProvider {
     DefaultFontProvider::new()
 }
 
-/// Every built-in font letter is served, with guide-exact cell/baseline,
-/// a baseline inside the cell, and a full nonzero advance table.
+/// Every built-in font letter is served, with the calibrated cell/cap
+/// model, a baseline inside the cell, and a full nonzero advance table.
 #[test]
 fn builtin_letters_are_served_with_guide_metrics() {
     let p = provider();
-    for &(letter, cell, baseline, _) in GUIDE_CELLS {
+    use zpl::fonts::baseline_for_cell;
+    for &(letter, cell, ref cap) in GUIDE_CELLS {
         let fd = p
             .get(&FontSpec::Zebra(letter))
             .unwrap_or_else(|| panic!("font {letter:?} must be served"));
@@ -55,6 +66,7 @@ fn builtin_letters_are_served_with_guide_metrics() {
         );
         let m = &fd.metrics;
         assert_eq!(m.cell_height, cell, "cell height for {letter:?}");
+        let baseline = baseline_for_cell(cap, cell);
         assert_eq!(m.baseline, baseline, "baseline for {letter:?}");
         assert!(
             m.baseline <= m.cell_height,
@@ -68,6 +80,10 @@ fn builtin_letters_are_served_with_guide_metrics() {
         assert!(
             m.advances.iter().all(|&a| a > 0),
             "every printable ASCII advance nonzero for {letter:?}"
+        );
+        assert!(
+            m.x_scale.is_finite() && m.x_scale > 0.0,
+            "x-scale positive for {letter:?}"
         );
     }
 }

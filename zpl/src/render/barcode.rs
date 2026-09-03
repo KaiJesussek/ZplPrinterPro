@@ -48,7 +48,7 @@
 use ab_glyph::{point, Font, FontVec, GlyphId};
 
 use crate::bc::Pattern;
-use crate::fonts::{left_pad, CapModel, FontData};
+use crate::fonts::{left_pad, matrix_pad, CapModel, FontData};
 use crate::ir::{BarcodeField, Rotation};
 use crate::render::text::{draw_baseline, font_scale, ref_advance, MAX_GLYPH_CELL};
 use crate::render::{font_spec, place, resolve_font, Bitmap, RenderOptions};
@@ -314,12 +314,29 @@ fn paint_line(
         cell.max(baseline.saturating_add(1))
     };
     // Same fit as text.rs: cap-anchored for bitmap-style fonts, the
-    // ascender fit for TrueType.
-    let scale = font_scale(&face, baseline, &fd.metrics);
+    // ascender fit for TrueType. The matrix top pad is a position term -
+    // the face fits the cap alone (see text.rs paint_text).
+    let pad_rows = matrix_pad(&fd.metrics.cap, cell);
+    let scale = font_scale(&face, baseline - pad_rows, &fd.metrics);
+    let x_scale = if matches!(fd.metrics.cap, CapModel::Ascent)
+        || matches!(fd.metrics.cap, CapModel::Ratio { .. })
+    {
+        1.0
+    } else {
+        fd.metrics.x_scale
+    };
+    let px_scale = ab_glyph::PxScale {
+        x: scale * x_scale,
+        y: scale,
+    };
     // Bitmap-style fonts ink one row below the metric baseline with no
     // side bearing (mirror of text.rs's paint).
     let bitmap = !matches!(fd.metrics.cap, CapModel::Ascent);
-    let paint_baseline = if bitmap { baseline + 1 } else { baseline };
+    let paint_baseline = if bitmap {
+        baseline + 1 + pad_rows
+    } else {
+        baseline
+    };
     let pad = left_pad(&fd.metrics.cap, cell) as f32;
     let fixed = if matches!(fd.metrics.cap, CapModel::Ascent) && b.font_width > 0 {
         Some(b.font_width as i64)
@@ -350,7 +367,7 @@ fn paint_line(
                 // Bitmap-style interpret lines ink from the cell edge:
                 // position the outline so its ink starts at `u0`.
                 let u0f = if bitmap {
-                    let bare = gid.with_scale_and_position(scale, point(0.0, 0.0));
+                    let bare = gid.with_scale_and_position(px_scale, point(0.0, 0.0));
                     let bx0 = face
                         .outline_glyph(bare)
                         .map(|o| o.px_bounds().min.x.floor())
@@ -359,7 +376,7 @@ fn paint_line(
                 } else {
                     u0 as f32
                 };
-                let glyph = gid.with_scale_and_position(scale, point(u0f, 0.0));
+                let glyph = gid.with_scale_and_position(px_scale, point(u0f, 0.0));
                 if let Some(outlined) = face.outline_glyph(glyph) {
                     let pbox = outlined.px_bounds();
                     outlined.draw(|px, py, cov| {

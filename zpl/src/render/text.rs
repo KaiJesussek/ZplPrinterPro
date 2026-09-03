@@ -51,7 +51,9 @@
 
 use ab_glyph::{point, Font, FontVec, GlyphId};
 
-use crate::fonts::{baseline_for_cell, cap_units, left_pad, CapModel, FontData, FontMetrics};
+use crate::fonts::{
+    baseline_for_cell, cap_units, left_pad, matrix_pad, CapModel, FontData, FontMetrics,
+};
 use crate::ir::{Justification, OriginMode, Rotation, TextField};
 use crate::render::draw::fill_rect;
 use crate::render::{Bitmap, RenderOptions};
@@ -441,8 +443,25 @@ pub(crate) fn paint_text(
     }
     // Scale so the face's cap height spans the cap-anchored baseline
     // (bitmap-style fonts; downloaded TrueType keeps the ascent fit) -
-    // the drawn cell then matches the reference's top-anchored cap.
-    let scale = font_scale(&face, l.baseline as u32, &fd.metrics);
+    // the drawn cell then matches the reference's top-anchored cap. The
+    // matrix faces' top pad is a position offset, not a scale term: the
+    // face must fit the cap alone or the pad would enlarge the glyph.
+    let pad_rows = matrix_pad(&fd.metrics.cap, l.cell as u32);
+    let scale = font_scale(
+        &face,
+        l.baseline as u32 - pad_rows,
+        &fd.metrics,
+    );
+    // Bitmap faces stretch horizontally by their calibrated x-scale (the
+    // reference matrices print wider than the source face); the scalable
+    // font 0 and downloaded TrueType keep the face's own proportions.
+    let x_scale = if matches!(fd.metrics.cap, CapModel::Ascent)
+        || matches!(fd.metrics.cap, CapModel::Ratio { .. })
+    {
+        1.0
+    } else {
+        fd.metrics.x_scale
+    };
     let adv = Advancer {
         metrics: &fd.metrics,
         eff: if t.font_height > 0 {
@@ -482,6 +501,14 @@ pub(crate) fn paint_text(
     };
     let bitmap_ink = !matches!(fd.metrics.cap, CapModel::Ascent);
     let pad = left_pad(&fd.metrics.cap, l.cell as u32) as i64;
+    // The matrix top pad puts the cap *below* the cell top: the anchor
+    // climbs by the pad rows the scale no longer carries.
+    let paint_baseline = paint_baseline
+        + if bitmap_ink {
+            matrix_pad(&fd.metrics.cap, l.cell as u32) as i64
+        } else {
+            0
+        };
     // The last line's first character advance: the ^FT R270 re-anchor
     // measures its baseline point from it.
     let first_adv: i64 = l
@@ -500,6 +527,10 @@ pub(crate) fn paint_text(
             l.baseline as i64
         } else {
             l.baseline as i64 + 1
+        } + if matches!(fd.metrics.cap, CapModel::Matrix { .. }) {
+            matrix_pad(&fd.metrics.cap, l.cell as u32) as i64
+        } else {
+            0
         };
         paint_reverse_box(
             bmp,
@@ -526,6 +557,7 @@ pub(crate) fn paint_text(
                     bmp,
                     &mut face,
                     scale,
+                    x_scale,
                     gid,
                     ch_adv,
                     ox,
@@ -684,6 +716,7 @@ fn paint_glyph(
     bmp: &mut Bitmap,
     face: &mut FontVec,
     scale: f32,
+    x_scale: f32,
     gid: GlyphId,
     pen_adv: i64,
     ox: i64,
@@ -736,14 +769,21 @@ fn paint_glyph(
     // text positions the outline so its ink starts exactly at the pen
     // (the reference bitmaps ink from their cell edge; the face's side
     // bearing would otherwise shift the ink by its fractional column).
+    // The scale is non-uniform for the stretched bitmap families: the
+    // glyph's vertical scale spans the cap, its horizontal scale carries
+    // the calibrated x_scale.
+    let px_scale = ab_glyph::PxScale {
+        x: scale * x_scale,
+        y: scale,
+    };
     let outlined = if bitmap_ink {
-        let bare = gid.with_scale_and_position(scale, point(0.0, 0.0));
+        let bare = gid.with_scale_and_position(px_scale, point(0.0, 0.0));
         let bx0 = face
             .outline_glyph(bare)
             .map(|o| o.px_bounds().min.x.floor())
             .unwrap_or(0.0);
         let glyph = gid.with_scale_and_position(
-            scale,
+            px_scale,
             point(cell_left as f32 - bx0 + pad as f32, 0.0),
         );
         let Some(outlined) = face.outline_glyph(glyph) else {
@@ -751,7 +791,7 @@ fn paint_glyph(
         };
         outlined
     } else {
-        let glyph = gid.with_scale_and_position(scale, point(cell_left as f32, 0.0));
+        let glyph = gid.with_scale_and_position(px_scale, point(cell_left as f32, 0.0));
         let Some(outlined) = face.outline_glyph(glyph) else {
             return;
         };
@@ -792,13 +832,14 @@ mod tests {
         let mut advances = vec![0u16; 95];
         advances[0] = 12; // ' ' advance
         advances[b'X' as usize - 32] = 20;
-        FontMetrics {
-            cell_height: 15,
-            baseline: 11,
-            advances,
-            cap: CapModel::Ratio { percent: 75 },
-        }
-    }
+        		FontMetrics {
+			cell_height: 15,
+			baseline: 11,
+			advances,
+			cap: CapModel::Ratio { percent: 75 },
+			x_scale: 1.0,
+		}
+	}
 
     #[test]
     fn advance_lookup_missing_char_uses_space() {
@@ -814,12 +855,13 @@ mod tests {
             "out-of-table char prints as space"
         );
         // A fully-zero table still cannot panic and collapses to 0.
-        let empty = FontMetrics {
-            cell_height: 15,
-            baseline: 11,
-            advances: vec![0; 95],
-            cap: CapModel::Ratio { percent: 75 },
-        };
+        		let empty = FontMetrics {
+			cell_height: 15,
+			baseline: 11,
+			advances: vec![0; 95],
+			cap: CapModel::Ratio { percent: 75 },
+			x_scale: 1.0,
+		};
         assert_eq!(ref_advance(&empty, 'X'), 0);
     }
 
@@ -838,12 +880,13 @@ mod tests {
             (60, 44),
             (80, 59),
         ] {
-            let m = FontMetrics {
-                cell_height: 15,
-                baseline: 11,
-                advances: vec![0; 95],
-                cap: CapModel::Ratio { percent: 75 },
-            };
+            			let m = FontMetrics {
+				cell_height: 15,
+				baseline: 11,
+				advances: vec![0; 95],
+				cap: CapModel::Ratio { percent: 75 },
+				x_scale: 1.0,
+			};
             assert_eq!(
                 baseline_for_cell(&m.cap, cell),
                 baseline,
@@ -851,12 +894,13 @@ mod tests {
             );
         }
         // Font F's bitmap snap: 21 rows per 30-dot band.
-        let f = FontMetrics {
-            cell_height: 26,
-            baseline: 21,
-            advances: vec![0; 95],
-            cap: CapModel::Snap { base: 21, divisor: 30 },
-        };
+        		let f = FontMetrics {
+			cell_height: 26,
+			baseline: 21,
+			advances: vec![0; 95],
+			cap: CapModel::Snap { base: 21, divisor: 30 },
+			x_scale: 1.0,
+		};
         for &(cell, baseline) in &[(10, 20), (30, 20), (31, 41), (40, 41), (80, 62)] {
             assert_eq!(baseline_for_cell(&f.cap, cell), baseline, "font F at {cell}");
         }

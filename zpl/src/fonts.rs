@@ -3,11 +3,12 @@
 //! # Seam (documented decision)
 //!
 //! [`FontProvider::get`] serves **only built-in Zebra fonts** (`^A` letters
-//! `A`-`H` and font `0`). Downloaded fonts (`^A@`, [`FontSpec::Downloaded`])
-//! are resolved by the renderer, which holds [`RenderOptions::memory`]: it
-//! looks the name up in `Memory.fonts` and builds the [`FontData`] with
-//! [`font_data_from_ttf`]. The committed trait surface (`fn get(&self, spec)`,
-//! Task 10) therefore stays unchanged.
+//! `A`-`H`, `P`-`V`, the `^GS` graphic-symbol font, and font `0`).
+//! Downloaded fonts (`^A@`, [`FontSpec::Downloaded`]) are resolved by the
+//! renderer, which holds [`RenderOptions::memory`]: it looks the name up in
+//! `Memory.fonts` and builds the [`FontData`] with [`font_data_from_ttf`].
+//! The committed trait surface (`fn get(&self, spec)`, Task 10) therefore
+//! stays unchanged.
 //!
 //! # Metric sourcing (the plan's authority rule)
 //!
@@ -15,24 +16,44 @@
 //! (Table 31, "8 dot/mm (203 dpi) Printhead" character matrices); the
 //! per-font **cap model** - how the rendered cap height and baseline
 //! derive from the requested cell - is calibrated to a cached parity
-//! corpus of reference renders (fonts `0` and `F` measured at every size
-//! in the font sweeps). The bundled face is a metrically-condensed sans
-//! stand-in for the real bitmapped fonts; all letters map to this one
-//! face for now (per-glyph bitmap parity is a later refinement).
+//! corpus of reference renders: font `0` and every bitmap family were
+//! probed at their native cell and at 2x (corpus cases 17/18 and 20..29),
+//! and each face's cap rows, baseline, advance, and drawn width are the
+//! **measured** values from those renders (the guide's own per-face
+//! baseline numbers are used as seeds, then replaced by the probe data -
+//! the bitmap matrices are wider and shorter than the guide tables list).
 //!
-//! The reference renders the built-in fonts **bitmap-style**: the cap
-//! ink starts at the top of the `^A` cell and the baseline sits one row
-//! below the cap's last ink row. Font `0`'s cap is `floor(0.75 x cell)`
-//! rows (the guide's `3 x HEIGHT/4` rule, measured exactly); font `F`
-//! snaps to stored bitmap sizes, `21 x ceil(cell/30)` rows. Baseline offsets
-//! are therefore `cap - 1`, not the guide's separate baseline numbers -
-//! those stay in the table below as the default-cell cap rows.
+//! The reference renders the built-in fonts **bitmap-style**: the cap ink
+//! starts at the top of the `^A` cell (some faces carry a top pad - the
+//! OCR-B and P..V families ink a gap in from the cell top) and the
+//! baseline sits one row below the cap's last ink row. Font `0`'s cap is
+//! `floor(0.75 x cell)` rows (the guide's `3 x HEIGHT/4` rule, measured
+//! exactly); the bitmap faces snap to stored sizes (`base x ceil(cell/divisor)`
+//! rows - font F's `21 x ceil(cell/30)` band is measured across the whole
+//! case-18 sweep; the other faces' native cell is their divisor). Baseline
+//! offsets are therefore `pad + cap - 1`, not the guide's separate
+//! baseline numbers.
 //!
-//! * Advances: our bundled face measured at the ppem where the face's cap
-//!   height spans the baseline at the default cell. All 95 printable
-//!   ASCII advances (index `char - 32`) are 203 dpi reference values;
-//!   the renderer scales by `dpi/203` (and by `h/cell` for an explicit
-//!   `^A` height).
+//! * Advances: the bundled face - the same metrically-condensed sans the
+//!   reference bitmaps are cast from - is measured at the ppem where its
+//!   cap height spans the drawn cap at the default cell, then multiplied
+//!   by a per-face fit so the **reference** bitmap advance is reproduced
+//!   (the reference matrices advance wider than the guide's `W + gap`
+//!   numbers; the per-glyph residuals are the Task-L4b advance
+//!   calibration). All 95 printable ASCII advances (index `char - 32`) are
+//!   203 dpi reference values; the renderer scales by `dpi/203` (and by
+//!   `h/cell` for an explicit `^A` height).
+//! * Widths: each bitmap face additionally stretches its glyphs
+//!   horizontally by a per-face [`FontMetrics::x_scale`] (the reference
+//!   M is measured `1.1-1.7x` wider than the face's natural outline at the
+//!   cap scale for the high-advance families; the P..V family runs at
+//!   ~0.97), so the drawn ink width matches the probe without distorting
+//!   the advance fit.
+//! * The `^A` width parameter does not apply to the bitmap faces: the
+//!   reference renders them at their native bitmap proportions whatever
+//!   the width request (measured on the case-18 sweep and the probes).
+//!   Font `0` is the one scalable font; its width behavior is calibrated
+//!   separately (see [`builtin_metric`]).
 
 use ab_glyph::{point, Font, FontVec};
 
@@ -40,13 +61,21 @@ use ab_glyph::{point, Font, FontVec};
 /// by name (`^A@`).
 #[derive(Clone, Debug)]
 pub enum FontSpec {
-    /// A built-in font by `^A` letter: `b'A'..=b'H'` or `b'0'` (the
-    /// scalable default font). Unknown letters are unserved (caller warns).
+    /// A built-in font by `^A` letter: `b'A'..=b'H'`, `b'P'..=b'V'` (the
+    /// bitmap matrices), `b'0'` (the scalable default font), or the
+    /// `^GS` graphic-symbol font ([`SYMBOL_KEY`]). Unknown letters are
+    /// unserved (caller warns).
     Zebra(u8),
     /// A downloaded font (`^A@d:f.x`), resolved from `Memory.fonts` by the
     /// renderer.
     Downloaded(String),
 }
+
+/// The internal key for the `^GS` graphic-symbol font (guide p.217): the
+/// (C) (R) (TM) ... set cast from Noto Sans Symbols 2. `^GS` is its own command and
+/// carries no `^A` letter, so the renderer routes symbol fields to this
+/// key (no real ZPL font letter collides with `*`).
+pub const SYMBOL_KEY: u8 = b'*';
 
 /// A font the renderer can draw from: the TTF bytes plus metrics.
 #[derive(Debug)]
@@ -59,7 +88,7 @@ pub struct FontData {
 
 /// How a built-in font's rendered cap height derives from the drawn cell
 /// (the `^A` height). The reference renders built-ins bitmap-style: the
-/// cap ink starts at the cell top and the baseline is the cap's bottom
+/// cap ink starts near the cell top and the baseline is the cap's bottom
 /// row, so the baseline offset is `cap_rows(cell) - 1` (see
 /// [`FontMetrics::baseline_for_cell`]). Downloadable TrueType fonts
 /// (`CapModel::Ascent`) keep classic typefacing: the face's ascent lands
@@ -67,11 +96,27 @@ pub struct FontData {
 #[derive(Clone, Debug)]
 pub enum CapModel {
     /// Cap rows = `floor(percent x cell / 100)` - a native ratio family (font
-    /// `0`: 75, the guide's `3 x HEIGHT/4`).
+    /// `0`: 75, the guide's `3 x HEIGHT/4`, measured exactly across the
+    /// case-17 sweep).
     Ratio { percent: u16 },
     /// Cap rows = `base x ceil(cell / divisor)` - stored bitmap sizes (font
-    /// `F`: base 21, divisor 30, measured from the parity sweep).
+    /// `F`: base 21, divisor 30, measured across the case-18 sweep).
     Snap { base: u32, divisor: u32 },
+    /// A reference bitmap-matrix face (guide Table 31, calibrated to the
+    /// probe corpus): cap rows = `base x ceil(cell / divisor)` like
+    /// [`CapModel::Snap`], plus a `pad`-row gap between the cell top and
+    /// the ink (the OCR-B and P..V families ink a top gap of ~0.11-0.15
+    /// of the cell; the other faces anchor at the top with `pad` 0). `lp`
+    /// is the left pad (dots in from the cell edge - the G bitmap carries
+    /// a ~0.1-cell left margin, the P..V family ~0.05). The per-face
+    /// horizontal stretch and advance fit live in [`FontMetrics::x_scale`]
+    /// and the advance table.
+    Matrix {
+        base: u32,
+        divisor: u32,
+        pad: u32,
+        lp: u32,
+    },
     /// TrueType: ascent-fitted baseline, no cap anchoring (downloaded
     /// fonts).
     Ascent,
@@ -95,18 +140,35 @@ pub struct FontMetrics {
     pub advances: Vec<u16>,
     /// Cap-anchoring model (bitmap-style vs TrueType).
     pub cap: CapModel,
+    /// Horizontal glyph scale relative to the vertical in dot-for-dot
+    /// terms at the reference size: the drawn ink width equals the face's
+    /// natural outline width at the cap scale times this factor. The
+    /// reference bitmap families print wider than their source faces
+    /// (the probe M widths divided by the face's natural M at the cap
+    /// scale); 1.0 = the face's own proportions (font 0, downloaded
+    /// fonts, `^GS`).
+    pub x_scale: f32,
 }
 
 /// Cap ink rows (from the cell top, the baseline row included) for a
-/// drawn cell of `cell` dots: `floor(percent x cell / 100)` or
-/// `base x ceil(cell / divisor)` (the two calibrated families; `Ascent`
-/// never reaches this - see [`CapModel`]).
+/// drawn cell of `cell` dots. `Ratio` multiplies; `Snap`/`Matrix` snap to
+/// stored bitmap bands (`base` rows per `divisor`-dot band; `Matrix` adds
+/// the face's top pad); `Ascent` never reaches this - see [`CapModel`].
 fn cap_rows_for(cap: &CapModel, cell: u32) -> u32 {
     match *cap {
         CapModel::Ratio { percent } => cell.saturating_mul(u32::from(percent)) / 100,
         CapModel::Snap { base, divisor } => {
             let d = divisor.max(1);
             base.saturating_mul(cell.saturating_add(d - 1) / d)
+        }
+        CapModel::Matrix {
+            base,
+            divisor,
+            pad,
+            lp: _,
+        } => {
+            let d = divisor.max(1);
+            pad.saturating_add(base.saturating_mul(cell.saturating_add(d - 1) / d))
         }
         CapModel::Ascent => cell,
     }
@@ -117,17 +179,49 @@ fn cap_rows_for(cap: &CapModel, cell: u32) -> u32 {
 /// Bitmap-snap fonts may ink past the cell (their cap exceeds the `^A`
 /// height), so there is no upper clamp - the renderer's draw band covers
 /// it.
-pub(crate) fn baseline_for_cell(cap: &CapModel, cell: u32) -> u32 {
+/// Public for the integration tests that mirror [`GUIDE_CELLS`].
+pub fn baseline_for_cell(cap: &CapModel, cell: u32) -> u32 {
     cap_rows_for(cap, cell).saturating_sub(1).max(1)
 }
 
 /// The bitmap cell's left pad: dots from the cell's left edge to the
 /// glyph ink. Font 0 inks `ceil(h/16)` in from the cell edge (measured 1..5
-/// dots across the parity sweep); the snap families (F, A) ink from the
-/// edge itself.
+/// dots across the parity sweep); the bitmap families (`Snap`, `Matrix`,
+/// F, ...) ink from the edge itself.
+/// The matrix faces' top gap: rows from the cell top to the cap ink (0
+/// for every other family). The pad is a *position* offset - the paint
+/// scale fits the cap alone, and the glyph is anchored `pad` rows lower -
+/// so it must not feed the baseline (which counts rows to the cap's
+/// bottom row) through the scale.
+pub(crate) fn matrix_pad(cap: &CapModel, cell: u32) -> u32 {
+    match *cap {
+        CapModel::Matrix {
+            base: _,
+            divisor,
+            pad,
+            lp: _,
+        } => {
+            let d = divisor.max(1);
+            pad.saturating_mul(cell.saturating_add(d - 1) / d)
+        }
+        _ => 0,
+    }
+}
+
 pub(crate) fn left_pad(cap: &CapModel, cell: u32) -> u32 {
     match *cap {
         CapModel::Ratio { .. } => (cell + 8) / 16,
+        // The matrix bitmaps ink a fixed pad in from the cell edge (the
+        // face's own left margin); like the cap it snaps per band.
+        CapModel::Matrix {
+            base: _,
+            divisor,
+            pad: _,
+            lp,
+        } => {
+            let d = divisor.max(1);
+            lp.saturating_mul(cell.saturating_add(d - 1) / d)
+        }
         _ => 0,
     }
 }
@@ -147,9 +241,13 @@ pub trait FontProvider {
 /// * `0` - DejaVuSansCondensed (Bitstream Vera license, Gaussian
 ///   distribution): its narrow proportions match the reference's
 ///   low-advance bitmap font 0 best of the measured faces.
-/// * `A`-`D`, `G`, `H` - Noto Sans (SIL OFL 1.1), the generic sans.
-/// * `E`, `F` - IBM Plex Mono (SIL OFL 1.1), the OCR-style fixed-pitch
-///   stand-in for the OCR letter sets.
+/// * `A`-`D`, `F`, `G`, `P`-`V` - Noto Sans Condensed (SIL OFL 1.1), the
+///   condensed sans the reference's bitmap families track.
+/// * `E` - OCR-B (jaycee723/ocr-b, SIL OFL 1.1), the OCR letter face.
+/// * `H` - OCR-A (WP OCR-A derivative of John Sauter's OCR-A, SIL OFL
+///   1.1; the hhea vertical metrics were repaired to the font's own
+///   OS/2 values - the published build ships ascent 0), the OCR-A face.
+/// * `*` - Noto Sans Symbols 2 (SIL OFL 1.1), the `^GS` (C) (R) (TM) set.
 const BUNDLED_FACES: &[(u8, &str, &[u8])] = &[
     (
         b'0',
@@ -158,69 +256,226 @@ const BUNDLED_FACES: &[(u8, &str, &[u8])] = &[
     ),
     (
         b'A',
-        "Noto Sans",
-        include_bytes!("../tests/fixtures/NotoSans-Regular.ttf"),
+        "Noto Sans Condensed",
+        include_bytes!("../tests/fixtures/NotoSans-Condensed.ttf"),
     ),
     (
         b'B',
-        "Noto Sans",
-        include_bytes!("../tests/fixtures/NotoSans-Regular.ttf"),
+        "Noto Sans Condensed",
+        include_bytes!("../tests/fixtures/NotoSans-Condensed.ttf"),
     ),
     (
         b'C',
-        "Noto Sans",
-        include_bytes!("../tests/fixtures/NotoSans-Regular.ttf"),
+        "Noto Sans Condensed",
+        include_bytes!("../tests/fixtures/NotoSans-Condensed.ttf"),
     ),
     (
         b'D',
-        "Noto Sans",
-        include_bytes!("../tests/fixtures/NotoSans-Regular.ttf"),
+        "Noto Sans Condensed",
+        include_bytes!("../tests/fixtures/NotoSans-Condensed.ttf"),
     ),
     (
         b'E',
-        "IBM Plex Mono",
-        include_bytes!("../tests/fixtures/IBMPlexMono-Regular.ttf"),
+        "OCR-B",
+        include_bytes!("../tests/fixtures/OCR-B.ttf"),
     ),
     (
         b'F',
-        "IBM Plex Mono",
-        include_bytes!("../tests/fixtures/IBMPlexMono-Regular.ttf"),
+        "Noto Sans Condensed",
+        include_bytes!("../tests/fixtures/NotoSans-Condensed.ttf"),
     ),
     (
         b'G',
-        "Noto Sans",
-        include_bytes!("../tests/fixtures/NotoSans-Regular.ttf"),
+        "Noto Sans Condensed",
+        include_bytes!("../tests/fixtures/NotoSans-Condensed.ttf"),
     ),
     (
         b'H',
-        "Noto Sans",
-        include_bytes!("../tests/fixtures/NotoSans-Regular.ttf"),
+        "OCR-A",
+        include_bytes!("../tests/fixtures/OCR-A-Regular.ttf"),
+    ),
+    (
+        SYMBOL_KEY,
+        "Noto Sans Symbols 2",
+        include_bytes!("../tests/fixtures/NotoSansSymbols2-Regular.ttf"),
+    ),
+    (
+        b'P',
+        "Noto Sans Condensed",
+        include_bytes!("../tests/fixtures/NotoSans-Condensed.ttf"),
+    ),
+    (
+        b'Q',
+        "Noto Sans Condensed",
+        include_bytes!("../tests/fixtures/NotoSans-Condensed.ttf"),
+    ),
+    (
+        b'R',
+        "Noto Sans Condensed",
+        include_bytes!("../tests/fixtures/NotoSans-Condensed.ttf"),
+    ),
+    (
+        b'S',
+        "Noto Sans Condensed",
+        include_bytes!("../tests/fixtures/NotoSans-Condensed.ttf"),
+    ),
+    (
+        b'T',
+        "Noto Sans Condensed",
+        include_bytes!("../tests/fixtures/NotoSans-Condensed.ttf"),
+    ),
+    (
+        b'U',
+        "Noto Sans Condensed",
+        include_bytes!("../tests/fixtures/NotoSans-Condensed.ttf"),
+    ),
+    (
+        b'V',
+        "Noto Sans Condensed",
+        include_bytes!("../tests/fixtures/NotoSans-Condensed.ttf"),
     ),
 ];
 
-/// Guide-anchored (letter, cell height, baseline, cap model) entries.
+/// Calibrated (letter, cell, cap model, advance fit, x-scale) entries.
 ///
-/// Cell heights: ZPL II Programming Guide Table 31, "8 dot/mm (203 dpi)
-/// Printhead" character matrices. Baselines: Table 29, "Intercharacter
-/// Gap and Baseline Parameters" - the guide's baseline of the default
-/// matrix, which the parity measurements show is the default-cell cap in
-/// rows. Font `0` (scalable default font) is the guide's `Default: 15 x
-/// 12` matrix with baseline `3 x HEIGHT/4` (`3*15/4 = 11.25` rounded to
-/// 11), measured as an exact `0.75` cap ratio. Font `F` is a bitmap-snap
-/// family (base 21 rows per 30-dot band, measured from the parity sweep).
-/// The `A-H` entries preserve their guide baseline as the default-cell
-/// cap ratio. The integration test `zpl/tests/fonts.rs` duplicates these
-/// values; a change to either side is a review event.
-const GUIDE_CELLS: &[(u8, u32, u32, CapModel)] = &[
-    (b'A', 9, 7, CapModel::Snap { base: 15, divisor: 9 }),
-    (b'B', 11, 11, CapModel::Ratio { percent: 100 }),
-    (b'C', 18, 14, CapModel::Ratio { percent: 78 }),
-    (b'D', 18, 14, CapModel::Ratio { percent: 78 }),
-    (b'E', 28, 23, CapModel::Ratio { percent: 82 }),
-    (b'F', 26, 21, CapModel::Snap { base: 21, divisor: 30 }),
-    (b'G', 60, 48, CapModel::Ratio { percent: 80 }),
-    (b'H', 21, 21, CapModel::Ratio { percent: 100 }),
-    (b'0', 15, 11, CapModel::Ratio { percent: 75 }),
+/// The cell is the guide's Table 31 native matrix height at 203 dpi; the
+/// cap model is the parity-calibrated bitmap rule (see [`CapModel`]).
+/// `adv_fit` scales the face's measured advances so the reference
+/// bitmap's advance at the default cell is reproduced (the reference
+/// matrices advance wider than the guide's `W + gap`); `x_scale`
+/// stretches the drawn ink horizontally to the reference bitmap's width.
+/// Both were fitted to the probe corpus (cases 20-29) at the native cell
+/// and at 2x, reported in the L4b task summary.
+///
+/// Font `0` (scalable default font) is the guide's `Default: 15 x 12`
+/// matrix with baseline `3 x HEIGHT/4` (`3*15/4 = 11.25` rounded to 11),
+/// measured as an exact `0.75` cap ratio; its advance fit (11/12) and
+/// left pad (h/16) were measured across the case-17 sweep. Font `F` is a
+/// bitmap-snap family (base 21 rows per 30-dot band, measured across the
+/// case-18 sweep). The `P`-`V` entries between the two probed faces
+/// (`P`, `V`) interpolate the measured cap/pad ratios. The integration
+/// test `zpl/tests/fonts.rs` duplicates these values; a change to either
+/// side is a review event.
+const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32)] = &[
+    (
+        b'A',
+        9,
+        CapModel::Matrix { base: 7, divisor: 9, pad: 0, lp: 0 },
+        1.468,
+        1.927,
+    ),
+    (
+        b'B',
+        11,
+        CapModel::Matrix { base: 11, divisor: 11, pad: 0, lp: 0 },
+        1.219,
+        1.850,
+    ),
+    (
+        b'C',
+        18,
+        CapModel::Matrix { base: 14, divisor: 18, pad: 0, lp: 0 },
+        1.303,
+        1.779,
+    ),
+    (
+        b'D',
+        18,
+        CapModel::Matrix { base: 14, divisor: 18, pad: 0, lp: 0 },
+        1.645,
+        1.656,
+    ),
+    (
+        b'E',
+        28,
+        CapModel::Matrix { base: 20, divisor: 28, pad: 3, lp: 0 },
+        1.347,
+        2.074,
+    ),
+    (
+        b'F',
+        26,
+        CapModel::Snap { base: 21, divisor: 30 },
+        1.084,
+        1.677,
+    ),
+    (
+        b'G',
+        60,
+        CapModel::Matrix { base: 48, divisor: 60, pad: 0, lp: 6 },
+        1.441,
+        1.673,
+    ),
+    (
+        b'H',
+        21,
+        CapModel::Matrix { base: 21, divisor: 21, pad: 0, lp: 0 },
+        1.578,
+        2.116,
+    ),
+    (
+        SYMBOL_KEY,
+        24,
+        CapModel::Matrix { base: 15, divisor: 24, pad: 0, lp: 0 },
+        1.0,
+        1.0,
+    ),
+    (
+        b'P',
+        20,
+        CapModel::Matrix { base: 12, divisor: 20, pad: 3, lp: 1 },
+        0.739,
+        1.051,
+    ),
+    (
+        b'Q',
+        28,
+        CapModel::Matrix { base: 17, divisor: 28, pad: 4, lp: 2 },
+        0.715,
+        1.021,
+    ),
+    (
+        b'R',
+        35,
+        CapModel::Matrix { base: 21, divisor: 35, pad: 5, lp: 2 },
+        0.715,
+        1.021,
+    ),
+    (
+        b'S',
+        40,
+        CapModel::Matrix { base: 25, divisor: 40, pad: 6, lp: 3 },
+        0.715,
+        1.021,
+    ),
+    (
+        b'T',
+        48,
+        CapModel::Matrix { base: 30, divisor: 48, pad: 7, lp: 3 },
+        0.715,
+        1.021,
+    ),
+    (
+        b'U',
+        59,
+        CapModel::Matrix { base: 37, divisor: 59, pad: 9, lp: 4 },
+        0.715,
+        1.021,
+    ),
+    (
+        b'V',
+        80,
+        CapModel::Matrix { base: 50, divisor: 80, pad: 12, lp: 4 },
+        0.691,
+        0.991,
+    ),
+    (
+        b'0',
+        15,
+        CapModel::Ratio { percent: 75 },
+        0.917,
+        1.0,
+    ),
 ];
 
 /// Measure the printable-ASCII advance table for `face` at `ppem` (pixels
@@ -251,33 +506,38 @@ pub(crate) fn cap_units(face: &FontVec, upem: f32) -> f32 {
         .unwrap_or_else(|| face.ascent_unscaled())
 }
 
-/// Per-letter metrics for the bundled face: each letter's cell/baseline
-/// come from the guide and the cap model is calibrated; the ppem is
-/// fitted so the face's cap height spans the baseline at the default
-/// cell (`cap_rows(cell) - 1` rows), and advances are measured at that
-/// ppem. `baseline` keeps the guide value (the default-cell cap rows).
+/// Per-letter metrics for the bundled face: the cap model is calibrated (a
+/// bitmap snap/matrix rule or font 0's 75% ratio); the ppem is fitted so
+/// the face's cap height spans the drawn cap at the default cell
+/// (`cap_rows(cell) - 1` rows), and advances are measured at that ppem
+/// then scaled by the per-face `adv_fit`. `baseline` keeps the guide
+/// value (the default-cell cap rows).
 fn builtin_metric(
     face: &FontVec,
     _letter: u8,
     cell_height: u32,
     baseline: u32,
     cap: &CapModel,
+    adv_fit: f32,
+    x_scale: f32,
 ) -> FontMetrics {
     let upem = face.units_per_em().unwrap_or(2048.0);
     // Baseline rows below the cell top at the default cell; the ppem
-    // solves `cap_height_units * ppem / upem == baseline - 1`.
-    let b = cap_rows_for(cap, cell_height).saturating_sub(1).max(1) as f32;
+    // solves `cap_height_units * ppem / upem == baseline - 1`. The ppem
+    // fits the face's cap alone - the matrix faces' top pad shifts the
+    // glyph down but does not scale it.
+    let cap_rows = cap_rows_for(cap, cell_height);
+    let b = cap_rows
+        .saturating_sub(matrix_pad(cap, cell_height))
+        .saturating_sub(1)
+        .max(1) as f32;
     let ppem = (b * upem / cap_units(face, upem)).max(1.0);
-    // Font 0's reference advances run ~0.917x the face's at the cap
-    // scale (the bitmap's M advances 11 dots at the default cell where
-    // the face measures 12): fit the advance table to the reference.
-    // The other letters have no measured advance data yet - 1.0.
-    let adv_fit = if _letter == b'0' { 11.0 / 12.0 } else { 1.0 };
     FontMetrics {
         cell_height,
         baseline,
         cap: cap.clone(),
         advances: measure_advances(face, (ppem * adv_fit).max(1.0)),
+        x_scale,
     }
 }
 
@@ -298,7 +558,7 @@ impl DefaultFontProvider {
     pub fn new() -> Self {
         let metrics = GUIDE_CELLS
             .iter()
-            .map(|&(letter, cell, baseline, ref cap)| {
+            .map(|&(letter, cell, ref cap, adv_fit, x_scale)| {
                 let bytes = BUNDLED_FACES
                     .iter()
                     .find(|&&(c, _, _)| c == letter)
@@ -306,7 +566,8 @@ impl DefaultFontProvider {
                     .expect("every guide letter has a bundled face");
                 let face = FontVec::try_from_vec(bytes.to_vec())
                     .expect("bundled font failed to parse");
-                builtin_metric(&face, letter, cell, baseline, cap)
+                let baseline = cap_rows_for(cap, cell).saturating_sub(1).max(1);
+                builtin_metric(&face, letter, cell, baseline, cap, adv_fit, x_scale)
             })
             .collect();
         DefaultFontProvider { metrics }
@@ -321,7 +582,7 @@ impl FontProvider for DefaultFontProvider {
             // resolves them (module docs). Not our job, never ours.
             FontSpec::Downloaded(_) => return None,
         };
-        let idx = GUIDE_CELLS.iter().position(|&(c, _, _, _)| c == letter)?;
+        let idx = GUIDE_CELLS.iter().position(|&(c, _, _, _, _)| c == letter)?;
         let bytes = BUNDLED_FACES
             .iter()
             .find(|&&(c, _, _)| c == letter)
@@ -363,6 +624,7 @@ pub fn font_data_from_ttf(ttf: &[u8]) -> Option<FontData> {
             baseline,
             advances: measure_advances(&face, ppem),
             cap: CapModel::Ascent,
+            x_scale: 1.0,
         },
     })
 }
