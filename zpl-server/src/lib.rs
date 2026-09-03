@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod archive;
+pub mod http;
 pub mod hs;
 pub mod proto;
 pub mod state;

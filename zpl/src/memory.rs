@@ -22,7 +22,11 @@ use crate::textfmt::{draft_mut, head_segments, split_commas, to_u32};
 /// Image data is 1bpp packed, row-major, MSB-first: bit 7 of the first byte
 /// is the leftmost dot of the first row. [`packed_row_bytes`] is the single
 /// place the packed-row layout is expressed.
-#[derive(Default, Debug, Clone)]
+///
+/// Serde derives: the server persists `Memory` to `dir/memory.json` on
+/// change and reloads it at boot (Task 21); the maps are the model, so the
+/// derive is exact.
+#[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Memory {
     /// Stored bitmaps (`~DG` download; recalled by `^XG ^IM ^IL`). This map
     /// is `~HS` string-2's `www` count source.
@@ -34,7 +38,7 @@ pub struct Memory {
 }
 
 /// A stored bitmap: 1bpp packed, row-major, MSB-first.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Image {
     /// Dot width of the image (always a multiple of 8: `bytes_per_row * 8`).
     pub width: u32,

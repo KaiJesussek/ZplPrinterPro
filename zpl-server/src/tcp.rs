@@ -4,27 +4,28 @@
 
 use std::collections::BTreeMap;
 use std::mem;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 use zpl::cmd::{parse_stream_collect, ParsedLabel};
-use zpl::diag::{Diagnostic, Diagnostics};
+use zpl::diag::{Diagnostic, Diagnostics, Severity};
 use zpl::fonts::DefaultFontProvider;
-use zpl::memory::Memory;
 use zpl::render::{render, RenderOptions};
 use zpl::scanner::Scanner;
 use zpl::state::{FormatState, ParseContext, PrinterConfig, PrinterMode, QueryRequest};
 
-use crate::archive::{unix_ms, Archive, LabelRow};
+use crate::archive::{unix_ms, LabelRow};
 use crate::hs::hs_response;
 use crate::proto;
-use crate::state::PrinterState;
+// Task 21 moved the server-wide state here (it now also owns the SSE
+// channel); `pub use` keeps the pre-T21 `zpl_server::tcp::AppState` import
+// path alive for the integration tests.
+pub use crate::state::{AppState, Counters};
 
 /// Parser state that must survive read-chunk boundaries. `ParseContext` is
 /// rebuilt per chunk so the shared `Memory` lock is held only for the parse
@@ -72,42 +73,8 @@ impl Persist {
     }
 }
 
-/// Accumulated session counters (survive forever; Task 20's `~HS` and
-/// Task 21's `/api/diagnostics` read them).
-#[derive(Debug, Default)]
-pub struct Counters {
-    pub labels: AtomicU64,
-    pub bytes: AtomicU64,
-    pub warnings: AtomicU64,
-}
-
-/// Server-wide state shared by TCP (and, from Task 21, HTTP) tasks.
-pub struct AppState {
-    pub archive: Mutex<Archive>,
-    /// The printer's storage, global like a real printer's: an image stored
-    /// by one connection is visible to the next. Locked per parse chunk -
-    /// stored data lives in `Memory` itself, so per-chunk locking changes
-    /// nothing semantically.
-    pub memory: Arc<Mutex<Memory>>,
-    pub counters: Counters,
-    /// The printer's live state (~HS conditions, batch remaining, meters,
-    /// ^FN data). Mutated by the session at label completions and by the
-    /// Task 21 web API; read by every query responder. Lock order is
-    /// memory -> printer_state (the session locks it while holding the
-    /// memory guard; HTTP rerenders must do the same).
-    pub printer_state: Mutex<PrinterState>,
-}
-
-impl AppState {
-    pub fn new(archive: Archive) -> Self {
-        AppState {
-            archive: Mutex::new(archive),
-            memory: Arc::new(Mutex::new(Memory::default())),
-            counters: Counters::default(),
-            printer_state: Mutex::new(PrinterState::default()),
-        }
-    }
-}
+// Task 21's `AppState`/`Counters` live in `state.rs` (re-exported above);
+// the TCP module owns the accept loop and session driver only.
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const READ_BUF: usize = 8192;
@@ -198,9 +165,16 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
             for pl in &labels {
                 let raw = &input[pl.start..pl.end];
                 for d in &diags.items {
+                    if matches!(d.severity, Severity::UnknownCommand) {
+                        state
+                            .counters
+                            .unknown_commands
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
                     eprintln!("tcp: {}", d.message);
                 }
                 let diag_count = diags.items.len();
+                let messages: Vec<String> = diags.items.iter().map(|d| d.message.clone()).collect();
                 // Render inside its own scope: RenderOptions borrows a
                 // `&dyn FontProvider`, which is not Sync, so `opts` must
                 // not live across the archive await below.
@@ -234,7 +208,7 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
                     height: pl.label.height_dots,
                 };
                 let mut archive = state.archive.lock().await;
-                match archive.push(&mut row, raw, &pl.label, &png) {
+                match archive.push(&mut row, raw, &pl.label, &png, &messages) {
                     Ok(_id) => {
                         state.counters.labels.fetch_add(1, Ordering::Relaxed);
                         state.counters.warnings.fetch_add(diag_count as u64, Ordering::Relaxed);
@@ -257,6 +231,12 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
                     Err(e) => eprintln!("tcp: archive push failed: {e}"),
                 }
                 drop(archive);
+                // Push the label event after the archive lock drops (the
+                // broadcast send is sync/non-blocking - subscribers never
+                // stall the printer). `row.id` is 0 only when push failed.
+                if row.id != 0 {
+                    let _ = state.events.send(crate::state::Event::Label(row.clone()));
+                }
                 diags.items.clear(); // diags are attributed to this label
             }
             // Query responses are built after the chunk's labels complete,
