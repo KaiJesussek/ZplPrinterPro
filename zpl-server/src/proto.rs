@@ -78,18 +78,20 @@ pub fn respond_hi() -> Vec<u8> {
     format!("ZPL20,{EMULATOR_FIRMWARE},8,4096KB,0\r\n").into_bytes()
 }
 
-/// `^HV#,n,h,t,a` (p.239): header + the numbered field's data (truncated
-/// to `n` bytes) + termination, from the last completed label. A field
-/// number the last label never defined returns just the header and
-/// terminator (real printers send the empty field with its framing).
+/// `^HV#,n,h,t,a` (p.239): header + the numbered field's data + termination,
+/// from the last completed label. `n` is "the number of bytes to be
+/// returned" (guide values 1..256): the field's UTF-8 bytes are truncated
+/// to exactly `n` raw bytes - a cut that splits a multibyte code point is
+/// fine, because the response is opaque transfer bytes and the host sizes
+/// its buffer to n. A field number the last label never defined returns
+/// just the header and terminator (real printers send the empty field with
+/// its framing).
 pub fn respond_hv(req: &HostValueRequest, numbered: &BTreeMap<u32, String>) -> Vec<u8> {
     let mut out = Vec::with_capacity(req.header.len() + req.max_bytes + req.terminator.len());
     out.extend_from_slice(&req.header);
     if let Some(data) = numbered.get(&req.field) {
-        for ch in data.chars().take(req.max_bytes) {
-            let mut buf = [0u8; 4];
-            out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
-        }
+        let n = req.max_bytes.min(data.len());
+        out.extend_from_slice(&data.as_bytes()[..n]);
     }
     out.extend_from_slice(&req.terminator);
     out

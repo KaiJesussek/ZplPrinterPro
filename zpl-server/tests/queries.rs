@@ -74,11 +74,6 @@ fn frames(resp: &[u8]) -> usize {
     resp.iter().filter(|&&b| b == 0x02).count()
 }
 
-fn line1_of(resp: &[u8]) -> String {
-    let l = resp.split(|&b| b == b'\n').nth(0).unwrap();
-    String::from_utf8(l[1..l.len().saturating_sub(2)].to_vec()).unwrap()
-}
-
 /// String 2's comma fields of the first frame in `resp`.
 fn s2_fields(resp: &[u8]) -> Vec<String> {
     let l = resp.split(|&b| b == b'\n').nth(1).unwrap();
@@ -129,6 +124,28 @@ async fn hv_honors_byte_count_header_and_termination() {
         .unwrap()
         .unwrap();
     assert_eq!(&buf[..n], b"<Hel>!");
+    drop(sock);
+}
+
+#[tokio::test]
+async fn hv_truncates_by_bytes_not_chars() {
+    // Guide p.239: n = "the number of bytes to be returned". The field's
+    // e (byte 0xE9 under the default codepage) is 2 UTF-8 bytes, so
+    // ^HV1,1 must emit exactly ONE raw byte - a host sizing its receive
+    // buffer to n must never over-read (multibyte split is fine).
+    let dir = test_dir("hvbytes");
+    let _keep = Cleanup(dir.clone());
+    let (addr, _state) = spawn(dir.clone()).await;
+
+    let mut sock = TcpStream::connect(addr).await.unwrap();
+    sock.write_all(b"^XA^FN1^FD\xE9^FS^XZ^HV1,1").await.unwrap();
+    let mut buf = [0u8; 8];
+    let n = tokio::time::timeout(Duration::from_secs(3), sock.read(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(n, 1, "exactly one byte for n=1");
+    assert_eq!(buf[0], 0xC3, "the first UTF-8 byte of \u{00E9} (0xE9 \u{2192} U+00E9)");
     drop(sock);
 }
 

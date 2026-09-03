@@ -116,7 +116,6 @@ pub fn hs_response(s: &PrinterState, images: usize) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{Conditions, MediaType, PrinterState, PrintMode, Temp};
 
     #[test]
     fn comm_settings_bit_math() {

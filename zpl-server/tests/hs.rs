@@ -8,7 +8,7 @@
 //! xxxx = 0000 with static RAM installed (y = 1).
 
 use zpl_server::hs::hs_response;
-use zpl_server::state::{Conditions, MediaType, PrinterState, PrintMode, Temp};
+use zpl_server::state::{MediaType, PrinterState, PrintMode, Temp};
 
 /// All-clear, freshly-powered printer (no labels received, no images):
 /// the three STX...ETX-CRLF strings transcribed from the guide verbatim.
