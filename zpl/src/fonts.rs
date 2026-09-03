@@ -138,6 +138,11 @@ pub struct FontMetrics {
     /// 32..=126 (0 = space, 94 = `~`); a 0 entry means the glyph is
     /// missing and prints as a space.
     pub advances: Vec<u16>,
+    /// Font-0 per-glyph advance override: `(char, tenths)` pairs where the
+    /// drawn advance is `round(tenths * cell / 1000)` (the L4c corpus
+    /// measurements of the reference bitmap font 0; absent chars fall back
+    /// to `advances`). `None` for every other face.
+    pub tenths: Option<&'static [(char, u16)]>,
     /// Cap-anchoring model (bitmap-style vs TrueType).
     pub cap: CapModel,
     /// Horizontal glyph scale relative to the vertical in dot-for-dot
@@ -148,6 +153,11 @@ pub struct FontMetrics {
     /// scale); 1.0 = the face's own proportions (font 0, downloaded
     /// fonts, `^GS`).
     pub x_scale: f32,
+    /// Advance/ink width growth power relative to the face's native cell:
+    /// `width propto cell ^ width_pow`. 1.0 = linear. The reference matrix
+    /// faces G and V grow sub-linearly (~1.5x per doubling, measured from
+    /// the 2x probe hops); identity keeps every other face linear.
+    pub width_pow: f32,
 }
 
 /// Cap ink rows (from the cell top, the baseline row included) for a
@@ -356,13 +366,14 @@ const BUNDLED_FACES: &[(u8, &str, &[u8])] = &[
 /// (`P`, `V`) interpolate the measured cap/pad ratios. The integration
 /// test `zpl/tests/fonts.rs` duplicates these values; a change to either
 /// side is a review event.
-const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32)] = &[
+const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32, f32)] = &[
     (
         b'A',
         9,
         CapModel::Matrix { base: 7, divisor: 9, pad: 0, lp: 0 },
         1.468,
         1.927,
+        1.0,
     ),
     (
         b'B',
@@ -370,6 +381,7 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32)] = &[
         CapModel::Matrix { base: 11, divisor: 11, pad: 0, lp: 0 },
         1.219,
         1.850,
+        1.0,
     ),
     (
         b'C',
@@ -377,6 +389,7 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32)] = &[
         CapModel::Matrix { base: 14, divisor: 18, pad: 0, lp: 0 },
         1.303,
         1.779,
+        1.0,
     ),
     (
         b'D',
@@ -384,6 +397,7 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32)] = &[
         CapModel::Matrix { base: 14, divisor: 18, pad: 0, lp: 0 },
         1.645,
         1.656,
+        1.0,
     ),
     (
         b'E',
@@ -391,6 +405,7 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32)] = &[
         CapModel::Matrix { base: 20, divisor: 28, pad: 3, lp: 0 },
         1.347,
         2.074,
+        1.0,
     ),
     (
         b'F',
@@ -398,6 +413,7 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32)] = &[
         CapModel::Snap { base: 21, divisor: 30 },
         1.084,
         1.677,
+        1.0,
     ),
     (
         b'G',
@@ -405,6 +421,7 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32)] = &[
         CapModel::Matrix { base: 48, divisor: 60, pad: 0, lp: 6 },
         1.441,
         1.673,
+        0.585,
     ),
     (
         b'H',
@@ -412,11 +429,13 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32)] = &[
         CapModel::Matrix { base: 21, divisor: 21, pad: 0, lp: 0 },
         1.578,
         2.116,
+        1.0,
     ),
     (
         SYMBOL_KEY,
         24,
         CapModel::Matrix { base: 15, divisor: 24, pad: 0, lp: 0 },
+        1.0,
         1.0,
         1.0,
     ),
@@ -426,6 +445,7 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32)] = &[
         CapModel::Matrix { base: 12, divisor: 20, pad: 3, lp: 1 },
         0.739,
         1.051,
+        1.0,
     ),
     (
         b'Q',
@@ -433,6 +453,7 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32)] = &[
         CapModel::Matrix { base: 17, divisor: 28, pad: 4, lp: 2 },
         0.715,
         1.021,
+        1.0,
     ),
     (
         b'R',
@@ -440,6 +461,7 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32)] = &[
         CapModel::Matrix { base: 21, divisor: 35, pad: 5, lp: 2 },
         0.715,
         1.021,
+        1.0,
     ),
     (
         b'S',
@@ -447,6 +469,7 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32)] = &[
         CapModel::Matrix { base: 25, divisor: 40, pad: 6, lp: 3 },
         0.715,
         1.021,
+        1.0,
     ),
     (
         b'T',
@@ -454,6 +477,7 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32)] = &[
         CapModel::Matrix { base: 30, divisor: 48, pad: 7, lp: 3 },
         0.715,
         1.021,
+        1.0,
     ),
     (
         b'U',
@@ -461,6 +485,7 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32)] = &[
         CapModel::Matrix { base: 37, divisor: 59, pad: 9, lp: 4 },
         0.715,
         1.021,
+        1.0,
     ),
     (
         b'V',
@@ -468,12 +493,14 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32)] = &[
         CapModel::Matrix { base: 50, divisor: 80, pad: 12, lp: 4 },
         0.691,
         0.991,
+        1.0,
     ),
     (
         b'0',
         15,
         CapModel::Ratio { percent: 75 },
         0.917,
+        1.0,
         1.0,
     ),
 ];
@@ -506,20 +533,47 @@ pub(crate) fn cap_units(face: &FontVec, upem: f32) -> f32 {
         .unwrap_or_else(|| face.ascent_unscaled())
 }
 
+/// Measured per-glyph advances of the reference bitmap font 0 (L4c): each
+/// `(char, tenths)` entry gives the advance at a 100-dot cell in tenths of
+/// a dot - drawn advance = `round(tenths * cell / 1000)`. These are the
+/// corpus measurements (cases 01-07/15-17 at the listed heights); chars
+/// absent from the table keep the face-derived `advances` fallback. The
+/// reference matrix advances are NOT the bundled face's proportions
+/// (H ~ 0.58 em vs the face's 0.67 at cell 15), and the space is ~0.30 em.
+pub const FONT0_TENTHS: &[(char, u16)] = &[
+    (' ', 324),
+    ('-', 780),
+    ('0', 500), ('2', 500), ('3', 474), ('8', 500),
+    (':', 250),
+    ('B', 500), ('F', 540), ('G', 580), ('H', 580), ('K', 518),
+    ('M', 725), ('P', 525), ('R', 575), ('S', 554), ('T', 540),
+    ('U', 540), ('W', 780), ('Z', 500),
+    ('a', 474), ('b', 500), ('c', 480), ('d', 500), ('e', 505),
+    ('f', 270), ('g', 521), ('h', 472), ('i', 267), ('j', 270),
+    ('k', 437), ('l', 241), ('m', 580), ('n', 460), ('o', 480),
+    ('p', 479), ('r', 312), ('s', 437), ('t', 354), ('u', 500),
+    ('w', 688), ('x', 479),
+    ('\u{00A3}', 459), ('\u{00C2}', 450), ('\u{00E4}', 360), ('\u{00E9}', 500), ('\u{00F1}', 500),
+    ('\u{00F6}', 500), ('\u{00FB}', 480), ('\u{0192}', 550), ('\u{251C}', 339), ('\u{255D}', 299),
+    ('\u{20AC}', 550),
+];
+
 /// Per-letter metrics for the bundled face: the cap model is calibrated (a
 /// bitmap snap/matrix rule or font 0's 75% ratio); the ppem is fitted so
 /// the face's cap height spans the drawn cap at the default cell
 /// (`cap_rows(cell) - 1` rows), and advances are measured at that ppem
 /// then scaled by the per-face `adv_fit`. `baseline` keeps the guide
 /// value (the default-cell cap rows).
+#[allow(clippy::too_many_arguments)]
 fn builtin_metric(
     face: &FontVec,
-    _letter: u8,
+    letter: u8,
     cell_height: u32,
     baseline: u32,
     cap: &CapModel,
     adv_fit: f32,
     x_scale: f32,
+    width_pow: f32,
 ) -> FontMetrics {
     let upem = face.units_per_em().unwrap_or(2048.0);
     // Baseline rows below the cell top at the default cell; the ppem
@@ -537,7 +591,9 @@ fn builtin_metric(
         baseline,
         cap: cap.clone(),
         advances: measure_advances(face, (ppem * adv_fit).max(1.0)),
+        tenths: (letter == b'0').then_some(FONT0_TENTHS),
         x_scale,
+        width_pow,
     }
 }
 
@@ -558,7 +614,7 @@ impl DefaultFontProvider {
     pub fn new() -> Self {
         let metrics = GUIDE_CELLS
             .iter()
-            .map(|&(letter, cell, ref cap, adv_fit, x_scale)| {
+            .map(|&(letter, cell, ref cap, adv_fit, x_scale, width_pow)| {
                 let bytes = BUNDLED_FACES
                     .iter()
                     .find(|&&(c, _, _)| c == letter)
@@ -567,7 +623,7 @@ impl DefaultFontProvider {
                 let face = FontVec::try_from_vec(bytes.to_vec())
                     .expect("bundled font failed to parse");
                 let baseline = cap_rows_for(cap, cell).saturating_sub(1).max(1);
-                builtin_metric(&face, letter, cell, baseline, cap, adv_fit, x_scale)
+                builtin_metric(&face, letter, cell, baseline, cap, adv_fit, x_scale, width_pow)
             })
             .collect();
         DefaultFontProvider { metrics }
@@ -582,7 +638,7 @@ impl FontProvider for DefaultFontProvider {
             // resolves them (module docs). Not our job, never ours.
             FontSpec::Downloaded(_) => return None,
         };
-        let idx = GUIDE_CELLS.iter().position(|&(c, _, _, _, _)| c == letter)?;
+        let idx = GUIDE_CELLS.iter().position(|&(c, _, _, _, _, _)| c == letter)?;
         let bytes = BUNDLED_FACES
             .iter()
             .find(|&&(c, _, _)| c == letter)
@@ -623,8 +679,10 @@ pub fn font_data_from_ttf(ttf: &[u8]) -> Option<FontData> {
             cell_height,
             baseline,
             advances: measure_advances(&face, ppem),
+            tenths: None,
             cap: CapModel::Ascent,
             x_scale: 1.0,
+            width_pow: 1.0,
         },
     })
 }

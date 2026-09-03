@@ -50,7 +50,7 @@ use ab_glyph::{point, Font, FontVec, GlyphId};
 use crate::bc::Pattern;
 use crate::fonts::{left_pad, matrix_pad, CapModel, FontData};
 use crate::ir::{BarcodeField, Rotation};
-use crate::render::text::{draw_baseline, font_scale, ref_advance, MAX_GLYPH_CELL};
+use crate::render::text::{advance_at, draw_baseline, font_scale, MAX_GLYPH_CELL};
 use crate::render::{font_spec, place, resolve_font, Bitmap, RenderOptions};
 
 /// Content-coordinate ceiling: any dot beyond this can never intersect the
@@ -110,7 +110,11 @@ fn line_width(b: &BarcodeField, fd: &FontData, dpi: u32) -> u32 {
         let adv = if fixed {
             b.font_width as u128
         } else {
-            (ref_advance(&fd.metrics, ch) as f32 * eff).round().max(0.0) as u128
+            u128::from(advance_at(
+                &fd.metrics,
+                ch,
+                ((fd.metrics.cell_height as f32 * eff).round()) as u32,
+            ))
         };
         total += adv;
     }
@@ -349,7 +353,11 @@ fn paint_line(
     for ch in b.data.chars() {
         let adv = match fixed {
             Some(f) => f,
-            None => (ref_advance(&fd.metrics, ch) as f32 * eff).round().max(0.0) as i64,
+            None => advance_at(
+                &fd.metrics,
+                ch,
+                ((fd.metrics.cell_height as f32 * eff).round()) as u32,
+            ) as i64,
         };
         if adv > 0 {
             // Beyond the content ceiling no glyph can be visible; stop

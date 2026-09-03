@@ -123,6 +123,23 @@ pub(crate) fn ref_advance(m: &FontMetrics, c: char) -> u16 {
     }
 }
 
+/// Drawn horizontal advance of `c` in dots at the drawn cell of `cell`
+/// dots. Font 0's measured tenths table wins when present; every other
+/// char scales the reference (cell-15) advance by `cell / cell_height`.
+/// Shared with the barcode interpret-line painting (Task 14).
+pub(crate) fn advance_at(m: &FontMetrics, c: char, cell: u32) -> u32 {
+    if let Some(t) = m
+        .tenths
+        .and_then(|t| t.iter().find(|&&(ch, _)| ch == c).map(|&(_, v)| v))
+        .filter(|&t| t > 0)
+    {
+        return (u32::from(t) * cell + 500) / 1000;
+    }
+    let ref15 = u32::from(ref_advance(m, c));
+    let eff = cell as f32 / m.cell_height.max(1) as f32;
+    (ref15 as f32 * eff).round().max(0.0) as u32
+}
+
 /// A wrapped text line with its total advance width.
 struct Line {
     chars: Vec<char>,
@@ -142,9 +159,9 @@ impl Advancer<'_> {
         if self.fixed > 0 {
             return self.fixed;
         }
-        (ref_advance(self.metrics, c) as f32 * self.eff)
-            .round()
-            .max(0.0) as u64
+        let cell =
+            ((self.metrics.cell_height as f32 * self.eff).round()).clamp(1.0, MAX_GLYPH_CELL as f32) as u32;
+        u64::from(advance_at(self.metrics, c, cell))
     }
 }
 
@@ -266,6 +283,12 @@ pub(crate) fn font_width_dots(t: &TextField, m: &FontMetrics, dpi: u32) -> u64 {
         } else {
             dpi as f32 / 203.0
         };
+        let cell = ((m.cell_height as f32 * eff).round()).clamp(1.0, MAX_GLYPH_CELL as f32) as u32;
+        if let Some(t) = m.tenths {
+            // widest advance of the font-0 table at the drawn cell
+            let widest = t.iter().map(|&(_, v)| (u32::from(v) * cell + 500) / 1000).max().unwrap_or(1);
+            return u64::from(widest.max(1));
+        }
         let widest = m.advances.iter().copied().max().unwrap_or(1).max(1);
         ((widest as f32 * eff).round()).max(1.0) as u64
     }
@@ -462,13 +485,19 @@ pub(crate) fn paint_text(
     } else {
         fd.metrics.x_scale
     };
+    // The reference matrix faces G/V grow sub-linearly in width above
+    // their native cell (measured ~1.5x per doubling); the face's width
+    // power damps both the advance (`eff`) and the painted ink.
+    let eff_raw = if t.font_height > 0 {
+        t.font_height as f32 / fd.metrics.cell_height.max(1) as f32
+    } else {
+        opts.dpi as f32 / 203.0
+    };
+    let eff = eff_raw.powf(fd.metrics.width_pow);
+    let x_scale = x_scale * eff_raw.powf(fd.metrics.width_pow - 1.0);
     let adv = Advancer {
         metrics: &fd.metrics,
-        eff: if t.font_height > 0 {
-            t.font_height as f32 / fd.metrics.cell_height.max(1) as f32
-        } else {
-            opts.dpi as f32 / 203.0
-        },
+        eff,
         fixed: if matches!(fd.metrics.cap, CapModel::Ascent) && t.font_width > 0 {
             t.font_width as u64
         } else {
@@ -836,8 +865,10 @@ mod tests {
 			cell_height: 15,
 			baseline: 11,
 			advances,
+			tenths: None,
 			cap: CapModel::Ratio { percent: 75 },
 			x_scale: 1.0,
+			width_pow: 1.0,
 		}
 	}
 
@@ -859,8 +890,10 @@ mod tests {
 			cell_height: 15,
 			baseline: 11,
 			advances: vec![0; 95],
+			tenths: None,
 			cap: CapModel::Ratio { percent: 75 },
 			x_scale: 1.0,
+			width_pow: 1.0,
 		};
         assert_eq!(ref_advance(&empty, 'X'), 0);
     }
@@ -886,6 +919,8 @@ mod tests {
 				advances: vec![0; 95],
 				cap: CapModel::Ratio { percent: 75 },
 				x_scale: 1.0,
+			width_pow: 1.0,
+			tenths: None,
 			};
             assert_eq!(
                 baseline_for_cell(&m.cap, cell),
@@ -900,6 +935,8 @@ mod tests {
 			advances: vec![0; 95],
 			cap: CapModel::Snap { base: 21, divisor: 30 },
 			x_scale: 1.0,
+			width_pow: 1.0,
+			tenths: None,
 		};
         for &(cell, baseline) in &[(10, 20), (30, 20), (31, 41), (40, 41), (80, 62)] {
             assert_eq!(baseline_for_cell(&f.cap, cell), baseline, "font F at {cell}");

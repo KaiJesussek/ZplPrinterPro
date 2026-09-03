@@ -898,13 +898,20 @@ fn font0_hv(h: u32) -> (u32, u32) {
     (cell, baseline)
 }
 
-/// Font-0 advance of `letter` in dots at height h (rounded like the renderer).
+/// Font-0 advance of `letter` in dots at height h (rounded like the renderer,
+/// through the measured tenths table when present).
 fn font0_adv(h: u32, letter: char) -> u32 {
     let m = DefaultFontProvider::new()
         .get(&FontSpec::Zebra(b'0'))
         .expect("font 0 served");
-    let eff = h as f32 / m.metrics.cell_height as f32;
-    (m.metrics.advances[letter as usize - 32] as f32 * eff).round() as u32
+    m.metrics
+        .tenths
+        .and_then(|t| t.iter().find(|&&(ch, _)| ch == letter).map(|&(_, v)| v))
+        .map(|t| (t as u32 * h + 500) / 1000)
+        .unwrap_or_else(|| {
+            let eff = h as f32 / m.metrics.cell_height as f32;
+            (m.metrics.advances[letter as usize - 32] as f32 * eff).round() as u32
+        })
 }
 
 #[test]
