@@ -1,0 +1,123 @@
+/* ZPL Printer UI - dark-on-light, no dependencies. */
+:root {
+  --ink: #222;
+  --muted: #666;
+  --panel: #fff;
+  --bg: #f4f4f2;
+  --line: #d9d9d4;
+  --accent: #1a5fb4;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font: 14px/1.45 system-ui, sans-serif;
+  color: var(--ink);
+  background: var(--bg);
+}
+header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  align-items: center;
+  padding: 10px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+h1 { font-size: 18px; margin: 0 4px 0 0; }
+h2, h3 { margin: 0 0 8px; font-size: 15px; }
+h3 { font-size: 13px; margin-top: 12px; color: var(--muted); }
+
+main {
+  display: grid;
+  grid-template-columns: 330px 1fr;
+  gap: 16px;
+  padding: 16px;
+  align-items: start;
+}
+
+/* ---- printer-state panel ---- */
+#state-panel { display: flex; flex-wrap: wrap; gap: 6px; }
+.cond {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 10px;
+  background: var(--bg);
+}
+.cond input { accent-color: var(--accent); }
+#diag-badge {
+  font-size: 13px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 12px;
+  background: var(--bg);
+  cursor: help;
+}
+#diag-badge.warn { background: #e07b39; border-color: #c96a2e; color: #fff; }
+
+/* ---- storage ---- */
+#storage-box { font-size: 13px; }
+#storage-box summary { cursor: pointer; user-select: none; }
+#storage-table { border-collapse: collapse; margin-top: 4px; }
+#storage-table th, #storage-table td { text-align: left; padding: 1px 14px 1px 0; white-space: nowrap; }
+#storage-table tbody td { border-top: 1px solid var(--line); }
+#storage-table td:first-child { color: var(--muted); }
+
+/* ---- label list ---- */
+#label-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: calc(100vh - 150px);
+  overflow-y: auto;
+}
+.hint { color: var(--muted); margin: 4px 0; }
+.label-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  text-align: left;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  cursor: pointer;
+  font: inherit;
+  width: 100%;
+}
+.label-row:hover { border-color: var(--accent); }
+.label-row img { width: 160px; height: auto; border: 1px solid var(--line); border-radius: 4px; background: #fff; }
+.label-row .meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.label-row .lid { font-weight: 600; }
+.label-row .ts { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.badge {
+  align-self: flex-start;
+  background: #e07b39;
+  color: #fff;
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 12px;
+}
+
+/* ---- detail ---- */
+#img-wrap { position: relative; display: inline-block; max-width: 100%; margin-bottom: 8px; }
+#detail-img { display: block; max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+#overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+#overlay-toggle { font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
+#diag-list .diag { font-size: 13px; color: #8a4b12; border-left: 3px solid #e07b39; padding: 2px 8px; margin: 4px 0; background: #fdf3e9; border-radius: 0 4px 4px 0; }
+pre {
+  margin: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px;
+  overflow: auto;
+  max-height: 260px;
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+[hidden] { display: none !important; }

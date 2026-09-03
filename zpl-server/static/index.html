@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZPL Printer</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>ZPL Printer</h1>
+  <div id="state-panel" aria-label="Printer conditions"></div>
+  <span id="diag-badge" title="Diagnostics">loading&hellip;</span>
+  <details id="storage-box">
+    <summary>Storage</summary>
+    <table id="storage-table">
+      <thead><tr><th>Kind</th><th>Name</th><th>Details</th><th>Size</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </details>
+</header>
+<main>
+  <section id="list-pane">
+    <h2>Labels</h2>
+    <div id="label-list"><p class="hint">No labels yet &mdash; send one to the TCP port.</p></div>
+  </section>
+  <section id="detail-pane" hidden>
+    <h2>Label <span id="detail-id"></span></h2>
+    <div id="img-wrap">
+      <img id="detail-img" alt="label render">
+      <canvas id="overlay"></canvas>
+    </div>
+    <label id="overlay-toggle"><input type="checkbox" id="overlay-on"> Show field boxes</label>
+    <div id="diag-list"></div>
+    <h3>Raw ZPL</h3>
+    <pre id="zpl-view"></pre>
+    <h3>IR</h3>
+    <pre id="ir-view"></pre>
+  </section>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>

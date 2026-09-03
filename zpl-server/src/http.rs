@@ -42,6 +42,7 @@ use tokio::task::JoinHandle;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
+use tower_http::services::ServeDir;
 
 use zpl::cmd::parse_stream_collect;
 use zpl::diag::Diagnostics;
@@ -57,6 +58,13 @@ use crate::state::{AppState, Conditions, Event};
 
 /// Build the API router around shared server state (the test seam: tests
 /// drive it with `tower::ServiceExt::oneshot`).
+///
+/// The API routes are registered first; anything unmatched falls through
+/// to the static UI (`static/index.html` + `app.js` + `style.css`), so
+/// `/api/*` is never shadowed by the filesystem. `STATIC_DIR` is resolved
+/// at compile time, so the binary serves its UI regardless of CWD.
+const STATIC_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/static");
+
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/labels", get(list_labels))
@@ -66,6 +74,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/storage", get(get_storage))
         .route("/api/diagnostics", get(get_diagnostics))
         .route("/api/events", get(events_sse))
+        .fallback_service(ServeDir::new(STATIC_DIR))
         .with_state(state)
 }
 
