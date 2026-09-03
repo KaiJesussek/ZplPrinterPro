@@ -47,8 +47,20 @@ const CONDITIONS = [
 
 const stateInputs = {};
 
+// Last server-confirmed Conditions (boot GET, SSE `state`, PUT echo),
+// merged so partial patches never shrink it. The boot GET returns the full
+// set, so every control has a snapshot value after the first paint.
+// ponytail: one merged snapshot, no per-key provenance - reverts repaint
+// every control from it, which only works because the boot GET seeds all keys.
+let stateSnapshot = {};
+
+const stateStatus = document.createElement('div');
+stateStatus.id = 'state-status';
+stateStatus.hidden = true;
+
 function buildStatePanel() {
   const panel = $('#state-panel');
+  panel.prepend(stateStatus);
   for (const c of CONDITIONS) {
     const label = document.createElement('label');
     label.className = 'cond';
@@ -77,8 +89,15 @@ function buildStatePanel() {
         body: JSON.stringify(body),
       })
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`PUT ${c.key}: HTTP ${r.status}`))))
+        // Success: the echoed merged state is authoritative (snapshot + paint).
         .then(setStateValues)
-        .catch((e) => console.error(e));
+        .catch((e) => {
+          console.error(e);
+          // The input already flipped optimistically; the server rejected the
+          // PUT, so repaint every control from the last confirmed snapshot.
+          paintState(stateSnapshot);
+          setStateStatus('Condition update failed - reverted');
+        });
     });
     stateInputs[c.key] = input;
     label.append(span, input);
@@ -86,16 +105,30 @@ function buildStatePanel() {
   }
 }
 
-// Repaint the panel from a full or partial Conditions object. Direct value
-// assignment never fires `change`, so this is safe to call from the SSE
+// Repaint controls from a full or partial Conditions object (no snapshot or
+// status side effects) - the revert path for optimistic input. Direct value
+// assignment never fires `change`, so this is also safe from the SSE
 // `state` handler (no echo-PUT loop).
-function setStateValues(cond) {
+function paintState(cond) {
   for (const [key, input] of Object.entries(stateInputs)) {
     if (key in cond) {
       if (input.type === 'checkbox') input.checked = !!cond[key];
       else input.value = cond[key];
     }
   }
+}
+
+// Apply authoritative server state: merge into the snapshot, repaint, and
+// clear any stale failure line.
+function setStateValues(cond) {
+  Object.assign(stateSnapshot, cond);
+  setStateStatus('');
+  paintState(cond);
+}
+
+function setStateStatus(msg) {
+  stateStatus.textContent = msg;
+  stateStatus.hidden = !msg;
 }
 
 // ---------- diagnostics badge ----------
@@ -175,10 +208,23 @@ const overlayOn = $('#overlay-on');
 
 let currentIR = null;
 
+// Raw ZPL is the exact bytes received over TCP (any code page), so decode
+// with strict UTF-8 first and fall back to windows-1252, whose 1:1 byte map
+// renders every byte (e.g. CP437/CP850 text) without `.text()`'s U+FFFD.
+async function fetchZplText(r) {
+  if (!r.ok) return `(HTTP ${r.status})`;
+  const bytes = new Uint8Array(await r.arrayBuffer());
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return new TextDecoder('windows-1252').decode(bytes);
+  }
+}
+
 async function openDetail(id) {
   const [d, zpl] = await Promise.all([
     getJSON(`/api/labels/${id}`),
-    fetch(`/api/labels/${id}.zpl`).then((r) => (r.ok ? r.text() : `(HTTP ${r.status})`)),
+    fetch(`/api/labels/${id}.zpl`).then(fetchZplText),
   ]);
   detailPane.hidden = false;
   $('#detail-id').textContent = `#${id}`;

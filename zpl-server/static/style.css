@@ -57,6 +57,15 @@ main {
   cursor: help;
 }
 #diag-badge.warn { background: #e07b39; border-color: #c96a2e; color: #fff; }
+#state-status {
+  font-size: 13px;
+  font-weight: 600;
+  color: #8a4b12;
+  border-left: 3px solid #e07b39;
+  background: #fdf3e9;
+  border-radius: 0 4px 4px 0;
+  padding: 2px 8px;
+}
 
 /* ---- storage ---- */
 #storage-box { font-size: 13px; }
