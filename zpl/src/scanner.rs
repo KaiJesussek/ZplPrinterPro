@@ -51,7 +51,8 @@ static TWO_LETTER: &[&[u8; 2]] = &[
 /// A `^`/`~` (or configured chars) starts a command; the mnemonic is the
 /// 1-2 following alphabetic bytes (a second byte is only consumed when it
 /// completes a known 2-letter command; single-letter mnemonics pad the
-/// second byte with a space); parameters run until the next command char;
+/// second byte with a space); parameters run until the next command char
+/// (`~` included when inside field data, see [`Scanner::next`]);
 /// `Data` is any run containing neither command char.
 #[derive(Debug)]
 pub struct Scanner<'a> {
@@ -109,7 +110,13 @@ impl<'a> Scanner<'a> {
                     &[]
                 }
             } else {
-                self.read_until_command(in_field_data)
+                // ^FS/^XZ terminate the open field/format, so their
+                // parameter run must NOT scan in field-data mode: inside a
+                // field `~` is literal text, and a client that sends a
+                // tilde query right after an unclosed field (`^XZ~HS`)
+                // would otherwise have the query eaten as ^XZ's params.
+                let in_field = in_field_data && !(mnemonic == *b"FS" || mnemonic == *b"XZ");
+                self.read_until_command(in_field)
             };
             Token::Cmd(Cmd {
                 prefix,
@@ -208,6 +215,24 @@ mod tests {
         assert!(matches!(s.next(false), Some(Token::Cmd(c)) if c.mnemonic == [b'F', b'O'] && c.params == b"10"));
         assert!(matches!(s.next(false), Some(Token::Cmd(c)) if c.mnemonic == [b'F', b'S'] && c.params.is_empty()));
         assert_eq!(s.next(false), None);
+    }
+
+    #[test]
+    fn fs_xz_params_do_not_swallow_tildes() {
+        // An open field scanned in field-data mode treats `~` as literal,
+        // but ^FS/^XZ terminate the field: a tilde query right after them
+        // must scan as its own command, not as terminator params (Task 20
+        // regression: `^XZ~HS` with an unclosed field lost the query).
+        let mut s = Scanner::new(b"^GB50,50,2,B^XZ~HS");
+        assert!(matches!(s.next(false), Some(Token::Cmd(c)) if c.mnemonic == [b'G', b'B']));
+        assert!(matches!(s.next(false), Some(Token::Cmd(c)) if c.mnemonic == [b'X', b'Z'] && c.params.is_empty()));
+        assert!(matches!(s.next(false), Some(Token::Cmd(c)) if c.mnemonic == [b'H', b'S'] && c.params.is_empty()));
+        assert_eq!(s.next(false), None);
+
+        let mut s = Scanner::new(b"^FDhi^FS~HS");
+        assert!(matches!(s.next(true), Some(Token::Cmd(_)))); // ^FD (field open)
+        assert!(matches!(s.next(true), Some(Token::Cmd(c)) if c.mnemonic == [b'F', b'S'] && c.params.is_empty()));
+        assert!(matches!(s.next(false), Some(Token::Cmd(c)) if c.mnemonic == [b'H', b'S']));
     }
 
     #[test]

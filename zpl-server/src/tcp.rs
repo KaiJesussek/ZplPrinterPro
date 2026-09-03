@@ -19,9 +19,12 @@ use zpl::fonts::DefaultFontProvider;
 use zpl::memory::Memory;
 use zpl::render::{render, RenderOptions};
 use zpl::scanner::Scanner;
-use zpl::state::{FormatState, ParseContext, PrinterConfig, PrinterMode};
+use zpl::state::{FormatState, ParseContext, PrinterConfig, PrinterMode, QueryRequest};
 
 use crate::archive::{unix_ms, Archive, LabelRow};
+use crate::hs::hs_response;
+use crate::proto;
+use crate::state::PrinterState;
 
 /// Parser state that must survive read-chunk boundaries. `ParseContext` is
 /// rebuilt per chunk so the shared `Memory` lock is held only for the parse
@@ -87,6 +90,12 @@ pub struct AppState {
     /// nothing semantically.
     pub memory: Arc<Mutex<Memory>>,
     pub counters: Counters,
+    /// The printer's live state (~HS conditions, batch remaining, meters,
+    /// ^FN data). Mutated by the session at label completions and by the
+    /// Task 21 web API; read by every query responder. Lock order is
+    /// memory -> printer_state (the session locks it while holding the
+    /// memory guard; HTTP rerenders must do the same).
+    pub printer_state: Mutex<PrinterState>,
 }
 
 impl AppState {
@@ -95,6 +104,7 @@ impl AppState {
             archive: Mutex::new(archive),
             memory: Arc::new(Mutex::new(Memory::default())),
             counters: Counters::default(),
+            printer_state: Mutex::new(PrinterState::default()),
         }
     }
 }
@@ -107,9 +117,6 @@ const READ_BUF: usize = 8192;
 const MAX_STREAM_BYTES: usize = 64 << 20;
 /// Default print resolution (203 dpi - the emulator's default model).
 const DPI: u32 = 203;
-/// `~HS` placeholder until Task 20 wires the real responder; framed STX/ETX
-/// like real printer-status responses so client scanners keep framing.
-const HS_PLACEHOLDER: &[u8] = b"\x02zpl-server placeholder (real ~HS in Task 20)\x03\r\n";
 
 /// Accept loop; the testable seam - tests bind an ephemeral port and hand
 /// the listener here. Runs until the listener fails.
@@ -133,8 +140,13 @@ pub fn spawn_tcp(listener: TcpListener, state: Arc<AppState>) -> JoinHandle<()> 
 }
 
 /// One TCP session: read chunks, parse incrementally, render and archive
-/// each completed label. `~HS` gets the placeholder response. EOF with an
-/// unfinished format records a diagnostic and archives nothing.
+/// each completed label, and answer host queries (`~HS`/`~HQ`/`~WD`/`~HI`
+/// between formats, `^HV` any time) on the same socket. Query detection is
+/// scanner-driven: `~` is only a command character *outside* field data,
+/// so a literal `~HS` embedded in a ^FD body reaches no handler (the
+/// parse handlers record `QueryRequest`s, which this session drains after
+/// each parse window). EOF with an unfinished format records a diagnostic
+/// and archives nothing.
 async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
     let (mut rd, mut wr) = stream.into_split();
     let mut diags = Diagnostics::default();
@@ -156,17 +168,6 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
         };
         let chunk: &[u8] = &buf[..n];
 
-        // ~HS placeholder, inline on the same socket. Task 20 replaces this
-        // byte scan with real table-driven routing.
-        // ponytail: literal `~HS` inside a ^FD body also answers (placeholder
-        // only, harmless); revisit with the T20 responder.
-        if chunk.windows(3).any(|w| w == b"~HS") {
-            if let Err(e) = wr.write_all(HS_PLACEHOLDER).await {
-                eprintln!("tcp: write error: {e}");
-                break;
-            }
-        }
-
         state.counters.bytes.fetch_add(n as u64, Ordering::Relaxed);
         let chunk_start = input.len();
         input.extend_from_slice(chunk);
@@ -176,8 +177,10 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
         }
 
         let mut labels: Vec<ParsedLabel> = Vec::new();
+        let mut responses: Vec<Vec<u8>> = Vec::new();
         {
             let mut guard = state.memory.lock().await;
+            let queries: Vec<QueryRequest>;
             {
                 let mut ctx = ParseContext::new(&mut diags, &mut guard);
                 persist.hand_in(&mut ctx);
@@ -190,6 +193,7 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
                 ctx.token_end = chunk_start;
                 parse_stream_collect(&mut Scanner::new(&input[chunk_start..]), &mut ctx, &mut labels);
                 persist.hand_out(&mut ctx);
+                queries = ctx.queries.drain(..).collect();
             }
             for pl in &labels {
                 let raw = &input[pl.start..pl.end];
@@ -200,7 +204,7 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
                 // Render inside its own scope: RenderOptions borrows a
                 // `&dyn FontProvider`, which is not Sync, so `opts` must
                 // not live across the archive await below.
-                let png = {
+                let (png, height) = {
                     let fonts = DefaultFontProvider::new();
                     let opts = RenderOptions {
                         dpi: DPI,
@@ -209,7 +213,7 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
                         mode: &persist.mode,
                     };
                     match render(&pl.label, &opts) {
-                        Ok(o) => o.bitmap.to_png(),
+                        Ok(o) => (o.bitmap.to_png(), o.bitmap.height),
                         Err(e) => {
                             // Only reachable from hand-built IR; parsed
                             // labels always render. Skip rather than
@@ -234,11 +238,72 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
                     Ok(_id) => {
                         state.counters.labels.fetch_add(1, Ordering::Relaxed);
                         state.counters.warnings.fetch_add(diag_count as u64, Ordering::Relaxed);
+                        // Label completion -> printer state. `labels_remaining`
+                        // adds this format's ^PQ copies and consumes the
+                        // first printed copy (v1 renders each format once, so
+                        // a ^PQn batch leaves n-1 outstanding); the numbered
+                        // map and the measured label length come from this
+                        // label; every print advances the odometer.
+                        let mut ps = state.printer_state.lock().await;
+                        ps.labels_remaining = ps
+                            .labels_remaining
+                            .saturating_add(pl.label.copies)
+                            .saturating_sub(1)
+                            .min(99_999_999);
+                        ps.meter_total = ps.meter_total.saturating_add(1);
+                        ps.label_length_dots = height;
+                        ps.numbered = pl.label.numbered.clone();
                     }
                     Err(e) => eprintln!("tcp: archive push failed: {e}"),
                 }
                 drop(archive);
                 diags.items.clear(); // diags are attributed to this label
+            }
+            // Query responses are built after the chunk's labels complete,
+            // so ~HS/~HV read the post-print state (labels first, then the
+            // queries that followed them - stream order within the chunk;
+            // a query that answered mid-batch in real time sees the batch
+            // after this chunk's prints, a v1 simplification).
+            {
+                let mut ps = state.printer_state.lock().await;
+                ps.partial_format = persist.state.is_partial();
+                for q in &queries {
+                    let resp: Option<Vec<u8>> = match q {
+                        QueryRequest::HostStatus => {
+                            let out = hs_response(&ps, guard.images.len());
+                            if out.is_none() {
+                                eprintln!(
+                                    "tcp: ~HS suppressed (paper_out|ribbon_out|head_open|rewind_full|over-temp)"
+                                );
+                            }
+                            out
+                        }
+                        QueryRequest::HeadQuery(qt) => match proto::respond_hq(qt, &ps) {
+                            Some(r) => Some(r),
+                            None => {
+                                eprintln!(
+                                    "tcp: unsupported ~HQ query '{}' ignored (socket kept open)",
+                                    String::from_utf8_lossy(qt)
+                                );
+                                None
+                            }
+                        },
+                        QueryRequest::ConfigDump(_) => Some(proto::respond_wd(&ps)),
+                        QueryRequest::ModelId => Some(proto::respond_hi()),
+                        QueryRequest::HostValue(req) => Some(proto::respond_hv(req, &ps.numbered)),
+                    };
+                    if let Some(r) = resp {
+                        responses.push(r);
+                    }
+                }
+            }
+        }
+
+        // Flush the chunk's query responses after the locks drop.
+        for r in &responses {
+            if let Err(e) = wr.write_all(r).await {
+                eprintln!("tcp: write error: {e}");
+                break;
             }
         }
 

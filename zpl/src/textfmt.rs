@@ -6,7 +6,9 @@
 
 use crate::diag::{Diagnostic, Diagnostics};
 use crate::ir::{Justification, OriginMode, Rotation, TextBlock};
-use crate::state::{FieldDraft, FormatState, ParseContext, SerialSetting};
+use crate::state::{
+    FieldDraft, FormatState, HostValueRequest, ParseContext, QueryRequest, SerialSetting,
+};
 
 /// Split command parameters on commas, trimming ASCII whitespace from each
 /// segment. Multi-line ZPL puts the line break inside the last parameter
@@ -625,6 +627,82 @@ pub(crate) fn set_clock_indicators(ctx: &mut ParseContext, params: &[u8]) {
     let secondary = parts.get(1).and_then(|p| p.first()).copied().unwrap_or(0);
     let third = parts.get(2).and_then(|p| p.first()).copied().unwrap_or(0);
     ctx.mode.clock_indicators = [primary, secondary, third];
+}
+
+/// `^FN#,"a"` (guide p.200): assign a field-number tag (0-9999, default 0)
+/// to the current field; the `"a"` KDU prompt parameter is accepted and
+/// ignored (the emulator has no KDU). The tag lands on the open draft; at
+/// ^XZ the decoded data is recorded in `Label::numbered` under this number
+/// for the server's `^HV` responder (Task 20). No-op outside a format,
+/// matching the other field commands.
+pub(crate) fn field_number(ctx: &mut ParseContext, params: &[u8]) {
+    let segs = split_commas(params);
+    let num = p_u32(segs.first().copied(), "FN", "field number", ctx.diags, 0);
+    if num > 9999 {
+        ctx.diags.push(Diagnostic::warning(
+            "FN",
+            format!("field number {num} exceeds 9999; ignored"),
+        ));
+        return;
+    }
+    if let Some(d) = draft_mut(ctx) {
+        d.field_number = Some(num);
+    }
+}
+
+/// `^HV#,n,h,t,a` (guide p.239): return a numbered field's data to the
+/// host. The response is server-side (Task 20): parsing records a
+/// `QueryRequest::HostValue` for the TCP session, which answers it with the
+/// last completed label's `^FN` data (empty for a never-defined number).
+///
+/// Parameter parsing: `#` (default 0) and `n` (default 64, 1..256) are the
+/// clean comma-separated head; `h`/`t` may themselves contain commas, so
+/// the tail splits heuristically: a lone trailing `F`/`L` segment is the
+/// transfer-mode parameter (accepted, not honored - one response per
+/// format, the guide's default), `h` = up to the first remaining comma,
+/// `t` = the rest with commas preserved. `h` and `t` are ^FH-capable: hex
+/// escapes expand with the open field's indicator (the guide's
+/// `^FH_^HV0,...` pattern), or stay literal outside a field.
+pub(crate) fn host_value(ctx: &mut ParseContext, params: &[u8]) {
+    let (segs, tail) = head_segments(params, 2);
+    let field = p_u32(segs.first().copied(), "HV", "field number", ctx.diags, 0);
+    let n = p_u32(segs.get(1).copied(), "HV", "byte count", ctx.diags, 64).clamp(1, 256);
+    let ind = match &ctx.state {
+        FormatState::Field { draft, .. } => draft.hex,
+        _ => None,
+    };
+    let tail = strip_transfer_mode(tail);
+    let (h, t) = match tail.iter().position(|&b| b == b',') {
+        Some(p) => (&tail[..p], &tail[p + 1..]),
+        None => (tail, &[][..]),
+    };
+    let header = match ind {
+        Some(i) => decode_hex(h, i, ctx.diags),
+        None => h.to_vec(),
+    };
+    let terminator = match ind {
+        Some(i) => decode_hex(t, i, ctx.diags),
+        None => t.to_vec(),
+    };
+    ctx.queries.push(QueryRequest::HostValue(HostValueRequest {
+        field,
+        max_bytes: n as usize,
+        header,
+        terminator,
+    }));
+}
+
+/// Drop a trailing lone `L`/`F` segment (the `^HV` `a` transfer-mode
+/// parameter); anything else - including longer data that merely starts
+/// with F or L - stays put.
+fn strip_transfer_mode(tail: &[u8]) -> &[u8] {
+    let Some(pos) = tail.iter().rposition(|&b| b == b',') else {
+        return tail;
+    };
+    match &tail[pos + 1..] {
+        [b'F'] | [b'f'] | [b'L'] | [b'l'] => &tail[..pos],
+        _ => tail,
+    }
 }
 
 /// Decode a `^FH` chunk: `_XX` -> byte, `__` -> literal indicator. Malformed

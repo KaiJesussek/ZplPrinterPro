@@ -8,7 +8,7 @@ use crate::geom;
 use crate::ir::Label;
 use crate::memory;
 use crate::scanner::{Cmd, Scanner, Token};
-use crate::state::{FieldDraft, FormatState, ParseContext};
+use crate::state::{FieldDraft, FormatState, ParseContext, QueryRequest};
 use crate::textfmt;
 
 /// Command prefix: `^` (format commands) or `~` (printer operations).
@@ -318,6 +318,30 @@ fn print_config_label(_ctx: &mut ParseContext, _params: &[u8]) {}
 /// accept and discard.
 fn power_on_reset(_ctx: &mut ParseContext, _params: &[u8]) {}
 
+// Task 20: host queries. The responses are server-side - the parser
+// records the request on `ParseContext::queries`, which the TCP session
+// drains after each parse window and answers on the socket. Registration
+// in the normal table is what makes detection scanner-driven: inside a
+// ^FD field body the scanner treats `~` as literal data, so an embedded
+// `~HS` never reaches these handlers (the pointer to the old byte-scan
+// false-positive regression). ~HS suppression (paper out, ribbon out,
+// head open, rewinder full, head over-temperature) is also server-side.
+fn query_host_status(ctx: &mut ParseContext, _params: &[u8]) {
+    ctx.queries.push(QueryRequest::HostStatus);
+}
+
+fn query_head_status(ctx: &mut ParseContext, params: &[u8]) {
+    ctx.queries.push(QueryRequest::HeadQuery(params.to_vec()));
+}
+
+fn query_config_dump(ctx: &mut ParseContext, params: &[u8]) {
+    ctx.queries.push(QueryRequest::ConfigDump(params.to_vec()));
+}
+
+fn query_model_id(ctx: &mut ParseContext, _params: &[u8]) {
+    ctx.queries.push(QueryRequest::ModelId);
+}
+
 /// Static command table; rows are added by later tasks as handlers land.
 const TABLE: &[CommandSpec] = &[
     CommandSpec { mnemonic: *b"XA", prefix: Prefix::Caret, kind: CmdKind::Format, handler: start_format },
@@ -446,6 +470,16 @@ const TABLE: &[CommandSpec] = &[
     CommandSpec { mnemonic: *b"WC", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: print_config_label },
     CommandSpec { mnemonic: *b"TA", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: config::tear_off_adjust },
     CommandSpec { mnemonic: *b"JR", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: power_on_reset },
+    // Task 20: host queries (~HS ~HQ ~WD ~HI) and numbered fields
+    // (^FN / ^HV). ~HS is the byte-exact status centerpiece; the rest are
+    // the protocol responders. ^FN/^HV work inside formats (^HV may be
+    // answered any time - the guide pages 200/239).
+    CommandSpec { mnemonic: *b"HS", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: query_host_status },
+    CommandSpec { mnemonic: *b"HQ", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: query_head_status },
+    CommandSpec { mnemonic: *b"WD", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: query_config_dump },
+    CommandSpec { mnemonic: *b"HI", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: query_model_id },
+    CommandSpec { mnemonic: *b"FN", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::field_number },
+    CommandSpec { mnemonic: *b"HV", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::host_value },
 ];
 
 /// The command table: prefix+mnemonic -> handler. Rows accumulate across tasks.
@@ -648,6 +682,7 @@ mod tests {
                 re_eval: false,
                 serial: None,
                 raw: b"^FDhello".to_vec(),
+                field_number: None,
             },
             fields: Vec::new(),
         };
@@ -673,6 +708,71 @@ mod tests {
             }
             other => panic!("expected a text field, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn query_commands_record_requests_not_warnings() {
+        let mut diags = Diagnostics::default();
+        let mut mem = Memory::default();
+        let mut ctx = ParseContext::new(&mut diags, &mut mem);
+        // ~ queries between formats; ^HV inside a format (the guide's
+        // pattern); a tilde embedded in ^FD data must NOT be a query.
+        parse_stream(
+            &mut Scanner::new(b"~HS~HQOD~WD~HI^XA^FN1^FD~HS^FS^HV1,8,H,T^XZ"),
+            &mut ctx,
+        );
+        use crate::state::QueryRequest;
+        let expected = vec![
+            QueryRequest::HostStatus,
+            QueryRequest::HeadQuery(b"OD".to_vec()),
+            QueryRequest::ConfigDump(b"".to_vec()),
+            QueryRequest::ModelId,
+            QueryRequest::HostValue(crate::state::HostValueRequest {
+                field: 1,
+                max_bytes: 8,
+                header: b"H".to_vec(),
+                terminator: b"T".to_vec(),
+            }),
+        ];
+        let queries = core::mem::take(&mut ctx.queries);
+        assert_eq!(queries, expected);
+        assert!(
+            ctx.diags.items.is_empty(),
+            "registered queries must not warn as unknown commands"
+        );
+        assert!(ctx.pending_label.is_some()); // the format still completed
+
+        // ^HV expands h/t through the open field's ^FH indicator and drops
+        // the trailing F/L transfer-mode segment (the guide p.239 pattern
+        // ^FH_^HV...,L: _40 = '@', so the terminator is ">@").
+        let mut diags = Diagnostics::default();
+        let mut mem = Memory::default();
+        let mut ctx = ParseContext::new(&mut diags, &mut mem);
+        parse_stream(&mut Scanner::new(b"^XA^FH_^HV1,3,<,>_40,L^FS^XZ"), &mut ctx);
+        assert_eq!(
+            ctx.queries,
+            vec![QueryRequest::HostValue(crate::state::HostValueRequest {
+                field: 1,
+                max_bytes: 3,
+                header: b"<".to_vec(),
+                terminator: b">@".to_vec(),
+            })]
+        );
+    }
+
+    #[test]
+    fn numbered_fields_land_on_the_label() {
+        let mut diags = Diagnostics::default();
+        let mut mem = Memory::default();
+        let mut ctx = ParseContext::new(&mut diags, &mut mem);
+        parse_stream(
+            &mut Scanner::new(b"^XA^FN1^FDHello^FS^FN7^FO10,10^FDWorld^FS^XZ"),
+            &mut ctx,
+        );
+        let label = ctx.pending_label.expect("^XZ closes the format");
+        assert_eq!(label.numbered.get(&1).map(String::as_str), Some("Hello"));
+        assert_eq!(label.numbered.get(&7).map(String::as_str), Some("World"));
+        assert_eq!(label.numbered.len(), 2);
     }
 
     #[test]

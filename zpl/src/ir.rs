@@ -1,5 +1,7 @@
 //! Document IR: the parsed representation of a ZPL II format.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// A complete format: everything between `^XA` and `^XZ`.
@@ -9,6 +11,12 @@ pub struct Label {
     pub height_dots: u32,
     pub copies: u32,
     pub fields: Vec<Field>,
+    /// `^FN#` numbered fields of this format: number -> decoded field data
+    /// (guide p.200). The server answers `^HV#` from the last completed
+    /// label's map (Task 20). `#[serde(default)]` keeps pre-T20 archive
+    /// rows loadable.
+    #[serde(default)]
+    pub numbered: BTreeMap<u32, String>,
 }
 
 /// One drawn element of a label.
@@ -237,6 +245,7 @@ mod tests {
             width_dots: 400,
             height_dots: 200,
             copies: 2,
+            numbered: BTreeMap::new(),
             fields: vec![
                 Field::Text(TextField {
                     x: 10,

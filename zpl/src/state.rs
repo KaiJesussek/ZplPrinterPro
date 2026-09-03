@@ -279,6 +279,10 @@ pub struct FieldDraft {
     pub serial: Option<SerialSetting>,
     /// Raw command bytes of the field, for stored-format re-emission later.
     pub raw: Vec<u8>,
+    /// `^FN#`: the field-number tag assigned to this field (guide p.200).
+    /// At ^XZ the draft's decoded data lands in `Label::numbered` under
+    /// this key, where the server's `^HV` responder reads it (Task 20).
+    pub field_number: Option<u32>,
 }
 
 /// `^SN` serialization parameters (guide p.341) carried on a field draft.
@@ -332,11 +336,23 @@ impl FormatState {
             }
             _ => return None,
         };
+        // `^FN#` numbered fields: the decoded data of every tagged draft,
+        // keyed by its number for the server's `^HV` responder. Decoded
+        // through the same code page as `into_field`, so ^HV answers match
+        // what the label prints. The guide allows several fields to share
+        // one number (last one wins in the map).
+        let mut numbered = BTreeMap::new();
+        for d in &drafts {
+            if let Some(n) = d.field_number {
+                numbered.insert(n, crate::codepage::decode_text(&d.data, d.code_page));
+            }
+        }
         let fields = drafts.into_iter().map(FieldDraft::into_field).collect();
         Some(Label {
             width_dots: mode.pw_dots,
             height_dots: mode.ll_dots,
             copies: mode.copies,
+            numbered,
             fields,
         })
     }
@@ -402,6 +418,7 @@ impl FieldDraft {
             re_eval: false,
             serial: None,
             raw: Vec::new(),
+            field_number: None,
         }
     }
 
@@ -503,6 +520,42 @@ impl FieldDraft {
     }
 }
 
+/// A host-query request recorded by a parse handler and answered by the TCP
+/// session (Task 20). Handlers cannot respond (there is no socket on the
+/// parser side), so parsing merely records the request; the session drains
+/// `ParseContext::queries` after each parse window and writes the response.
+///
+/// Detection goes through the scanner like every other command, which is
+/// what makes ^FD bodies safe: inside field data `~` is literal text, so a
+/// `~HS` embedded in a field never reaches a handler (the old byte-scan
+/// false-positive regression).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QueryRequest {
+    /// `~HS` - host status: three STX-framed strings as registered.
+    HostStatus,
+    /// `~HQ` - head query; `params` is the query-type (OD, SN, PH, ...).
+    HeadQuery(Vec<u8>),
+    /// `~WD` - printer configuration dump.
+    ConfigDump(Vec<u8>),
+    /// `~HI` - host identification (model, firmware, resolution, memory).
+    ModelId,
+    /// `^HV` - return a numbered field's data to the host.
+    HostValue(HostValueRequest),
+}
+
+/// Parsed `^HV#,n,h,t,a` parameters (guide p.239).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostValueRequest {
+    /// `#`: the `^FN` field number whose data is returned (default 0).
+    pub field: u32,
+    /// `n`: number of data bytes to return (default 64; guide range 1..256).
+    pub max_bytes: usize,
+    /// `h`: header bytes sent before the field data (^FH-expanded).
+    pub header: Vec<u8>,
+    /// `t`: termination bytes sent after the field data (^FH-expanded).
+    pub terminator: Vec<u8>,
+}
+
 /// Per-format parsing context handed to command handlers.
 pub struct ParseContext<'a> {
     pub state: FormatState,
@@ -520,6 +573,10 @@ pub struct ParseContext<'a> {
     /// fields in its format, in the same order as the drafts at ^XZ. The
     /// server persists these across sessions (Task 21).
     pub serial_counters: BTreeMap<u8, i64>,
+    /// Host queries (`~HS`/`~HQ`/`~WD`/`~HI`/`^HV`) recorded by handlers
+    /// while this parse window ran, in stream order. The TCP session drains
+    /// them after each chunk and answers on the socket (Task 20).
+    pub queries: Vec<QueryRequest>,
     /// Global byte offset of the token currently being dispatched
     /// (`stream_base` + chunk-local scanner position). Maintained by the
     /// parse driver (Task 19) so the ^XA/^XZ handlers can record a label's
@@ -548,6 +605,7 @@ impl<'a> ParseContext<'a> {
             pending_label: None,
             recall_depth: 0,
             serial_counters: BTreeMap::new(),
+            queries: Vec::new(),
             token_start: 0,
             token_end: 0,
             stream_base: 0,

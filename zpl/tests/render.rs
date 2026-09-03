@@ -1,6 +1,7 @@
 //! Renderer integration tests (Task 10): framebuffer semantics, PNG output,
 //! drawing primitives, graphic blits, auto height, mode transforms.
 
+use std::collections::BTreeMap;
 use std::io::Cursor;
 
 use png::BitDepth;
@@ -336,7 +337,8 @@ fn hostile_dimensions_never_hang_or_panic() {
     let label = Label {
         width_dots: 4,
         height_dots: 0, // auto height over hostile fields must terminate
-        copies: 1,
+        copies: 1,        
+        numbered: BTreeMap::new(),
         fields: vec![
             Field::Box(BoxField { x: 0, y: 0, width: u32::MAX, height: u32::MAX, thickness: u32::MAX, color: b'B' }),
             Field::Circle(CircleField { x: u32::MAX, y: u32::MAX, diameter: u32::MAX, thickness: u32::MAX, color: b'B' }),
@@ -408,7 +410,8 @@ fn degenerate_inline_graphic_is_render_error() {
     let label = zpl::ir::Label {
         width_dots: 10,
         height_dots: 10,
-        copies: 1,
+        copies: 1,        
+        numbered: BTreeMap::new(),
         fields: vec![zpl::ir::Field::Graphic(zpl::ir::GraphicField {
             x: 0,
             y: 0,
@@ -1102,7 +1105,8 @@ fn barcode_hostile_module_never_panics() {
     let label = Label {
         width_dots: 8,
         height_dots: 12,
-        copies: 1,
+        copies: 1,        
+        numbered: BTreeMap::new(),
         fields: vec![
             Field::Barcode(make(b'C', Rotation::R0)),
             Field::Barcode(make(b'C', Rotation::R90)),

@@ -625,16 +625,16 @@ fn ct_changes_tilde_char_applied_by_driver() {
     // Guide example (p.166): ^CT+ makes + the control-command prefix while
     // the caret still starts format commands. +SD19 after ^XZ dispatches as
     // the ~SD printer operation (darkness 19 -> 190 in tenths), and +HS
-    // scans as a command (unknown here - its response is server-side,
-    // Task 20) instead of data.
+    // scans as a command - now registered (Task 20), so it records a host
+    // status query instead of warning as unknown.
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
     let (label, ctx) = common::parse_ctx(b"^XA^CT+^XZ+SD19+HS", &mut diags, &mut memory);
     assert_eq!(ctx.mode.tilde_char, b'+');
     assert_eq!(ctx.config.darkness, 190);
     assert_eq!(label.fields.len(), 0);
-    assert_eq!(ctx.diags.items.len(), 1, "expected the +HS unknown command, got {0:?}", ctx.diags);
-    assert!(matches!(ctx.diags.items[0].severity, Severity::UnknownCommand));
+    assert_eq!(ctx.diags.items.len(), 0, "registered queries must not warn");
+    assert_eq!(ctx.queries, vec![zpl::state::QueryRequest::HostStatus]);
 }
 
 #[test]
