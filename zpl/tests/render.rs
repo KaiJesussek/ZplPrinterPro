@@ -1078,6 +1078,9 @@ fn barcode_hostile_module_never_panics() {
         interpret: false,
         ucc: false,
         model: b'N',
+        check: b'N',
+        start: b'A',
+        stop: b'A',
         font: [b'A', b' '],
         font_height: 9,
         font_width: 5,
@@ -1107,4 +1110,25 @@ fn barcode_hostile_module_never_panics() {
         (0..8).all(|x| (0..12).all(|y| !out.bitmap.get(x, y))),
         "u32::MAX-module bars never intersect the tiny canvas"
     );
+}
+
+
+/// Task 15 smoke: every new 1D symbology renders through the full
+/// pipeline (parse -> barcode_field -> paint) without warnings or panics.
+#[test]
+fn t15_all_symbologies_render() {
+    let out = render_src(b"^XA^BY2,3,60^FO20,20^B1N,,80,N,N^FD12345^FS^FO20,150^B3N,,80,N,N^FDCode39^FS\
+^FO20,280^BEN,80^FD400638133393^FS^FO20,410^B2N,80,N,N,Y^FD12345^FS^FO20,540^BAN,80^FDabcd^FS\
+^FO20,670^BKN,,80,N,N,C,D^FD1234^FS^FO20,800^BUN,80^FD03600029145^FS^FO20,930^B9N,80^FD1200000123^FS\
+^FO20,1060^B8N,80^FD9638507^FS^FO20,1190^BMN,D,80,N,N^FD1234567^FS^XZ");
+    // NoFonts has no interpretation-line font (T13 territory); the only
+    // warnings must be that kind - never a barcode data/validity warning.
+    assert!(
+        out.warnings
+            .iter()
+            .all(|w| w.starts_with("interpretation line font")),
+        "unexpected warnings: {:?}",
+        out.warnings,
+    );
+    assert!(out.bitmap.width > 100 && out.bitmap.height > 1200, "{}x{}", out.bitmap.width, out.bitmap.height);
 }

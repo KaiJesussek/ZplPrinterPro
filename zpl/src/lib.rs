@@ -3,6 +3,7 @@
 //! ZPL II parser and renderer library.
 
 pub mod bc;
+pub mod bc1d;
 mod bc128;
 pub mod cmd;
 pub mod codepage;

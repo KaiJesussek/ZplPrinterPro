@@ -1,6 +1,7 @@
 //! Command table and dispatch for ZPL II.
 
 use crate::bc;
+use crate::bc1d;
 use crate::config;
 use crate::diag::Diagnostic;
 use crate::geom;
@@ -101,9 +102,9 @@ fn check_malformed_utf16(ctx: &mut ParseContext) {
 /// Both warn, never panic.
 fn check_barcode_data(ctx: &mut ParseContext) {
     if let FormatState::Field { draft, .. } = &ctx.state {
-        if draft.barcode.is_none() {
+        let Some(bc) = &draft.barcode else {
             return;
-        }
+        };
         if draft.data.is_empty() {
             ctx.diags.push(Diagnostic::warning(
                 "BC",
@@ -111,11 +112,20 @@ fn check_barcode_data(ctx: &mut ParseContext) {
             ));
             return;
         }
-        if let Some(&hi) = draft.data.iter().find(|&&b| b >= 0x80) {
-            ctx.diags.push(Diagnostic::warning(
-                "BC",
-                format!("barcode data contains non-ASCII byte 0x{hi:02X}; encoded as '?' (Code 128 is 7-bit)"),
-            ));
+        if bc.symbology == b'C' {
+            // Code 128 substitutes '?' for high bytes (7-bit symbology).
+            if let Some(&hi) = draft.data.iter().find(|&&b| b >= 0x80) {
+                ctx.diags.push(Diagnostic::warning(
+                    "BC",
+                    format!("barcode data contains non-ASCII byte 0x{hi:02X}; encoded as '?' (Code 128 is 7-bit)"),
+                ));
+            }
+            return;
+        }
+        // Task 15 1D symbologies: report what the encoder would reject so
+        // the skipped field never goes out without a diagnostic.
+        if let Some(msg) = bc1d::data_error(bc.symbology, bc.check, &draft.data) {
+            ctx.diags.push(Diagnostic::warning("B*", msg));
         }
     }
 }
@@ -162,6 +172,17 @@ const TABLE: &[CommandSpec] = &[
     // pattern for Task 15's ^B1..^BE.
     CommandSpec { mnemonic: *b"BY", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::bar_code_defaults },
     CommandSpec { mnemonic: *b"BC", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::code_128 },
+    // Task 15: the remaining 1D symbologies. ^B1..^B9 scan as the
+    // one-letter mnemonic `B ` with the symbology digit as the first
+    // parameter segment; the two-letter mnemonics dispatch directly.
+    // (^B0 Aztec, ^B4 Code 49, ^B5 Planet, ^B7 PDF417 and ^BB CODABLOCK
+    // are 2D/stacked - Task 16 territory; their commands warn and skip.)
+    CommandSpec { mnemonic: *b"B ", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::barcode_digit },
+    CommandSpec { mnemonic: *b"BA", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::code93_field },
+    CommandSpec { mnemonic: *b"BK", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::codabar_field },
+    CommandSpec { mnemonic: *b"BE", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::ean13_field },
+    CommandSpec { mnemonic: *b"BU", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::upca_field },
+    CommandSpec { mnemonic: *b"BM", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::msi_field },
     CommandSpec { mnemonic: *b"DG", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: memory::download_graphic },
     CommandSpec { mnemonic: *b"DY", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: memory::download_object },
     CommandSpec { mnemonic: *b"DS", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: memory::download_scalable_font },

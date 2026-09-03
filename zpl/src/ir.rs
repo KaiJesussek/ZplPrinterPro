@@ -109,6 +109,15 @@ pub struct BarcodeField {
     /// (19-digit pad/trim), A = automatic subset selection, D = UCC/EAN
     /// mode (FNC1 prefix, parentheses/spaces stripped).
     pub model: u8,
+    /// Per-symbology check-digit option: ^B1 e (1 or 2 digits), ^B3 e
+    /// (Mod-43 Y/N letter), ^BM e (A/B/C/D mode letter). Meaningless for
+    /// the rest (their check digits are inherent or their options have no
+    /// bar effect).
+    pub check: u8,
+    /// `^BK k`: Codabar start character A-D (guide default A).
+    pub start: u8,
+    /// `^BK l`: Codabar stop character A-D (guide default A).
+    pub stop: u8,
     /// `^A`/`^A@` font request for the interpretation line, captured when
     /// the symbology field was parsed - guide ^BC p.94: "The interpretation
     /// line can be printed in any font by placing the font command before
@@ -245,6 +254,9 @@ mod tests {
                     interpret: true,
                     ucc: true,
                     model: b'D',
+                    check: b'N',
+                    start: b'A',
+                    stop: b'A',
                     font: [b'0', b'1'],
                     font_height: 30,
                     font_width: 20,

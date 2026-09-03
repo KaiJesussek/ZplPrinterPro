@@ -78,6 +78,9 @@ fn bc128_auto_switches_and_checks() {
             interpret: false,
             ucc: false,
             model: b'N',
+            check: b'N',
+            start: b'A',
+            stop: b'A',
             // No ^A in the format: the draft's ^CF power-up font (A, 9x5).
             font: [b'A', b' '],
             font_height: 9,
@@ -368,12 +371,13 @@ fn bc_ucc_case_mode_pads_to_19_digits() {
 // --- encode() entry points -------------------------------------------------
 
 /// Direct `encode` entry: unknown symbology -> Err; empty data -> Err;
-/// non-`'C'` letters are Task 15's territory.
+/// Task 15's 1D symbologies (here ^B3 Code 39) encode.
 #[test]
 fn encode_rejects_unknown_symbology_and_empty() {
-    assert!(zpl::bc::encode(b'3', b"ABC", 2, 30, 60, b'N').is_err());
+    assert!(zpl::bc::encode(b'4', b"ABC", 2, 30, 60, b'N').is_err()); // ^B4 is 2D Code 49 - native
     assert!(zpl::bc::encode(b'C', b"", 2, 30, 60, b'N').is_err());
     assert!(zpl::bc::encode(b'C', b"ABC", 2, 30, 60, b'N').is_ok());
+    assert!(zpl::bc::encode(b'3', b"ABC123", 2, 30, 60, b'N').is_ok());
 }
 
 /// Non-ASCII bytes substitute '?' (Code 128 is 7-bit); high bytes never
@@ -438,4 +442,504 @@ fn bc_fh_hex_escapes_apply_to_barcode_data() {
             2,3,3,1,1,1,2, // stop
         ],
     );
+}
+
+// --- Task 15: 1D symbologies ^B1 ^B2 ^B3 ^B8 ^B9 ^BA ^BK ^BE ^BU ^BM ----
+//
+// References are hand-composed here from the published standards (verified
+// against ISO/IEC 16388 Code 39, ANSI/AIM BC5 Code 93, ISO/IEC 16390 I2of5,
+// GS1 EAN/UPC, AIM BC3 Codabar and the Code 11/MSI conventions) - the same
+// tables the encoder implements, written out independently in the test.
+// Mnemonic mapping from the ZPL II guide (Task 15 report): ^B1=Code 11,
+// ^B2=Interleaved 2 of 5, ^B3=Code 39, ^B8=EAN-8, ^B9=UPC-E, ^BA=Code 93,
+// ^BK=Codabar, ^BE=EAN-13, ^BU=UPC-A, ^BM=MSI.
+
+/// The GS1 EAN/UPC element tables (7 modules per digit): L (odd, left),
+/// G (even, left) and R (right = bitwise complement of L).
+const L: [&str; 10] = [
+    "0001101", "0011001", "0010011", "0111101", "0100011", "0110001",
+    "0101111", "0111011", "0110111", "0001011",
+];
+const G: [&str; 10] = [
+    "0100111", "0110011", "0011011", "0100001", "0011101", "0111001",
+    "0000101", "0010001", "0001001", "0010111",
+];
+const R: [&str; 10] = [
+    "1110010", "1100110", "1101100", "1000010", "1011100", "1001110",
+    "1010000", "1000100", "1001000", "1110100",
+];
+
+/// Assert `pattern` is exactly the module sequence `bits` (1 = bar, 0 =
+/// space, runs merged), each module `module` dots wide.
+fn assert_bits(pattern: &Pattern, module: u32, bits: &str) {
+    assert!(bits.starts_with('1'), "symbol must start with a bar");
+    let bytes = bits.as_bytes();
+    let mut runs: Vec<u32> = Vec::new();
+    let mut prev = bytes[0];
+    let mut len = 1u32;
+    for &b in &bytes[1..] {
+        if b == prev {
+            len += 1;
+        } else {
+            runs.push(len);
+            prev = b;
+            len = 1;
+        }
+    }
+    runs.push(len);
+    assert_bars(pattern, module, &runs);
+}
+
+// --- ^B3 Code 39 (ISO/IEC 16388) ------------------------------------------
+
+/// `^FO0,0^BY1,3,10^B3N,Y^FDABC123^FS`: e=Y appends the Mod-43 check digit;
+/// values A=10 B=11 C=12 1 2 3 sum to 39, 39 mod 43 = 39 = '$' (guide Mod
+/// 43 p.1592). Each character is nine elements (three wide) plus an
+/// inter-character narrow gap; '*' is generated around the data. Module 1,
+/// ratio 3.0 -> wide = trunc(1*3) = 3 dots.
+#[test]
+fn b3_code39_mod43_and_ratio() {
+    let (label, _) = common::parse_one(b"^XA^BY1,3,10^B3N,Y,20,N,N^FDABC123^FS^XZ");
+    let f = assert_single_barcode(&label);
+    assert_eq!(f.symbology, b'3');
+    assert_bars(
+        &barcode_field(f),
+        1,
+        &[
+            // * start (incl. trailing narrow gap)
+            1, 3, 1, 1, 3, 1, 3, 1, 1, 1,
+            // A
+            3, 1, 1, 1, 1, 3, 1, 1, 3, 1,
+            // B
+            1, 1, 3, 1, 1, 3, 1, 1, 3, 1,
+            // C
+            3, 1, 3, 1, 1, 3, 1, 1, 1, 1,
+            // 1
+            3, 1, 1, 3, 1, 1, 1, 1, 3, 1,
+            // 2
+            1, 1, 3, 3, 1, 1, 1, 1, 3, 1,
+            // 3
+            3, 1, 3, 3, 1, 1, 1, 1, 1, 1,
+            // $ (check)
+            1, 3, 1, 3, 1, 3, 1, 1, 1, 1,
+            // * stop (no trailing gap)
+            1, 3, 1, 1, 3, 1, 3, 1, 1,
+        ],
+    );
+}
+
+/// The ^BY ratio table (guide p.148, Table 6) transcribed: the printed
+/// wide/narrow ratio is trunc(w*r)/w - at module 3 the requested 2.5
+/// yields wide = trunc(3*2.5) = 7 dots (2.3:1), not 8.
+#[test]
+fn b3_code39_by_ratio_table_wide_dots() {
+    let (label, _) = common::parse_one(b"^XA^BY3,2.5,20^B3N,N^FDB^FS^XZ");
+    let f = assert_single_barcode(&label);
+    let Pattern::Bars(bars) = barcode_field(f) else { panic!("expected bars") };
+    // 'B' = 001001001 -> N N W N N W N N W; * B * with 3-wide gaps.
+    let widths: Vec<u32> = bars.iter().map(|b| b.width).collect();
+    assert_eq!(
+        widths,
+        [
+            3, 7, 3, 3, 7, 3, 7, 3, 3, 3, // * + gap
+            3, 3, 7, 3, 3, 7, 3, 3, 7, 3, // B + gap
+            3, 7, 3, 3, 7, 3, 7, 3, 3, // * stop
+        ],
+    );
+}
+
+// --- ^B2 Interleaved 2 of 5 (ISO/IEC 16390) -------------------------------
+
+/// `1234` (no check): start NNNN, digit pairs interleaved (bars from the
+/// first digit, spaces from the second), stop WNN. Wide/narrow 3:1.
+#[test]
+fn b2_interleaved_2of5_pairs_and_guards() {
+    let (label, _) = common::parse_one(b"^XA^BY1,3,10^B2N,20,N,N^FD1234^FS^XZ");
+    let f = assert_single_barcode(&label);
+    assert_eq!(f.symbology, b'2');
+    assert_bars(
+        &barcode_field(f),
+        1,
+        &[
+            // start NNNN
+            1, 1, 1, 1,
+            // pair 1,2: bars(1)=31113, spaces(2)=13113
+            3, 1, 1, 3, 1, 1, 1, 1, 3, 3,
+            // pair 3,4: bars(3)=33111, spaces(4)=11313
+            3, 1, 3, 1, 1, 3, 1, 1, 1, 3,
+            // stop WNN
+            3, 1, 1,
+        ],
+    );
+}
+
+/// The guide (p.69): "The printer automatically adds a leading 0 (zero) if
+/// an odd number of digits is received." `123` -> `0123`.
+#[test]
+fn b2_interleaved_2of5_odd_count_pads_leading_zero() {
+    let (label, _) = common::parse_one(b"^XA^BY1,3,10^B2N,20,N,N^FD123^FS^XZ");
+    let f = assert_single_barcode(&label);
+    assert_bars(
+        &barcode_field(f),
+        1,
+        &[
+            1, 1, 1, 1,
+            // pair 0,1: bars(0)=11331, spaces(1)=31113
+            1, 3, 1, 1, 3, 1, 3, 1, 1, 3,
+            // pair 2,3
+            1, 3, 3, 3, 1, 1, 1, 1, 3, 1,
+            3, 1, 1,
+        ],
+    );
+}
+
+/// `^B2 e=Y` appends the Mod-10 check digit (guide p.68 -> Mod 10 p.1591,
+/// the GS1 weighting 3,1,... from the right). `1234` (even) gets a leading
+/// zero first: 01234 -> 4*3+3*1+2*3+1*1+0*3 = 22 -> check 8.
+#[test]
+fn b2_interleaved_2of5_mod10_check_digit() {
+    let (label, _) = common::parse_one(b"^XA^BY1,3,10^B2N,20,N,N,Y^FD1234^FS^XZ");
+    let f = assert_single_barcode(&label);
+    assert_bars(
+        &barcode_field(f),
+        1,
+        &[
+            1, 1, 1, 1,
+            // pair 0,1
+            1, 3, 1, 1, 3, 1, 3, 1, 1, 3,
+            // pair 2,3
+            1, 3, 3, 3, 1, 1, 1, 1, 3, 1,
+            // pair 4,8: bars(4)=11313, spaces(8)=31131
+            1, 3, 1, 1, 3, 1, 1, 3, 3, 1,
+            3, 1, 1,
+        ],
+    );
+}
+
+// --- ^BE EAN-13 ------------------------------------------------------------
+
+/// `4006381333931` (the classic example; check digit 1). First digit 4
+/// picks the LGLLGG parity row; right half uses R-codes.
+#[test]
+fn be_ean13_parity_and_check_digit() {
+    let (label, _) = common::parse_one(b"^XA^BY1,3,30^BEN,30^FD400638133393^FS^XZ");
+    let f = assert_single_barcode(&label);
+    assert_eq!(f.symbology, b'E');
+    let mut bits = String::from("101");
+    // Parity row for first digit 4 (GS1 Table): LGLLGG.
+    for (d, p) in b"006381".iter().zip("LGLLGG".bytes()) {
+        bits.push_str(if p == b'L' { L[(d - b'0') as usize] } else { G[(d - b'0') as usize] });
+    }
+    bits.push_str("01010");
+    for d in b"333931".iter() {
+        bits.push_str(R[(d - b'0') as usize]);
+    }
+    bits.push_str("101");
+    assert_bits(&barcode_field(f), 1, &bits);
+}
+
+// --- ^B8 EAN-8 -------------------------------------------------------------
+
+/// `9638507` -> check digit 4: 7*3+0+5*3+8+3*3+6+9*3 = 86 -> 10-6 = 4.
+#[test]
+fn b8_ean8_check_and_structure() {
+    let (label, _) = common::parse_one(b"^XA^BY1,3,30^B8N,30^FD9638507^FS^XZ");
+    let f = assert_single_barcode(&label);
+    assert_eq!(f.symbology, b'8');
+    let mut bits = String::from("101");
+    for d in b"9638".iter() {
+        bits.push_str(L[(d - b'0') as usize]);
+    }
+    bits.push_str("01010");
+    for d in b"5074".iter() {
+        bits.push_str(R[(d - b'0') as usize]);
+    }
+    bits.push_str("101");
+    assert_bits(&barcode_field(f), 1, &bits);
+}
+
+// --- ^BU UPC-A -------------------------------------------------------------
+
+/// `03600029145` -> check digit 2 (5*3+4+1*3+9+2*3+0+0*3+0+6*3+3+0*3 = 58
+/// -> 60-58). Left half L-codes, right half R-codes.
+#[test]
+fn bu_upc_a_structure() {
+    let (label, _) = common::parse_one(b"^XA^BY1,3,30^BUN,30^FD03600029145^FS^XZ");
+    let f = assert_single_barcode(&label);
+    assert_eq!(f.symbology, b'U');
+    let mut bits = String::from("101");
+    for d in b"036000".iter() {
+        bits.push_str(L[(d - b'0') as usize]);
+    }
+    bits.push_str("01010");
+    for d in b"291452".iter() {
+        bits.push_str(R[(d - b'0') as usize]);
+    }
+    bits.push_str("101");
+    assert_bits(&barcode_field(f), 1, &bits);
+}
+
+// --- ^B9 UPC-E -------------------------------------------------------------
+
+/// 10-digit input (mfr `12000`, product `00123`): zero-suppression case 1
+/// (guide p.86) -> UPC-E digits `121230`; the check digit comes from the
+/// expanded 11-digit UPC-A 012000000123 -> 21 -> 9; number-system-0 parity
+/// row 9 = EOOEOE. Symbol: 101 + six digits + 010101.
+#[test]
+fn b9_upc_e_zero_suppression_and_parity() {
+    let (label, _) = common::parse_one(b"^XA^BY1,3,30^B9N,30^FD1200000123^FS^XZ");
+    let f = assert_single_barcode(&label);
+    assert_eq!(f.symbology, b'9');
+    // UPC-E digits 1,2,1,2,3,0 under parity E O O E O E.
+    let codes = [G[1], L[2], L[1], G[2], L[3], G[0]];
+    let mut bits = String::from("101");
+    for c in codes {
+        bits.push_str(c);
+    }
+    bits.push_str("010101");
+    assert_bits(&barcode_field(f), 1, &bits);
+}
+
+// --- ^BA Code 93 -----------------------------------------------------------
+
+/// `ABCD` values 10,11,12,13: C = 13*1+12*2+11*3+10*4 = 110 mod 47 = 16
+/// ('G'); K = 16*1+13*2+12*3+11*4+10*5 = 172 mod 47 = 31 ('V'). The symbol
+/// is * + data + C + K + * + a one-module termination bar.
+#[test]
+fn ba_code93_two_check_chars() {
+    let (label, _) = common::parse_one(b"^XA^BY1,3,30^BAN,30^FDABCD^FS^XZ");
+    let f = assert_single_barcode(&label);
+    assert_eq!(f.symbology, b'A');
+    #[rustfmt::skip]
+    assert_bars(
+        &barcode_field(f),
+        1,
+        &[
+            // * (111141)
+            1, 1, 1, 1, 4, 1,
+            // A (211113) B (211212) C (211311) D (221112)
+            2, 1, 1, 1, 1, 3,
+            2, 1, 1, 2, 1, 2,
+            2, 1, 1, 3, 1, 1,
+            2, 2, 1, 1, 1, 2,
+            // G (112113) check C, V (222111) check K
+            1, 1, 2, 1, 1, 3,
+            2, 2, 2, 1, 1, 1,
+            // * + termination bar
+            1, 1, 1, 1, 4, 1,
+            1,
+        ],
+    );
+}
+
+// --- ^BK Codabar -----------------------------------------------------------
+
+/// `1234` with default start/stop A: A 1 2 3 4 A, each character seven
+/// elements plus a narrow inter-character gap; wide/narrow 2:1.
+#[test]
+fn bk_codabar_default_start_stop() {
+    let (label, _) = common::parse_one(b"^XA^BY1,2,20^BKN,,20,N,N^FD1234^FS^XZ");
+    let f = assert_single_barcode(&label);
+    assert_eq!(f.symbology, b'K');
+    #[rustfmt::skip]
+    assert_bars(
+        &barcode_field(f),
+        1,
+        &[
+            // A = 11221211
+            1, 1, 2, 2, 1, 2, 1, 1,
+            // 1 = 11112211
+            1, 1, 1, 1, 2, 2, 1, 1,
+            // 2 = 11121121
+            1, 1, 1, 2, 1, 1, 2, 1,
+            // 3 = 22111111
+            2, 2, 1, 1, 1, 1, 1, 1,
+            // 4 = 11211211
+            1, 1, 2, 1, 1, 2, 1, 1,
+            // A
+            1, 1, 2, 2, 1, 2, 1, 1,
+        ],
+    );
+}
+
+/// Start/stop characters come from the k/l parameters (guide p.118): C..D.
+#[test]
+fn bk_codabar_custom_start_stop() {
+    let (label, _) = common::parse_one(b"^XA^BY1,2,20^BKN,,20,N,N,C,D^FD77^FS^XZ");
+    let f = assert_single_barcode(&label);
+    #[rustfmt::skip]
+    assert_bars(
+        &barcode_field(f),
+        1,
+        &[
+            // C = 11121221
+            1, 1, 1, 2, 1, 2, 2, 1,
+            // 7 = 12112111
+            1, 2, 1, 1, 2, 1, 1, 1,
+            // 7
+            1, 2, 1, 1, 2, 1, 1, 1,
+            // D = 11122211
+            1, 1, 1, 2, 2, 2, 1, 1,
+        ],
+    );
+}
+
+// --- ^B1 Code 11 -----------------------------------------------------------
+
+/// `12345` with default e=N (two check digits): C = 5*1+4*2+3*3+2*4+1*5 =
+/// 35 mod 11 = 2; K over [C, data]: 2*1+5*2+4*3+3*4+2*5+1*6 = 52 mod 11 =
+/// 8 -> `1234528`. Start/stop *. Wide/narrow 2:1.
+#[test]
+fn b1_code11_two_check_digits() {
+    let (label, _) = common::parse_one(b"^XA^BY1,2,20^B1N,N,20,N,N^FD12345^FS^XZ");
+    let f = assert_single_barcode(&label);
+    assert_eq!(f.symbology, b'1');
+    #[rustfmt::skip]
+    assert_bars(
+        &barcode_field(f),
+        1,
+        &[
+            // * start = 112211
+            1, 1, 2, 2, 1, 1,
+            // 1 2 3 4 5
+            2, 1, 1, 1, 2, 1,
+            1, 2, 1, 1, 2, 1,
+            2, 2, 1, 1, 1, 1,
+            1, 1, 2, 1, 2, 1,
+            2, 1, 2, 1, 1, 1,
+            // C = 2, K = 8
+            1, 2, 1, 1, 2, 1,
+            2, 1, 1, 2, 1, 1,
+            // * stop = 11221 (first five elements)
+            1, 1, 2, 2, 1,
+        ],
+    );
+}
+
+/// e=Y -> a single (C) check digit.
+#[test]
+fn b1_code11_one_check_digit() {
+    let (label, _) = common::parse_one(b"^XA^BY1,2,20^B1N,Y,20,N,N^FD12345^FS^XZ");
+    let f = assert_single_barcode(&label);
+    #[rustfmt::skip]
+    assert_bars(
+        &barcode_field(f),
+        1,
+        &[
+            1, 1, 2, 2, 1, 1,
+            2, 1, 1, 1, 2, 1,
+            1, 2, 1, 1, 2, 1,
+            2, 2, 1, 1, 1, 1,
+            1, 1, 2, 1, 2, 1,
+            2, 1, 2, 1, 1, 1,
+            1, 2, 1, 1, 2, 1, // C = 2
+            1, 1, 2, 2, 1,
+        ],
+    );
+}
+
+// --- ^BM MSI ---------------------------------------------------------------
+
+/// MSI mod 10 with e=B (guide default): `1234567` -> Luhn check 4 (rightmost
+/// digit doubled: 7*2=14->5, 6, 5*2=10->1, 4, 3*2=6, 2, 1*2=2 -> 26 -> check
+/// 4). Start = wide bar + narrow space; stop = 1,2,1.
+#[test]
+fn bm_msi_mod10() {
+    let (label, _) = common::parse_one(b"^XA^BY1,2,20^BMN,B,20,N,N^FD1234567^FS^XZ");
+    let f = assert_single_barcode(&label);
+    assert_eq!(f.symbology, b'M');
+    #[rustfmt::skip]
+    assert_bars(
+        &barcode_field(f),
+        1,
+        &[
+            2, 1, // start
+            1, 2, 1, 2, 1, 2, 2, 1, // 1
+            1, 2, 1, 2, 2, 1, 1, 2, // 2
+            1, 2, 1, 2, 2, 1, 2, 1, // 3
+            1, 2, 2, 1, 1, 2, 1, 2, // 4
+            1, 2, 2, 1, 1, 2, 2, 1, // 5
+            1, 2, 2, 1, 2, 1, 1, 2, // 6
+            1, 2, 2, 1, 2, 1, 2, 1, // 7
+            1, 2, 2, 1, 1, 2, 1, 2, // 4 (check)
+            1, 2, 1, // stop
+        ],
+    );
+}
+
+/// e=D: one Mod-11 (weights 2..9 from the right) then one Mod-10.
+/// `1234567`: 7*2+6*3+5*4+4*5+3*6+2*7+1*8 = 112 mod 11 = 2 -> 11-2 = 9;
+/// then `12345679` -> 9*2=18->9, 7, 6*2=12->3, 5, 4*2=8, 3, 2*2=4, 1 = 40 ->
+/// check 0 -> `123456790`.
+#[test]
+fn bm_msi_mod11_mod10() {
+    let (label, _) = common::parse_one(b"^XA^BY1,2,20^BMN,D,20,N,N^FD1234567^FS^XZ");
+    let f = assert_single_barcode(&label);
+    #[rustfmt::skip]
+    assert_bars(
+        &barcode_field(f),
+        1,
+        &[
+            2, 1,
+            1, 2, 1, 2, 1, 2, 2, 1, // 1
+            1, 2, 1, 2, 2, 1, 1, 2, // 2
+            1, 2, 1, 2, 2, 1, 2, 1, // 3
+            1, 2, 2, 1, 1, 2, 1, 2, // 4
+            1, 2, 2, 1, 1, 2, 2, 1, // 5
+            1, 2, 2, 1, 2, 1, 1, 2, // 6
+            1, 2, 2, 1, 2, 1, 2, 1, // 7
+            2, 1, 1, 2, 1, 2, 2, 1, // 9 (mod 11)
+            1, 2, 1, 2, 1, 2, 1, 2, // 0 (mod 10)
+            1, 2, 1,
+        ],
+    );
+}
+
+// --- invalid data: parse warning + skipped field, never a panic ------------
+
+/// Every symbology degrades invalid data to an empty pattern at render and
+/// a Diagnostic at parse - the "no zero-length pattern without a
+/// diagnostic" contract.
+#[test]
+fn invalid_1d_barcode_data_warns_and_skips() {
+    // Non-digit in I2of5.
+    let (label, diags) = common::parse_one(b"^XA^B2N,20,N,N^FD12A4^FS^XZ");
+    assert!(
+        diags.items.iter().any(|d| d.severity == Severity::Warning),
+        "expected warning, got {diags:?}",
+    );
+    assert!(matches!(barcode_field(assert_single_barcode(&label)), Pattern::Bars(b) if b.is_empty()));
+
+    // ^B9 demands exactly 10 digits.
+    let (label, diags) = common::parse_one(b"^XA^B9N,20^FD123^FS^XZ");
+    assert!(
+        diags.items.iter().any(|d| d.severity == Severity::Warning),
+        "expected warning, got {diags:?}",
+    );
+    assert!(matches!(barcode_field(assert_single_barcode(&label)), Pattern::Bars(b) if b.is_empty()));
+
+    // ^B9 input with no valid zero-suppression (mfr not ending in 0 and a
+    // product above 00009 breaks every case).
+    let (label, diags) = common::parse_one(b"^XA^B9N,20^FD1200056789^FS^XZ");
+    assert!(
+        diags.items.iter().any(|d| d.severity == Severity::Warning),
+        "expected warning, got {diags:?}",
+    );
+    assert!(matches!(barcode_field(assert_single_barcode(&label)), Pattern::Bars(b) if b.is_empty()));
+
+    // ^BM e=A caps the field at 13 digits (guide p.122).
+    let (label, diags) = common::parse_one(b"^XA^BMN,A,20,N,N^FD12345678901234^FS^XZ");
+    assert!(
+        diags.items.iter().any(|d| d.severity == Severity::Warning),
+        "expected warning, got {diags:?}",
+    );
+    assert!(matches!(barcode_field(assert_single_barcode(&label)), Pattern::Bars(b) if b.is_empty()));
+
+    // Byte >= 0x80 is outside Code 39's full-ASCII set.
+    let (label, diags) = common::parse_one(b"^XA^B3N,N,20,N,N^FDAB\x80^FS^XZ");
+    assert!(
+        diags.items.iter().any(|d| d.severity == Severity::Warning),
+        "expected warning, got {diags:?}",
+    );
+    assert!(matches!(barcode_field(assert_single_barcode(&label)), Pattern::Bars(b) if b.is_empty()));
 }

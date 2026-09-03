@@ -159,6 +159,13 @@ pub struct BarcodeDraft {
     pub ucc: bool,
     /// `^BC m`: mode letter N/U/A/D (default N).
     pub model: u8,
+    /// Per-symbology check-digit option: ^B1 e (1 or 2 digits), ^B3 e
+    /// (Mod-43 Y/N), ^BM e (A/B/C/D). Meaningless for other symbologies.
+    pub check: u8,
+    /// ^BK k: Codabar start character (A-D, default A).
+    pub start: u8,
+    /// ^BK l: Codabar stop character (A-D, default A).
+    pub stop: u8,
 }
 
 /// The shape a drawing-field command (`^GB ^GC ^GD ^GE`) deposits on the
@@ -402,6 +409,9 @@ impl FieldDraft {
                     interpret: b.interpret,
                     ucc: b.ucc,
                     model: b.model,
+                    check: b.check,
+                    start: b.start,
+                    stop: b.stop,
                     // The interpretation line prints in the field's font
                     // (guide ^BC: "The interpretation line can be printed
                     // in any font by placing the font command before the

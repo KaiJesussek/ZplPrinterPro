@@ -9,6 +9,7 @@
 //! tenths, 3.0 -> 30), height power-up **10**.
 
 use crate::bc128;
+use crate::bc1d;
 use crate::config::{to_tenths, u32_in};
 use crate::diag::{Diagnostic, Diagnostics};
 use crate::ir::BarcodeField;
@@ -41,14 +42,25 @@ pub fn encode(
     symbology: u8,
     data: &[u8],
     module: u32,
-    _ratio: u32,
+    ratio: u32,
     _height: u32,
     _line: u8,
 ) -> Result<Pattern, String> {
     match symbology {
         b'C' => bc128::encode(data, module),
+        // Task 15: the remaining 1D symbologies (mnemonics per the guide).
+        b'1' => bc1d::code11(data, module, ratio),
+        b'2' => bc1d::i2of5(data, module, ratio),
+        b'3' => bc1d::code39(data, module, ratio),
+        b'8' => bc1d::ean8(data, module),
+        b'9' => bc1d::upce(data, module),
+        b'A' => bc1d::code93(data, module),
+        b'E' => bc1d::ean13(data, module),
+        b'K' => bc1d::codabar(data, module, ratio),
+        b'M' => bc1d::msi(data, module, ratio),
+        b'U' => bc1d::upca(data, module),
         _ => Err(format!(
-            "unsupported symbology '{}' (Task 15 registers ^B1..^BE)",
+            "unsupported symbology '{}'",
             symbology as char
         )),
     }
@@ -73,7 +85,14 @@ pub fn barcode_field(f: &BarcodeField) -> Pattern {
     let module = if f.module == 0 { 2 } else { f.module };
     let ratio = if f.ratio == 0 { 30 } else { f.ratio };
     let height = if f.height == 0 { 10 } else { f.height };
-    let data = prepare_ucc(f, data);
+    let data = if f.symbology == b'C' {
+        prepare_ucc(f, data)
+    } else {
+        // Task 15 1D symbologies fold their options (^B1 count, ^B2
+        // check, ^B3 expansion+check, ^BK start/stop, ^BM mode) into the
+        // data; the encoders stay option-free.
+        bc1d::prepare(f, &data)
+    };
     match encode(f.symbology, &data, module, ratio, height, f.line) {
         Ok(pattern) => pattern,
         Err(_) => Pattern::Bars(Vec::new()),
@@ -123,7 +142,7 @@ fn prepare_ucc(f: &BarcodeField, data: Vec<u8>) -> Vec<u8> {
 /// from the rightmost digit; append the digit that makes the weighted sum
 /// divisible by 10). `None` when the data is not all digits - the check
 /// digit is only defined for numeric UCC/EAN-128 content.
-fn ucc_mod10(data: &[u8]) -> Option<u8> {
+pub(crate) fn ucc_mod10(data: &[u8]) -> Option<u8> {
     if data.is_empty() || !data.iter().all(u8::is_ascii_digit) {
         return None;
     }
@@ -263,8 +282,235 @@ pub(crate) fn code_128(ctx: &mut ParseContext, params: &[u8]) {
         interpret,
         ucc,
         model,
+        check: b'N',
+        start: b'A',
+        stop: b'A',
     });
     if let Some(r) = rotation {
         d.rotation = r;
     }
 }
+
+
+// --- Task 15 1D barcode handlers (^B1..^B9, ^BA, ^BK, ^BE, ^BU, ^BM) ----
+//
+// Parameter shapes transcribed from the guide: ^B1 o,e,h,f,g (p.66);
+// ^B2 o,h,f,g,e (p.68); ^B3 o,e,h,f,g (p.70); ^B8 o,h,f,g (p.83); ^B9
+// o,h,f,g,e (p.85); ^BA o,h,f,g,e (p.87); ^BK o,e,h,f,g,k,l (p.118); ^BE
+// o,h,f,g (p.109); ^BU o,h,f,g,e (p.142); ^BM o,e,h,f,g,e2 (p.122; e2
+// affects only the interpretation line, no bar effect, accepted).
+//
+// ^B1..^B9 scan as mnemonic `B ` (the scanner keeps single-letter
+// mnemonics short) with the symbology digit as the first parameter
+// segment, so one dispatch row feeds `barcode_digit`, which re-slices the
+// parameter list past the digit and dispatches per symbology.
+
+/// Parameter layout of a Task 15 ^B* command.
+struct Spec {
+    /// Check-digit parameter position and kind.
+    check: Option<(Check, usize)>,
+    /// Height position and maximum (^BU caps at 9999, the rest at 32000).
+    height: (usize, u32),
+    /// `f` (interpretation line below) position.
+    line: usize,
+    /// `g` (line above) position.
+    above: usize,
+    /// ^BK k/l start/stop positions.
+    start: Option<usize>,
+    stop: Option<usize>,
+}
+
+/// How each symbology's check-digit parameter behaves.
+#[derive(Clone, Copy)]
+enum Check {
+    /// ^B2 e: append a Mod-10 check digit (carried as `ucc`).
+    Ucc,
+    /// ^B3 e: append the Mod-43 check digit (Y/N).
+    Mod43,
+    /// ^B1 e: Y = one check digit, N = two (carried as 1/2).
+    DigitCount,
+    /// ^BM e: A/B/C/D check-digit mode.
+    Mode,
+    /// ^BK e: fixed N (parsed for diagnostics, then ignored).
+    FixedN,
+    /// ^B9/^BU/^BA e "print check digit": the bars always carry the
+    /// standard's check digit; parsed for diagnostics, no bar effect.
+    PrintDigit(u8),
+}
+
+const SPEC_B1: Spec = Spec { check: Some((Check::DigitCount, 1)), height: (2, 32000), line: 3, above: 4, start: None, stop: None };
+const SPEC_B2: Spec = Spec { check: Some((Check::Ucc, 4)), height: (1, 32000), line: 2, above: 3, start: None, stop: None };
+const SPEC_B3: Spec = Spec { check: Some((Check::Mod43, 1)), height: (2, 32000), line: 3, above: 4, start: None, stop: None };
+const SPEC_B8: Spec = Spec { check: None, height: (1, 32000), line: 2, above: 3, start: None, stop: None };
+const SPEC_B9: Spec = Spec { check: Some((Check::PrintDigit(b'Y'), 4)), height: (1, 32000), line: 2, above: 3, start: None, stop: None };
+const SPEC_BA: Spec = Spec { check: Some((Check::PrintDigit(b'N'), 4)), height: (1, 32000), line: 2, above: 3, start: None, stop: None };
+const SPEC_BK: Spec = Spec { check: Some((Check::FixedN, 1)), height: (2, 32000), line: 3, above: 4, start: Some(5), stop: Some(6) };
+const SPEC_BE: Spec = Spec { check: None, height: (1, 32000), line: 2, above: 3, start: None, stop: None };
+const SPEC_BU: Spec = Spec { check: Some((Check::PrintDigit(b'Y'), 4)), height: (1, 9999), line: 2, above: 3, start: None, stop: None };
+const SPEC_BM: Spec = Spec { check: Some((Check::Mode, 1)), height: (2, 32000), line: 3, above: 4, start: None, stop: None };
+
+/// ^B1..^B9: the symbology digit is the first parameter segment.
+pub(crate) fn barcode_digit(ctx: &mut ParseContext, params: &[u8]) {
+    let parts = split_commas(params);
+    let Some(first) = parts.first() else {
+        ctx.diags
+            .push(Diagnostic::warning("B*", "barcode command is missing the symbology digit"));
+        return;
+    };
+    let Some(sym) = first.first().copied() else {
+        ctx.diags
+            .push(Diagnostic::warning("B*", "barcode command is missing the symbology digit"));
+        return;
+    };
+    // The symbology's own parameters start after the digit. The digit is
+    // glued to whatever follows ("^B2N,20" -> "2N,20"), so only the first
+    // byte is consumed; a comma after the digit separates it from the
+    // rest ("^B3,20" -> "3,20").
+    let rest = if params.len() > 1 {
+        if params[1] == b',' {
+            &params[2..]
+        } else {
+            &params[1..]
+        }
+    } else {
+        &[]
+    };
+    match sym {
+        b'1' => barcode_1d(ctx, rest, "B1", b'1', SPEC_B1),
+        b'2' => barcode_1d(ctx, rest, "B2", b'2', SPEC_B2),
+        b'3' => barcode_1d(ctx, rest, "B3", b'3', SPEC_B3),
+        b'8' => barcode_1d(ctx, rest, "B8", b'8', SPEC_B8),
+        b'9' => barcode_1d(ctx, rest, "B9", b'9', SPEC_B9),
+        _ => {
+            // ^B0 Aztec, ^B4 Code 49, ^B5 Planet, ^B6, ^B7 PDF417: 2D or
+            // stacked symbologies outside the 1D scope (Task 16 owns the
+            // 2D mnemonics) - warn and skip, never a silent empty field.
+            ctx.diags.push(Diagnostic::warning(
+                "B*",
+                format!(
+                    "symbology ^B{} is not implemented by this build; field skipped",
+                    sym as char
+                ),
+            ));
+        }
+    }
+}
+
+/// Shared parameter parsing for the Task 15 1D symbologies.
+fn barcode_1d(ctx: &mut ParseContext, params: &[u8], cmd: &str, symbology: u8, spec: Spec) {
+    let parts = split_commas(params);
+    let (by_module, by_ratio, by_height) = (ctx.mode.by_module, ctx.mode.by_ratio, ctx.mode.by_height);
+    let rotation = match parts.first().copied() {
+        Some(o) if o.is_empty() => None, // default: current ^FW
+        Some(o) => match parse_rotation(o) {
+            Some(r) => Some(r),
+            None => {
+                warn_invalid(cmd, "orientation", o, ctx.diags);
+                None
+            }
+        },
+        None => None,
+    };
+    let height = u32_in(
+        parts.get(spec.height.0).copied(),
+        cmd,
+        "height",
+        ctx.diags,
+        1,
+        spec.height.1,
+        by_height,
+    );
+    let line = yn(parts.get(spec.line).copied(), cmd, "interpretation line", ctx.diags, b'Y');
+    let interpret = yn(parts.get(spec.above).copied(), cmd, "line above code", ctx.diags, b'N') == b'Y';
+    let mut check = b'N';
+    let mut ucc = false;
+    let mut start = b'A';
+    let mut stop = b'A';
+    if let Some((kind, pos)) = spec.check {
+        match kind {
+            Check::Ucc => {
+                ucc = yn(parts.get(pos).copied(), cmd, "Mod-10 check digit", ctx.diags, b'N') == b'Y'
+            }
+            Check::Mod43 => check = yn(parts.get(pos).copied(), cmd, "Mod-43 check digit", ctx.diags, b'N'),
+            Check::DigitCount => {
+                check = if yn(parts.get(pos).copied(), cmd, "check digit count", ctx.diags, b'N') == b'Y' {
+                    1
+                } else {
+                    2
+                }
+            }
+            Check::Mode => {
+                check = match parts.get(pos).and_then(|p| p.first()).copied() {
+                    Some(m @ (b'A' | b'B' | b'C' | b'D')) => m,
+                    _ => {
+                        if parts.get(pos).is_some_and(|p| !p.is_empty()) {
+                            warn_invalid(cmd, "check digit mode", parts.get(pos).copied().unwrap_or(&[]), ctx.diags);
+                        }
+                        b'B'
+                    }
+                };
+            }
+            Check::FixedN => {
+                let _ = yn(parts.get(pos).copied(), cmd, "check digit", ctx.diags, b'N');
+            }
+            Check::PrintDigit(dflt) => {
+                let _ = yn(parts.get(pos).copied(), cmd, "print check digit", ctx.diags, dflt);
+            }
+        }
+    }
+    if let Some(p) = spec.start {
+        start = abcd(parts.get(p).copied(), cmd, "start character", ctx.diags);
+    }
+    if let Some(p) = spec.stop {
+        stop = abcd(parts.get(p).copied(), cmd, "stop character", ctx.diags);
+    }
+    let Some(d) = draft_mut(ctx) else {
+        return; // no format open: a bare ^B outside ^XA..^XZ is a no-op
+    };
+    d.barcode = Some(BarcodeDraft {
+        symbology,
+        module: by_module,
+        ratio: by_ratio,
+        height,
+        line,
+        interpret,
+        ucc,
+        model: b'N',
+        check,
+        start,
+        stop,
+    });
+    if let Some(r) = rotation {
+        d.rotation = r;
+    }
+}
+
+/// ^BK k/l: A-D characters (guide p.118, default A).
+fn abcd(seg: Option<&[u8]>, cmd: &str, name: &str, diags: &mut Diagnostics) -> u8 {
+    match seg.and_then(|p| p.first()).copied() {
+        Some(c @ (b'A' | b'B' | b'C' | b'D')) => c,
+        _ => {
+            if seg.is_some_and(|p| !p.is_empty()) {
+                warn_invalid(cmd, name, seg.unwrap_or(&[]), diags);
+            }
+            b'A'
+        }
+    }
+}
+
+pub(crate) fn code93_field(ctx: &mut ParseContext, params: &[u8]) {
+    barcode_1d(ctx, params, "BA", b'A', SPEC_BA);
+}
+pub(crate) fn codabar_field(ctx: &mut ParseContext, params: &[u8]) {
+    barcode_1d(ctx, params, "BK", b'K', SPEC_BK);
+}
+pub(crate) fn ean13_field(ctx: &mut ParseContext, params: &[u8]) {
+    barcode_1d(ctx, params, "BE", b'E', SPEC_BE);
+}
+pub(crate) fn upca_field(ctx: &mut ParseContext, params: &[u8]) {
+    barcode_1d(ctx, params, "BU", b'U', SPEC_BU);
+}
+pub(crate) fn msi_field(ctx: &mut ParseContext, params: &[u8]) {
+    barcode_1d(ctx, params, "BM", b'M', SPEC_BM);
+}
+
