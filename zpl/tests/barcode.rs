@@ -895,6 +895,119 @@ fn bm_msi_mod11_mod10() {
     );
 }
 
+// --- round-1 review fixes ---------------------------------------------------
+
+/// `^B8,30`: the comma glued to the symbology digit is a separator, not a
+/// dropped byte - "30" must parse as the height with orientation falling
+/// back to the current ^FW (N), with zero diagnostics.
+#[test]
+fn digit_command_leading_comma_keeps_height() {
+    let (label, diags) = common::parse_one(b"^XA^B8,30^FD9638507^FS^XZ");
+    assert!(diags.items.is_empty(), "expected no warnings: {diags:?}");
+    let f = assert_single_barcode(&label);
+    assert_eq!((f.rotation, f.height), (Rotation::R0, 30));
+}
+
+/// Same bug shape for a ratio symbology: `^B3,Y,20,N,N` - the "Y" (check
+/// digit) is glued to the digit, the rest are real parameter segments.
+#[test]
+fn digit_command_leading_comma_variant_b3() {
+    let (label, diags) = common::parse_one(b"^XA^BY1,3,10^B3,Y,20,N,N^FDABC123^FS^XZ");
+    assert!(diags.items.is_empty(), "expected no warnings: {diags:?}");
+    let f = assert_single_barcode(&label);
+    assert_eq!((f.rotation, f.height), (Rotation::R0, 20));
+    assert_eq!(f.line, b'N', "f=N after the glued check-digit segment");
+}
+
+/// ^B5 Planet (USPS): "0123" -> frame + four digits + frame, each digit
+/// five bars (two tall, three short) at one-module pitch, tall bars fill
+/// both rows of the two-row module grid, short bars sit in the bottom
+/// row. Hand-computed from the USPS PLANET pattern table:
+///
+///   0=11000 1=00011 2=00101 3=00110
+///
+/// Columns (38 modules wide): frame(0); 0->[1,3]tall [5,7,9]short;
+/// 1->[10,12,14]short [16,18]tall; 2->[19,21,23]short [25,27]tall;
+/// 3->[28,30,36]short [32,34]tall; frame(37).
+///
+/// Row bits (MSB-first bytes, stride 5):
+///   bottom row (all bars):   {1,3,5,7,9,10,12,14,16,18,19,21,23,25,27,28,30,32,34,36,37}
+///   = D5 6A B5 5A AC
+///   top row (tall only):     {0,1,3,16,18,23,27,32,34,37}
+///   = D0 00 A1 10 A4
+#[test]
+fn b5_planet_module_grid() {
+    let (label, diags) = common::parse_one(b"^XA^BY1,3,30^B5N,30^FD0123^FS^XZ");
+    assert!(diags.items.is_empty(), "expected no warnings: {diags:?}");
+    let f = assert_single_barcode(&label);
+    assert_eq!(f.symbology, b'5');
+    // ^B5's f defaults to N (the only 1D symbology that does).
+    assert_eq!(f.line, b'N');
+    assert_eq!(
+        &barcode_field(f),
+        &Pattern::Modules {
+            width: 38,
+            height: 2,
+            data: vec![0xD5, 0x6A, 0xB5, 0x5A, 0xAC, 0xD0, 0x00, 0xA1, 0x10, 0xA4],
+        },
+    );
+}
+
+/// ^BY module and ratio are hostile u32s (parse caps w at 9999, so the
+/// IR is hand-built): wide = trunc(w*r)/10 must use 64-bit math and
+/// saturate - never panic on a debug build. narrow = module = u32::MAX
+/// fits; wide = trunc(2^32-1 * 3.0) ~ 1.29e10 saturates to u32::MAX.
+#[test]
+fn b3_hostile_ratio_module_saturates() {
+    let f = BarcodeField {
+        x: 0,
+        y: 0,
+        symbology: b'3',
+        data: "B".into(),
+        module: u32::MAX,
+        ratio: 30,
+        height: 60,
+        line: b'N',
+        interpret: false,
+        ucc: false,
+        model: b'N',
+        check: b'N',
+        start: b'A',
+        stop: b'A',
+        font: [b'A', b' '],
+        font_height: 9,
+        font_width: 5,
+        font_name: None,
+        rotation: Rotation::R0,
+    };
+    let Pattern::Bars(bars) = barcode_field(&f) else { panic!("expected bars") };
+    assert!(!bars.is_empty());
+    assert!(
+        bars.iter().all(|b| b.width == u32::MAX),
+        "every run saturates: {:?}",
+        bars.iter().map(|b| b.width).collect::<Vec<_>>(),
+    );
+}
+
+/// Code 93 DEL (0x7F) expands to exactly ONE (%)T pair - the regression
+/// doubled it to two pairs. A Code 93 character is NINE modules (three
+/// bars + three spaces summing to 9, e.g. * = 111141); the DEL-only
+/// symbol is * + (%,T) + C + K + * + termination bar = 6 characters at
+/// 9 modules + 1 = 55 modules; a doubled DEL would be 73. C = 23, K = 25
+/// (43-46-shift values; they don't affect the module count).
+#[test]
+fn ba_code93_del_is_one_pair() {
+    let (label, diags) = common::parse_one(b"^XA^BY1,3,20^BAN,20^FD\x7f^FS^XZ");
+    assert!(diags.items.is_empty(), "expected no warnings: {diags:?}");
+    let f = assert_single_barcode(&label);
+    let Pattern::Bars(bars) = barcode_field(f) else { panic!("expected bars") };
+    assert_eq!(
+        bars.iter().map(|b| b.width).sum::<u32>(),
+        55,
+        "2 borders + 4 chars = 6\u{00D7}9 + 1 termination bar = 55 (doubled DEL = 73)",
+    );
+}
+
 // --- invalid data: parse warning + skipped field, never a panic ------------
 
 /// Every symbology degrades invalid data to an empty pattern at render and
@@ -921,6 +1034,14 @@ fn invalid_1d_barcode_data_warns_and_skips() {
     // ^B9 input with no valid zero-suppression (mfr not ending in 0 and a
     // product above 00009 breaks every case).
     let (label, diags) = common::parse_one(b"^XA^B9N,20^FD1200056789^FS^XZ");
+    assert!(
+        diags.items.iter().any(|d| d.severity == Severity::Warning),
+        "expected warning, got {diags:?}",
+    );
+    assert!(matches!(barcode_field(assert_single_barcode(&label)), Pattern::Bars(b) if b.is_empty()));
+
+    // ^B5 rejects non-digits (Planet is numeric-only).
+    let (label, diags) = common::parse_one(b"^XA^B5N,20^FD12A4^FS^XZ");
     assert!(
         diags.items.iter().any(|d| d.severity == Severity::Warning),
         "expected warning, got {diags:?}",

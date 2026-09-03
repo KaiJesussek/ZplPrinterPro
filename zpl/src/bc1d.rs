@@ -167,7 +167,9 @@ const C93: [[u8; 6]; 48] = [
 /// Full-ASCII Code 93 (the guide's ^BA tables): each byte 0..=127 expands
 /// to one or two VALUES drawn from the 47-symbol set (43-46 are the four
 /// shift symbols). Same expansion as Code 39's except the four special
-/// shifts replace $/%/+/. DEL = (%)T (%)T (second entry when b == 127).
+/// shifts replace $/%/+/. DEL = a single (%)T pair (the AIM table allows
+/// (%)T / (%)X / (%)Y / (%)Z interchangeably - one pair per DEL, unlike
+/// Code 39's doubled %T%T).
 #[rustfmt::skip]
 const EXT93: [[u8; 2]; 128] = [
     [44,30],[43,10],[43,11],[43,12],[43,13],[43,14],[43,15],[43,16],
@@ -269,6 +271,23 @@ const MSIT: [[u8; 8]; 10] = [
     [2,1,1,2,1,2,2,1], // 9
 ];
 
+/// Planet Code digit patterns (USPS PLANET spec - the ^B5 symbology):
+/// five bars per digit, two tall (1) and three short (0), at one-module
+/// pitch. The symbol is framed by tall bars at both ends.
+#[rustfmt::skip]
+const PLANET: [[u8; 5]; 10] = [
+    [1,1,0,0,0], // 0
+    [0,0,0,1,1], // 1
+    [0,0,1,0,1], // 2
+    [0,0,1,1,0], // 3
+    [0,1,0,0,1], // 4
+    [0,1,0,1,0], // 5
+    [0,1,1,0,0], // 6
+    [1,0,0,0,1], // 7
+    [1,0,0,1,0], // 8
+    [1,0,1,0,0], // 9
+];
+
 /// GS1 element tables (ISO/IEC 15420): seven modules per digit.
 #[rustfmt::skip]
 const L_BITS: [&str; 10] = [
@@ -303,9 +322,11 @@ const UPCE_PARITY: [&[u8; 6]; 10] = [
 // --- shared helpers --------------------------------------------------------
 
 /// The ^BY wide element in dots: trunc(w*r)/w - guide Table 6 (p.148).
-/// The table's fixed-ratio symbologies never reach this.
+/// The table's fixed-ratio symbologies never reach this. 64-bit math with
+/// saturation keeps hostile hand-built IR (u32::MAX modules/ratios) from
+/// panicking in debug builds.
 fn wide_dots(module: u32, ratio: u32) -> u32 {
-    module * ratio / 10
+    sat_dots((module as u64) * (ratio as u64) / 10)
 }
 
 /// Scale fixed-ratio element widths (modules) by the module size.
@@ -313,9 +334,13 @@ fn bars_fixed(runs: &[u32], module: u32) -> Pattern {
     Pattern::Bars(
         runs.iter()
             .enumerate()
-            .map(|(i, &r)| Bar { width: r * module, black: i % 2 == 0 })
+            .map(|(i, &r)| Bar { width: sat_dots((r as u64) * (module as u64)), black: i % 2 == 0 })
             .collect(),
     )
+}
+
+fn sat_dots(v: u64) -> u32 {
+    u32::try_from(v).unwrap_or(u32::MAX)
 }
 
 /// Scale wide/narrow runs: 1 -> narrow dots, 2 -> wide dots.
@@ -587,6 +612,7 @@ pub(crate) fn data_error(symbology: u8, check: u8, data: &[u8]) -> Option<String
         }),
         b'E' => check_digits(data, "EAN-13 (^BE)"),
         b'U' => check_digits(data, "UPC-A (^BU)"),
+        b'5' => check_digits(data, "Planet Code (^B5)"),
         _ => Ok(()),
     };
     err.err()
@@ -666,9 +692,6 @@ fn expand93(data: &[u8]) -> Result<Vec<u8>, String> {
             vals.push(p[0]);
             if p[1] != 0 {
                 vals.push(p[1]);
-            }
-            if b == 127 {
-                vals.extend_from_slice(&[44, 29]); // DEL = (%)T (%)T
             }
         } else {
             return Err(format!(
@@ -839,6 +862,42 @@ pub(crate) fn upce(data: &[u8], module: u32) -> Result<Pattern, String> {
     }
     bits.push_str("010101");
     Ok(bars_fixed(&bit_runs(&bits), module))
+}
+
+/// Encode Planet Code (USPS; guide ^B5 p.78): digits 0-9 only. Each
+/// digit is five bars (two tall, three short) at one-module pitch with
+/// one-module spaces; tall frame bars open and close the symbol. The
+/// tall/short bar heights ARE the data, so the encoder returns
+/// `Pattern::Modules` - a two-row cell grid (tall = both rows, short =
+/// the bottom row) that the Task 14 drawer paints module-by-module with
+/// no changes. The `^BY` module is the cell size; the field's `h` maps to
+/// the grid height only in the h = 2xmodule case (documented limitation
+/// of the fixed module grid).
+pub(crate) fn planet(data: &[u8], _module: u32) -> Result<Pattern, String> {
+    check_digits(data, "Planet Code (^B5)")?;
+    if data.is_empty() {
+        return Err("Planet Code (^B5): field data is required".into());
+    }
+    let width = 1 + data.len() * 9 + 1; // frame + digits + frame, modules
+    let stride = (width + 7) / 8;
+    let mut grid = vec![0u8; stride * 2];
+    // Short bars sit in the bottom row, tall bars fill both rows.
+    for (i, &d) in data.iter().enumerate() {
+        let bars = PLANET[(d - b'0') as usize];
+        let base = 1 + i * 9;
+        for (b, &tall) in bars.iter().enumerate() {
+            let col = base + b * 2;
+            grid[col / 8] |= 0x80 >> (col % 8);
+            if tall == 1 {
+                grid[stride + col / 8] |= 0x80 >> (col % 8);
+            }
+        }
+    }
+    grid[0] |= 0x80; // leading frame bar
+    grid[stride] |= 0x80;
+    grid[(width - 1) / 8] |= 0x80 >> ((width - 1) % 8);
+    grid[stride + (width - 1) / 8] |= 0x80 >> ((width - 1) % 8);
+    Ok(Pattern::Modules { width: width as u32, height: 2, data: grid })
 }
 
 /// Zero-suppression (GS1 Table 5, forward direction; the guide's p.86

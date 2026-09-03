@@ -52,6 +52,7 @@ pub fn encode(
         b'1' => bc1d::code11(data, module, ratio),
         b'2' => bc1d::i2of5(data, module, ratio),
         b'3' => bc1d::code39(data, module, ratio),
+        b'5' => bc1d::planet(data, module),
         b'8' => bc1d::ean8(data, module),
         b'9' => bc1d::upce(data, module),
         b'A' => bc1d::code93(data, module),
@@ -309,10 +310,11 @@ pub(crate) fn code_128(ctx: &mut ParseContext, params: &[u8]) {
 struct Spec {
     /// Check-digit parameter position and kind.
     check: Option<(Check, usize)>,
-    /// Height position and maximum (^BU caps at 9999, the rest at 32000).
+    /// Height position and maximum (^B5/^BU cap at 9999, the rest at 32000).
     height: (usize, u32),
-    /// `f` (interpretation line below) position.
-    line: usize,
+    /// `f` (interpretation line below) position and default (^B5 defaults
+    /// to N; the other 1D symbologies default to Y).
+    line: (usize, u8),
     /// `g` (line above) position.
     above: usize,
     /// ^BK k/l start/stop positions.
@@ -338,16 +340,17 @@ enum Check {
     PrintDigit(u8),
 }
 
-const SPEC_B1: Spec = Spec { check: Some((Check::DigitCount, 1)), height: (2, 32000), line: 3, above: 4, start: None, stop: None };
-const SPEC_B2: Spec = Spec { check: Some((Check::Ucc, 4)), height: (1, 32000), line: 2, above: 3, start: None, stop: None };
-const SPEC_B3: Spec = Spec { check: Some((Check::Mod43, 1)), height: (2, 32000), line: 3, above: 4, start: None, stop: None };
-const SPEC_B8: Spec = Spec { check: None, height: (1, 32000), line: 2, above: 3, start: None, stop: None };
-const SPEC_B9: Spec = Spec { check: Some((Check::PrintDigit(b'Y'), 4)), height: (1, 32000), line: 2, above: 3, start: None, stop: None };
-const SPEC_BA: Spec = Spec { check: Some((Check::PrintDigit(b'N'), 4)), height: (1, 32000), line: 2, above: 3, start: None, stop: None };
-const SPEC_BK: Spec = Spec { check: Some((Check::FixedN, 1)), height: (2, 32000), line: 3, above: 4, start: Some(5), stop: Some(6) };
-const SPEC_BE: Spec = Spec { check: None, height: (1, 32000), line: 2, above: 3, start: None, stop: None };
-const SPEC_BU: Spec = Spec { check: Some((Check::PrintDigit(b'Y'), 4)), height: (1, 9999), line: 2, above: 3, start: None, stop: None };
-const SPEC_BM: Spec = Spec { check: Some((Check::Mode, 1)), height: (2, 32000), line: 3, above: 4, start: None, stop: None };
+const SPEC_B1: Spec = Spec { check: Some((Check::DigitCount, 1)), height: (2, 32000), line: (3, b'Y'), above: 4, start: None, stop: None };
+const SPEC_B2: Spec = Spec { check: Some((Check::Ucc, 4)), height: (1, 32000), line: (2, b'Y'), above: 3, start: None, stop: None };
+const SPEC_B3: Spec = Spec { check: Some((Check::Mod43, 1)), height: (2, 32000), line: (3, b'Y'), above: 4, start: None, stop: None };
+const SPEC_B5: Spec = Spec { check: None, height: (1, 9999), line: (2, b'N'), above: 3, start: None, stop: None };
+const SPEC_B8: Spec = Spec { check: None, height: (1, 32000), line: (2, b'Y'), above: 3, start: None, stop: None };
+const SPEC_B9: Spec = Spec { check: Some((Check::PrintDigit(b'Y'), 4)), height: (1, 32000), line: (2, b'Y'), above: 3, start: None, stop: None };
+const SPEC_BA: Spec = Spec { check: Some((Check::PrintDigit(b'N'), 4)), height: (1, 32000), line: (2, b'Y'), above: 3, start: None, stop: None };
+const SPEC_BK: Spec = Spec { check: Some((Check::FixedN, 1)), height: (2, 32000), line: (3, b'Y'), above: 4, start: Some(5), stop: Some(6) };
+const SPEC_BE: Spec = Spec { check: None, height: (1, 32000), line: (2, b'Y'), above: 3, start: None, stop: None };
+const SPEC_BU: Spec = Spec { check: Some((Check::PrintDigit(b'Y'), 4)), height: (1, 9999), line: (2, b'Y'), above: 3, start: None, stop: None };
+const SPEC_BM: Spec = Spec { check: Some((Check::Mode, 1)), height: (2, 32000), line: (3, b'Y'), above: 4, start: None, stop: None };
 
 /// ^B1..^B9: the symbology digit is the first parameter segment.
 pub(crate) fn barcode_digit(ctx: &mut ParseContext, params: &[u8]) {
@@ -364,27 +367,21 @@ pub(crate) fn barcode_digit(ctx: &mut ParseContext, params: &[u8]) {
     };
     // The symbology's own parameters start after the digit. The digit is
     // glued to whatever follows ("^B2N,20" -> "2N,20"), so only the first
-    // byte is consumed; a comma after the digit separates it from the
-    // rest ("^B3,20" -> "3,20").
-    let rest = if params.len() > 1 {
-        if params[1] == b',' {
-            &params[2..]
-        } else {
-            &params[1..]
-        }
-    } else {
-        &[]
-    };
+    // byte is consumed; a comma after the digit stays in the parameter
+    // list ("^B8,30" -> "8,30" -> ",30" -> the empty orientation segment
+    // falls back to the current ^FW).
+    let rest = if params.len() > 1 { &params[1..] } else { &[] };
     match sym {
         b'1' => barcode_1d(ctx, rest, "B1", b'1', SPEC_B1),
         b'2' => barcode_1d(ctx, rest, "B2", b'2', SPEC_B2),
         b'3' => barcode_1d(ctx, rest, "B3", b'3', SPEC_B3),
+        b'5' => barcode_1d(ctx, rest, "B5", b'5', SPEC_B5),
         b'8' => barcode_1d(ctx, rest, "B8", b'8', SPEC_B8),
         b'9' => barcode_1d(ctx, rest, "B9", b'9', SPEC_B9),
         _ => {
-            // ^B0 Aztec, ^B4 Code 49, ^B5 Planet, ^B6, ^B7 PDF417: 2D or
-            // stacked symbologies outside the 1D scope (Task 16 owns the
-            // 2D mnemonics) - warn and skip, never a silent empty field.
+            // ^B0 Aztec, ^B4 Code 49, ^B6, ^B7 PDF417: 2D or stacked
+            // symbologies outside the 1D scope (Task 16 owns the 2D
+            // mnemonics) - warn and skip, never a silent empty field.
             ctx.diags.push(Diagnostic::warning(
                 "B*",
                 format!(
@@ -420,7 +417,7 @@ fn barcode_1d(ctx: &mut ParseContext, params: &[u8], cmd: &str, symbology: u8, s
         spec.height.1,
         by_height,
     );
-    let line = yn(parts.get(spec.line).copied(), cmd, "interpretation line", ctx.diags, b'Y');
+    let line = yn(parts.get(spec.line.0).copied(), cmd, "interpretation line", ctx.diags, spec.line.1);
     let interpret = yn(parts.get(spec.above).copied(), cmd, "line above code", ctx.diags, b'N') == b'Y';
     let mut check = b'N';
     let mut ucc = false;
