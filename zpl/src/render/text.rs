@@ -51,7 +51,7 @@
 
 use ab_glyph::{point, Font, FontVec, GlyphId};
 
-use crate::fonts::{FontData, FontMetrics};
+use crate::fonts::{baseline_for_cell, cap_units, left_pad, CapModel, FontData, FontMetrics};
 use crate::ir::{Justification, OriginMode, Rotation, TextField};
 use crate::render::draw::fill_rect;
 use crate::render::{Bitmap, RenderOptions};
@@ -74,6 +74,32 @@ fn symbol_for(c: char) -> char {
         'C' => '\u{2122}', // (TM)
         _ => c,
     }
+}
+
+/// The drawn baseline row offset (rows below the cell top) for a field at
+/// `eff` scale in a `cell`-dot cell. Bitmap-style built-ins anchor the cap
+/// to the cell top (`cap_rows - 1`); TrueType (downloaded) fonts keep the
+/// classic ascent fit from the guide baseline. Shared with the barcode
+/// interpret-line painting.
+pub(crate) fn draw_baseline(m: &FontMetrics, eff: f32, cell: u32) -> u32 {
+    match m.cap {
+        CapModel::Ascent => (m.baseline as f32 * eff).round().clamp(1.0, cell as f32) as u32,
+        _ => baseline_for_cell(&m.cap, cell),
+    }
+}
+
+/// Paint scale for a resolved face at a drawn `baseline` offset:
+/// bitmap-style fonts scale so the face's cap is one row taller than the
+/// baseline (the row above the cell top clips, so the ink spans rows
+/// `[0, baseline]` - the bitmap convention where the baseline row is the
+/// cap's last ink row); TrueType keeps the ascender fit. Shared with the
+/// barcode interpret-line painting.
+pub(crate) fn font_scale(face: &FontVec, baseline: u32, m: &FontMetrics) -> f32 {
+    let upem = face.units_per_em().unwrap_or(2048.0);
+    if matches!(m.cap, CapModel::Ascent) {
+        return baseline as f32 * upem / face.ascent_unscaled();
+    }
+    (baseline + 1) as f32 * upem / cap_units(face, upem)
 }
 
 /// Advance of `c` at the reference metrics. The Task 11 deferred minor:
@@ -125,6 +151,11 @@ impl Advancer<'_> {
 struct FieldLayout {
     lines: Vec<Line>,
     cell: u64,
+    /// The glyph draw band in rows. The ruler `cell` is the `^A` height
+    /// (pitch, block height); bitmap-snap fonts can ink past it (font F
+    /// renders 21-row caps in a 10-row cell), so the draw band extends to
+    /// the cap's bottom row rather than clipping the glyph.
+    draw_cell: u64,
     baseline: u64,
     pitch: u64,
     /// Justified line-start offsets (R0 space, relative to the origin).
@@ -222,7 +253,10 @@ fn wrap_words(data: &str, wrap_w: u64, adv: &Advancer<'_>, max_lines: u32) -> Ve
 /// table (the guide's ^FB p.186 "the font width" - a block narrower than
 /// it cannot fit any character).
 pub(crate) fn font_width_dots(t: &TextField, m: &FontMetrics, dpi: u32) -> u64 {
-    if t.font_width > 0 {
+    // Bitmap-style fonts advance proportionally - the `^A` width rule
+    // applies only to TrueType (downloaded) fonts, matching the
+    // reference's native-advance bitmaps.
+    if matches!(m.cap, CapModel::Ascent) && t.font_width > 0 {
         t.font_width as u64
     } else {
         let eff = if t.font_height > 0 {
@@ -246,10 +280,17 @@ fn layout(t: &TextField, m: &FontMetrics, dpi: u32) -> Option<FieldLayout> {
         dpi as f32 / 203.0
     };
     let cell = ((m.cell_height as f32 * eff).round()).clamp(1.0, MAX_GLYPH_CELL as f32) as u64;
-    let baseline = ((m.baseline as f32 * eff).round()).clamp(1.0, cell as f32) as u64;
+    let baseline = draw_baseline(m, eff, cell as u32) as u64;
+    let draw_cell = if matches!(m.cap, CapModel::Ascent) {
+        cell
+    } else {
+        cell.max(baseline.saturating_add(1))
+    };
     let spacing = t.block.as_ref().map(|b| b.line_spacing as u64).unwrap_or(0);
     let pitch = cell + spacing;
-    let fixed = if t.font_width > 0 {
+    // Bitmap-style fonts ignore the `^A` width (they advance at native
+    // proportional widths); TrueType (downloaded) fonts honor it.
+    let fixed = if matches!(m.cap, CapModel::Ascent) && t.font_width > 0 {
         t.font_width as u64
     } else {
         0
@@ -308,6 +349,7 @@ fn layout(t: &TextField, m: &FontMetrics, dpi: u32) -> Option<FieldLayout> {
     Some(FieldLayout {
         lines,
         cell,
+        draw_cell,
         baseline,
         pitch,
         starts,
@@ -335,9 +377,11 @@ fn extents(t: &TextField, l: &FieldLayout) -> (i64, u64, u64) {
         Rotation::R180 => {
             // R180 ^FT mirrors the block so the baseline point sits at the
             // origin: content spans [baseline - cell + 1, last_pitch +
-            // baseline) - BELOW the origin, not above it like R0.
+            // baseline) - BELOW the origin, not above it like R0. The
+            // re-anchor uses the paint baseline (glyphs ink one row below
+            // the metric baseline for bitmap-style fonts).
             let y = if t.origin == OriginMode::Dot {
-                t.y as i64 + l.baseline as i64 - l.cell as i64 + 1
+                t.y as i64 + l.baseline as i64 + 1 - l.cell as i64 + 1
             } else {
                 t.y as i64
             };
@@ -395,10 +439,10 @@ pub(crate) fn paint_text(
         warnings.push("font has unusable vertical metrics; field skipped".to_string());
         return;
     }
-    // Scale so the face's ascent lands on the metric baseline; the drawn
-    // cell therefore approximates the target cell like the committed
-    // metric tables' fitted ppem does.
-    let scale = l.baseline as f32 * upem / ascent;
+    // Scale so the face's cap height spans the cap-anchored baseline
+    // (bitmap-style fonts; downloaded TrueType keeps the ascent fit) -
+    // the drawn cell then matches the reference's top-anchored cap.
+    let scale = font_scale(&face, l.baseline as u32, &fd.metrics);
     let adv = Advancer {
         metrics: &fd.metrics,
         eff: if t.font_height > 0 {
@@ -406,7 +450,7 @@ pub(crate) fn paint_text(
         } else {
             opts.dpi as f32 / 203.0
         },
-        fixed: if t.font_width > 0 {
+        fixed: if matches!(fd.metrics.cap, CapModel::Ascent) && t.font_width > 0 {
             t.font_width as u64
         } else {
             0
@@ -427,6 +471,17 @@ pub(crate) fn paint_text(
     );
     let n_lines = l.lines.len() as i64;
     let last_pitch = (n_lines - 1) * l.pitch as i64;
+    // Bitmap-style fonts draw the glyph's ink one row lower than the
+    // metric baseline (the bitmap "baseline row" is the cap's last ink
+    // row) and anchored at the advance column's left edge (no side
+    // bearing) - the reference bitmaps ink from their cell edge.
+    let paint_baseline = if matches!(fd.metrics.cap, CapModel::Ascent) {
+        l.baseline as i64
+    } else {
+        l.baseline as i64 + 1
+    };
+    let bitmap_ink = !matches!(fd.metrics.cap, CapModel::Ascent);
+    let pad = left_pad(&fd.metrics.cap, l.cell as u32) as i64;
     // The last line's first character advance: the ^FT R270 re-anchor
     // measures its baseline point from it.
     let first_adv: i64 = l
@@ -441,7 +496,21 @@ pub(crate) fn paint_text(
     // (the advance column's last row).
     let ft_adv = first_adv.saturating_sub(1);
     if t.reverse {
-        paint_reverse_box(bmp, ox, oy, &l, t, ft_adv);
+        let paint_baseline = if matches!(fd.metrics.cap, CapModel::Ascent) {
+            l.baseline as i64
+        } else {
+            l.baseline as i64 + 1
+        };
+        paint_reverse_box(
+            bmp,
+            ox,
+            oy,
+            &l,
+            t,
+            ft_adv,
+            l.baseline as i64,
+            paint_baseline,
+        );
     }
 
     let glyph_black = !t.reverse; // reverse: white glyphs on the black box
@@ -465,13 +534,15 @@ pub(crate) fn paint_text(
                     line_top,
                     t.rotation,
                     t.origin,
-                    l.cell as i64,
-                    l.baseline as i64,
+                    l.draw_cell as i64,
+                    paint_baseline,
                     l.box_right as i64,
                     l.block_h as i64,
                     last_pitch,
                     ft_adv,
                     glyph_black,
+                    bitmap_ink,
+                    pad,
                 );
             }
             pen = pen.saturating_add(ch_adv);
@@ -481,6 +552,7 @@ pub(crate) fn paint_text(
 
 /// Fill the field's layout rectangle black (reverse video background),
 /// in rotated space.
+#[allow(clippy::too_many_arguments)]
 fn paint_reverse_box(
     bmp: &mut Bitmap,
     ox: i64,
@@ -488,11 +560,16 @@ fn paint_reverse_box(
     l: &FieldLayout,
     t: &TextField,
     ft_adv: i64,
+    // Metric baseline (R0 block anchor; the reference's `^FT` point is
+    // the cap's last ink row).
+    baseline: i64,
+    // Paint baseline (rotated arms: the glyphs ink one row below the
+    // metric baseline for bitmap-style fonts).
+    paint_baseline: i64,
 ) {
     let box_w = (l.box_right - l.box_left) as i64;
     let n_lines = l.lines.len() as i64;
     let block_w = (n_lines - 1) * l.pitch as i64 + l.cell as i64;
-    let baseline = l.baseline as i64;
     let cell = l.cell as i64;
     let last_pitch = (n_lines - 1) * l.pitch as i64;
     // Box coordinates relative to the origin; the Dot arms use the same
@@ -508,7 +585,7 @@ fn paint_reverse_box(
         ),
         (Rotation::R90, OriginMode::Block) => (0, l.box_left as i64, block_w, box_w),
         (Rotation::R90, OriginMode::Dot) => (
-            baseline - last_pitch - cell + 1,
+            paint_baseline - last_pitch - cell + 1,
             l.box_left as i64,
             block_w,
             box_w,
@@ -516,13 +593,13 @@ fn paint_reverse_box(
         (Rotation::R180, OriginMode::Block) => (0, 0, box_w, l.block_h as i64),
         (Rotation::R180, OriginMode::Dot) => (
             -(l.box_right as i64 - 1),
-            baseline - cell + 1,
+            paint_baseline - cell + 1,
             box_w,
             l.block_h as i64,
         ),
         (Rotation::R270, OriginMode::Block) => (0, l.box_left as i64, block_w, box_w),
         (Rotation::R270, OriginMode::Dot) => (
-            -(baseline + last_pitch),
+            -(paint_baseline + last_pitch),
             l.box_left as i64 - ft_adv,
             block_w,
             box_w,
@@ -624,6 +701,12 @@ fn paint_glyph(
     // advance minus one.
     first_adv: i64,
     black: bool,
+    // Bitmap-style: anchor the ink at the advance column's left edge
+    // (drop the face's side bearing, like the reference bitmaps).
+    bitmap_ink: bool,
+    // Bitmap cell left pad (the reference inks `pad` dots in from the
+    // cell edge).
+    pad: i64,
 ) {
     // The mapping is affine over the cell, so its destination bounds are
     // the min/max of the four corners.
@@ -649,10 +732,30 @@ fn paint_glyph(
     }
 
     // Draw the glyph at the pen: its pixels are pen-absolute, so the
-    // cell column is `pixel - cell_left` for every character.
-    let glyph = gid.with_scale_and_position(scale, point(cell_left as f32, 0.0));
-    let Some(outlined) = face.outline_glyph(glyph) else {
-        return;
+    // cell column is `pixel - cell_left` for every character. Bitmap-style
+    // text positions the outline so its ink starts exactly at the pen
+    // (the reference bitmaps ink from their cell edge; the face's side
+    // bearing would otherwise shift the ink by its fractional column).
+    let outlined = if bitmap_ink {
+        let bare = gid.with_scale_and_position(scale, point(0.0, 0.0));
+        let bx0 = face
+            .outline_glyph(bare)
+            .map(|o| o.px_bounds().min.x.floor())
+            .unwrap_or(0.0);
+        let glyph = gid.with_scale_and_position(
+            scale,
+            point(cell_left as f32 - bx0 + pad as f32, 0.0),
+        );
+        let Some(outlined) = face.outline_glyph(glyph) else {
+            return;
+        };
+        outlined
+    } else {
+        let glyph = gid.with_scale_and_position(scale, point(cell_left as f32, 0.0));
+        let Some(outlined) = face.outline_glyph(glyph) else {
+            return;
+        };
+        outlined
     };
     let b = outlined.px_bounds();
     outlined.draw(|px, py, cov| {
@@ -666,7 +769,7 @@ fn paint_glyph(
         let cell_rel_x = gx_w - cell_left;
         // Display rows increase downward from the baseline (`gy_up` is the
         // baseline-relative pixel row), so the row from the cell top is
-        // baseline + gy_up (the fitted ascent == baseline reaches the top).
+        // baseline + gy_up (the cap-anchored top reaches the cell top).
         let cell_rel_y = baseline + gy_up;
         if cell_rel_x < 0 || cell_rel_x >= pen_adv || cell_rel_y < 0 || cell_rel_y >= cell {
             return;
@@ -693,6 +796,7 @@ mod tests {
             cell_height: 15,
             baseline: 11,
             advances,
+            cap: CapModel::Ratio { percent: 75 },
         }
     }
 
@@ -714,8 +818,48 @@ mod tests {
             cell_height: 15,
             baseline: 11,
             advances: vec![0; 95],
+            cap: CapModel::Ratio { percent: 75 },
         };
         assert_eq!(ref_advance(&empty, 'X'), 0);
+    }
+
+    /// The measured font-0 calibration: baseline row offsets (rows below
+    /// the cell top) for the sweep sizes, `floor(0.75 x cell) - 1` exactly.
+    #[test]
+    fn font0_cap_model_baselines_match_reference_table() {
+        for &(cell, baseline) in &[
+            (10, 6),
+            (14, 9),
+            (16, 11),
+            (20, 14),
+            (24, 17),
+            (30, 21),
+            (40, 29),
+            (60, 44),
+            (80, 59),
+        ] {
+            let m = FontMetrics {
+                cell_height: 15,
+                baseline: 11,
+                advances: vec![0; 95],
+                cap: CapModel::Ratio { percent: 75 },
+            };
+            assert_eq!(
+                baseline_for_cell(&m.cap, cell),
+                baseline,
+                "font 0 baseline offset at cell {cell}"
+            );
+        }
+        // Font F's bitmap snap: 21 rows per 30-dot band.
+        let f = FontMetrics {
+            cell_height: 26,
+            baseline: 21,
+            advances: vec![0; 95],
+            cap: CapModel::Snap { base: 21, divisor: 30 },
+        };
+        for &(cell, baseline) in &[(10, 20), (30, 20), (31, 41), (40, 41), (80, 62)] {
+            assert_eq!(baseline_for_cell(&f.cap, cell), baseline, "font F at {cell}");
+        }
     }
 
     #[test]

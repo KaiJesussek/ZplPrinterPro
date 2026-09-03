@@ -653,10 +653,12 @@ fn text_paints_black_pixels_in_cell() {
 
 #[test]
 fn fb_wraps_at_width() {
-    // ^FB40 width, ^A0N,20,20 (fixed 20-dot advance): "AA AA" wraps to two
-    // lines of "AA"; with 0 line spacing the second line starts exactly one
-    // cell (20 dots) below the first.
-    let out = render_text(b"^XA^PW64^LL60^FO0,0^FB40,2,0,L^A0N,20,20^FDAA AA^FS^XZ");
+    // ^FB24 width, ^A0N,20,20: "AA AA" wraps to two lines of "AA" at the
+    // word's proportional width (the built-in bitmap-style font ignores the
+    // ^A width parameter - the reference renders it proportionally); with 0
+    // line spacing the second line starts exactly one cell (20 dots) below
+    // the first.
+    let out = render_text(b"^XA^PW64^LL60^FO0,0^FB24,2,0,L^A0N,20,20^FDAA AA^FS^XZ");
     let bmp = &out.bitmap;
     let r1 = first_ink_row(bmp, 0..20).expect("first line has ink");
     let r2 = first_ink_row(bmp, 20..40).expect("second wrapped line has ink");
@@ -665,14 +667,14 @@ fn fb_wraps_at_width() {
         (40..60).all(|y| (0..bmp.width).all(|x| !bmp.get(x, y))),
         "block stays 2 lines"
     );
-    // Each line carries two A glyphs 20 dots apart (fixed ^A width) - the
+    // Each line carries two A glyphs at the proportional A advance - the
     // aggregated two-line scan shows the two column clusters per line.
     let clusters = col_clusters(bmp, 0..40);
     assert_eq!(clusters.len(), 2, "two A columns per line: {clusters:?}");
-    assert_eq!(
-        clusters[1].0 - clusters[0].0,
-        20,
-        "fixed advance spaces the As"
+    let adv = clusters[1].0 - clusters[0].0;
+    assert!(
+        (10..16).contains(&adv),
+        "proportional A-to-A advance spaces the As ({adv} dots)"
     );
 }
 
@@ -784,11 +786,11 @@ fn dot_origin_baseline() {
 }
 
 #[test]
-fn a_width_rule_fixed_advance() {
-    // ^A0N,20,20: w=20 fixes every advance - the second X starts exactly
-    // 20 dots after the first. ^A0N,20,0 keeps the proportional default so
-    // the second X starts at the font's measured advance. (Guide ^A p.60:
-    // w in dots for scalable fonts; 0 = standard font matrix.)
+fn a_width_rule_ignored_for_builtins() {
+    // The reference renders the built-in (bitmap-style) fonts at their
+    // native proportional advances; the ^A width does not fix the advance
+    // (it only scales the scalable default font, and at w == h that scale
+    // is 1). ^A0N,20,20 and ^A0N,20,0 therefore space the X's identically.
     let fixed = render_text(b"^XA^PW64^LL40^FO0,0^A0N,20,20^FDXX^FS^XZ");
     let prop = render_text(b"^XA^PW64^LL40^FO0,0^A0N,20,0^FDXX^FS^XZ");
     let f = col_clusters(&fixed.bitmap, 0..30);
@@ -796,16 +798,16 @@ fn a_width_rule_fixed_advance() {
     assert!(f.len() >= 2 && p.len() >= 2, "two X glyphs in both renders");
     let f_pitch = f[1].0 - f[0].0;
     let p_pitch = p[1].0 - p[0].0;
-    assert_eq!(
-        f_pitch, 20,
-        "fixed width w=20 spaces the glyphs 20 dots apart"
-    );
     let metric = DefaultFontProvider::new()
         .get(&FontSpec::Zebra(b'0'))
         .expect("font 0 served");
     let adv_x = metric.metrics.advances[b'X' as usize - 32] as u32;
     // eff = 20/15 (font 0: cell 15 -> requested height 20).
     let expected = (adv_x as f32 * 20.0 / 15.0).round() as u32;
+    assert_eq!(
+        f_pitch, expected,
+        "w == h does not fix the advance (proportional pitch)"
+    );
     assert_eq!(
         p_pitch, expected,
         "proportional pitch = round(advance * h/cell)"
@@ -882,13 +884,16 @@ fn hostile_text_never_panics() {
 // ---------------------------------------------------------------------------
 
 /// Font-0 cell/baseline in dots for height h (rounded like the renderer).
+/// Font 0's drawn cell and cap-anchored baseline (the metric baseline the
+/// `^FT`/`^FR` box geometry anchors to): cap rows = `floor(0.75 x cell)`, the
+/// baseline row is the cap's bottom row.
 fn font0_hv(h: u32) -> (u32, u32) {
     let m = DefaultFontProvider::new()
         .get(&FontSpec::Zebra(b'0'))
         .expect("font 0 served");
     let eff = h as f32 / m.metrics.cell_height as f32;
     let cell = (m.metrics.cell_height as f32 * eff).round() as u32;
-    let baseline = (m.metrics.baseline as f32 * eff).round() as u32;
+    let baseline = (cell * 75 / 100).saturating_sub(1);
     (cell, baseline)
 }
 
@@ -960,10 +965,12 @@ fn reverse_field_ft_box_rotated() {
     let normal = render_text(src(false).as_bytes());
     let rev = render_text(src(true).as_bytes());
     let (nb, rb) = (&normal.bitmap, &rev.bitmap);
-    // Box in rotated space: x = o.x + baseline - last_pitch - cell + 1 ...,
-    // width = cells (last_pitch + cell); y = [o.y + box_left, o.y + line_w).
+    // Box in rotated space: x = o.x + (paint baseline) - last_pitch -
+    // cell + 1, width = cells (last_pitch + cell); y = [o.y + box_left,
+    // o.y + line_w). The rotated arms anchor to the paint baseline (the
+    // bitmap baseline row is one below the metric baseline).
     let (cell, pitch) = (cell as i64, cell as i64);
-    let x0 = 40i64 + baseline as i64 - pitch - cell + 1;
+    let x0 = 40i64 + baseline as i64 + 1 - pitch - cell + 1;
     let x1 = x0 + pitch + cell;
     for y in 0..90 {
         for x in 0..90 {
@@ -1024,15 +1031,16 @@ fn reverse_field_ft_box_r180() {
     // With o = (40, 40) the box is exactly x [21, 41), y [36, 56) - and
     // every glyph dot (rotated x = -gx, y = baseline-gy) lands inside it.
     let (cell, baseline) = font0_hv(20);
-    assert_eq!((cell, baseline), (20, 15), "fixed 20-dot cell geometry");
+    assert_eq!((cell, baseline), (20, 14), "20-dot cell, cap-anchored baseline");
+    let adv = font0_adv(20, 'X');
     let normal = render_text(b"^XA^PW80^LL80^FW180^FT40,40^A0,20,20^FDX^FS^XZ");
     let rev = render_text(b"^XA^PW80^LL80^FW180^FT40,40^FR^A0,20,20^FDX^FS^XZ");
     let (nb, rb) = (&normal.bitmap, &rev.bitmap);
-    // R180 ^FT box: x = o.x - (box_right-1), y = o.y + baseline - cell + 1;
-    // size box_w x block_h = 20 x cell.
-    let x0 = 40i64 - (20 - 1);
-    let y0 = 40i64 + baseline as i64 - cell as i64 + 1;
-    assert_reverse_box_bounds(nb, rb, x0, y0, x0 + 20, y0 + cell as i64);
+    // R180 ^FT box: x = o.x - (box_right-1), y = o.y + paint baseline -
+    // cell + 1; size box_w x block_h = adv x cell.
+    let x0 = 40i64 - (adv as i64 - 1);
+    let y0 = 40i64 + baseline as i64 + 1 - cell as i64 + 1;
+    assert_reverse_box_bounds(nb, rb, x0, y0, x0 + adv as i64, y0 + cell as i64);
 }
 
 #[test]
@@ -1045,15 +1053,17 @@ fn reverse_field_ft_box_r270() {
     // x [25, 45), y [21, 41) - the glyph's rotated dots
     // (x = gy-baseline, y = -gx) all fall inside.
     let (cell, baseline) = font0_hv(20);
-    assert_eq!((cell, baseline), (20, 15), "fixed 20-dot cell geometry");
+    assert_eq!((cell, baseline), (20, 14), "20-dot cell, cap-anchored baseline");
+    let adv = font0_adv(20, 'X');
     let normal = render_text(b"^XA^PW80^LL80^FW270^FT40,40^A0,20,20^FDX^FS^XZ");
     let rev = render_text(b"^XA^PW80^LL80^FW270^FT40,40^FR^A0,20,20^FDX^FS^XZ");
     let (nb, rb) = (&normal.bitmap, &rev.bitmap);
-    // R270 ^FT box: x = o.x - (baseline + last_pitch), y = o.y + box_left
-    // - (first_adv - 1); size (last_pitch + cell) x box_w = cell x 20.
-    let x0 = 40i64 - baseline as i64;
-    let y0 = 40i64 - (20 - 1);
-    assert_reverse_box_bounds(nb, rb, x0, y0, x0 + cell as i64, y0 + 20);
+    // R270 ^FT box: x = o.x - (paint baseline + last_pitch), y = o.y +
+    // box_left - (first_adv - 1); size (last_pitch + cell) x box_w =
+    // cell x adv.
+    let x0 = 40i64 - (baseline as i64 + 1);
+    let y0 = 40i64 - (adv as i64 - 1);
+    assert_reverse_box_bounds(nb, rb, x0, y0, x0 + cell as i64, y0 + adv as i64);
 }
 
 #[test]
@@ -1313,19 +1323,22 @@ fn barcode_interpret_line_below_bars() {
         out.bitmap.get(20, 0) && out.bitmap.get(23, 59),
         "bars span 0..60"
     );
-    // First line ink appears exactly below the bars: rows 60..69.
+    // First line ink appears exactly below the bars: the font-A cap is
+    // 15 rows in the 9-dot line cell (the reference's overflow bitmap),
+    // rows 60..74.
     assert!(
-        (60..69).any(|y| (0..40).any(|x| out.bitmap.get(x, y))),
-        "line ink sits below the bar height, in rows 60..69"
+        (60..74).any(|y| (0..40).any(|x| out.bitmap.get(x, y))),
+        "line ink sits below the bar height, in rows 60..74"
     );
-    // Nothing beneath the line cell and nothing right of its advance box.
+    // Nothing beneath the line's ink and nothing right of its proportional
+    // advance box (8 digits at ~13-dot advances).
     assert!(
-        !(0..240).any(|x| (69..120).any(|y| out.bitmap.get(x, y))),
+        !(0..240).any(|x| (75..120).any(|y| out.bitmap.get(x, y))),
         "no ink below the interpretation line"
     );
     assert!(
-        !(40..240).any(|x| (60..69).any(|y| out.bitmap.get(x, y))),
-        "line confined to 8 characters \u{00D7} 5-dot advance"
+        !(120..240).any(|x| (60..75).any(|y| out.bitmap.get(x, y))),
+        "line confined to 8 characters \u{00D7} ~13-dot proportional advance"
     );
 }
 
@@ -1402,15 +1415,16 @@ fn barcode_poi_keeps_both_interpret_lines() {
     let bmp = &out.bitmap;
     assert!(bmp.get(92, 202) && bmp.get(95, 261), "bars flipped intact");
     assert!(
-        !(72..92).any(|x| (202..262).any(|y| bmp.get(x, y))),
-        "bar quiet zone inside the flipped field"
+        !(72..92).any(|x| (208..262).any(|y| bmp.get(x, y))),
+        "bar quiet zone inside the flipped field (the above line's 15-row
+         glyphs overflow into the bar's first rows, like the reference)"
     );
     assert!(
-        (193..202).any(|y| (72..112).any(|x| bmp.get(x, y))),
-        "above line survived the flip"
+        (193..207).any(|y| (72..130).any(|x| bmp.get(x, y))),
+        "above line survived the flip (15-row cap in the 9-row cell)"
     );
     assert!(
-        (262..271).any(|y| (72..112).any(|x| bmp.get(x, y))),
+        (262..276).any(|y| (72..130).any(|x| bmp.get(x, y))),
         "below line survived the flip"
     );
     assert!(
@@ -1418,7 +1432,7 @@ fn barcode_poi_keeps_both_interpret_lines() {
         "nothing above the flipped field"
     );
     assert!(
-        !(271..300).any(|y| (0..300).any(|x| bmp.get(x, y))),
+        !(277..300).any(|y| (0..300).any(|x| bmp.get(x, y))),
         "nothing below the flipped field"
     );
 }

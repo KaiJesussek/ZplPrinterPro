@@ -48,9 +48,9 @@
 use ab_glyph::{point, Font, FontVec, GlyphId};
 
 use crate::bc::Pattern;
-use crate::fonts::FontData;
+use crate::fonts::{left_pad, CapModel, FontData};
 use crate::ir::{BarcodeField, Rotation};
-use crate::render::text::{ref_advance, MAX_GLYPH_CELL};
+use crate::render::text::{draw_baseline, font_scale, ref_advance, MAX_GLYPH_CELL};
 use crate::render::{font_spec, place, resolve_font, Bitmap, RenderOptions};
 
 /// Content-coordinate ceiling: any dot beyond this can never intersect the
@@ -100,9 +100,14 @@ fn line_width(b: &BarcodeField, fd: &FontData, dpi: u32) -> u32 {
     } else {
         dpi as f32 / 203.0
     };
+    let fixed = if matches!(fd.metrics.cap, CapModel::Ascent) {
+        b.font_width > 0
+    } else {
+        false
+    };
     let mut total: u128 = 0;
     for ch in b.data.chars() {
-        let adv = if b.font_width > 0 {
+        let adv = if fixed {
             b.font_width as u128
         } else {
             (ref_advance(&fd.metrics, ch) as f32 * eff).round().max(0.0) as u128
@@ -299,10 +304,24 @@ fn paint_line(
     };
     let cell =
         ((fd.metrics.cell_height as f32 * eff).round()).clamp(1.0, MAX_GLYPH_CELL as f32) as u32;
-    let baseline = ((fd.metrics.baseline as f32 * eff).round()).clamp(1.0, cell as f32) as u32;
-    // Same fit as text.rs: the face's ascent lands on the metric baseline.
-    let scale = baseline as f32 * upem / ascent;
-    let fixed = if b.font_width > 0 {
+    let baseline = draw_baseline(&fd.metrics, eff, cell);
+    // Bitmap-snap fonts can ink past the cell (font A renders 15-row
+    // digits in a 9-row line); extend the draw band to the cap, like
+    // text.rs's `draw_cell`.
+    let draw_cell = if matches!(fd.metrics.cap, CapModel::Ascent) {
+        cell
+    } else {
+        cell.max(baseline.saturating_add(1))
+    };
+    // Same fit as text.rs: cap-anchored for bitmap-style fonts, the
+    // ascender fit for TrueType.
+    let scale = font_scale(&face, baseline, &fd.metrics);
+    // Bitmap-style fonts ink one row below the metric baseline with no
+    // side bearing (mirror of text.rs's paint).
+    let bitmap = !matches!(fd.metrics.cap, CapModel::Ascent);
+    let paint_baseline = if bitmap { baseline + 1 } else { baseline };
+    let pad = left_pad(&fd.metrics.cap, cell) as f32;
+    let fixed = if matches!(fd.metrics.cap, CapModel::Ascent) && b.font_width > 0 {
         Some(b.font_width as i64)
     } else {
         None
@@ -325,9 +344,22 @@ fn paint_line(
             let gid = face.glyph_id(ch);
             // Skip glyphs whose cell misses the canvas before rasterizing.
             let on_canvas =
-                dest_bounds(bmp, ox, oy, b.rotation, fw, fh, u0, y_top, adv, cell as i64).is_some();
+                dest_bounds(bmp, ox, oy, b.rotation, fw, fh, u0, y_top, adv, draw_cell as i64)
+                    .is_some();
             if gid != GlyphId(0) && on_canvas {
-                let glyph = gid.with_scale_and_position(scale, point(u0 as f32, 0.0));
+                // Bitmap-style interpret lines ink from the cell edge:
+                // position the outline so its ink starts at `u0`.
+                let u0f = if bitmap {
+                    let bare = gid.with_scale_and_position(scale, point(0.0, 0.0));
+                    let bx0 = face
+                        .outline_glyph(bare)
+                        .map(|o| o.px_bounds().min.x.floor())
+                        .unwrap_or(0.0);
+                    u0 as f32 - bx0 + pad
+                } else {
+                    u0 as f32
+                };
+                let glyph = gid.with_scale_and_position(scale, point(u0f, 0.0));
                 if let Some(outlined) = face.outline_glyph(glyph) {
                     let pbox = outlined.px_bounds();
                     outlined.draw(|px, py, cov| {
@@ -336,8 +368,8 @@ fn paint_line(
                         }
                         // Mirror of text.rs's pixels: baseline-relative, y up.
                         let gx = pbox.min.x.floor() as i64 + px as i64 - u0;
-                        let gy = baseline as i64 + pbox.min.y.floor() as i64 + py as i64;
-                        if gx < 0 || gx >= adv || gy < 0 || gy >= cell as i64 {
+                        let gy = paint_baseline as i64 + pbox.min.y.floor() as i64 + py as i64;
+                        if gx < 0 || gx >= adv || gy < 0 || gy >= draw_cell as i64 {
                             return;
                         }
                         let (bx, by) = rotate(u0 + gx, y_top + gy, b.rotation, fw, fh);

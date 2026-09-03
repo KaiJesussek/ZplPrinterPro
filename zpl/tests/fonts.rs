@@ -2,7 +2,7 @@
 //! coverage, guide-anchored metric tables, printable-ASCII advances, and
 //! the `^A@` downloaded-font resolution seam through `Memory.fonts`.
 
-use zpl::fonts::{font_data_from_ttf, DefaultFontProvider, FontProvider, FontSpec};
+use zpl::fonts::{font_data_from_ttf, CapModel, DefaultFontProvider, FontProvider, FontSpec};
 use zpl::render::RenderOptions;
 use zpl::state::Memory;
 
@@ -13,23 +13,23 @@ mod common;
 /// `LICENSE-DejaVu.txt`). Tests never fetch it.
 const FIXTURE_TTF: &[u8] = include_bytes!("fixtures/DejaVuSansCondensed.ttf");
 
-/// Guide-anchored (letter, cell height, baseline) triplets: cell heights
-/// are Table 31 "8 dot/mm (203 dpi) Printhead" character matrices, baselines
-/// are Table 29 "Intercharacter Gap and Baseline Parameters" (both ZPL II
-/// Programming Guide, "Fonts and Barcodes"). Font 0's baseline is the
-/// guide's "3 x HEIGHT/4" = 3*15/4 = 11.25, rounded to 11. This duplicates
-/// the tables in `zpl/src/fonts.rs`; a change to either side is a review
-/// event.
-const GUIDE_CELLS: &[(u8, u32, u32)] = &[
-    (b'A', 9, 7),
-    (b'B', 11, 11),
-    (b'C', 18, 14),
-    (b'D', 18, 14),
-    (b'E', 28, 23),
-    (b'F', 26, 21),
-    (b'G', 60, 48),
-    (b'H', 21, 21),
-    (b'0', 15, 11),
+/// Guide-anchored (letter, cell height, baseline, cap model) entries: cell
+/// heights are Table 31 "8 dot/mm (203 dpi) Printhead" character matrices,
+/// baselines are Table 29 "Intercharacter Gap and Baseline Parameters"
+/// (both ZPL II Programming Guide, "Fonts and Barcodes") - the default-cell
+/// cap in rows - and the cap model is the parity-calibrated bitmap rule
+/// (font 0: 75%; font F: 21 rows per 30-dot band). This duplicates the
+/// tables in `zpl/src/fonts.rs`; a change to either side is a review event.
+const GUIDE_CELLS: &[(u8, u32, u32, CapModel)] = &[
+    (b'A', 9, 7, CapModel::Snap { base: 15, divisor: 9 }),
+    (b'B', 11, 11, CapModel::Ratio { percent: 100 }),
+    (b'C', 18, 14, CapModel::Ratio { percent: 78 }),
+    (b'D', 18, 14, CapModel::Ratio { percent: 78 }),
+    (b'E', 28, 23, CapModel::Ratio { percent: 82 }),
+    (b'F', 26, 21, CapModel::Snap { base: 21, divisor: 30 }),
+    (b'G', 60, 48, CapModel::Ratio { percent: 80 }),
+    (b'H', 21, 21, CapModel::Ratio { percent: 100 }),
+    (b'0', 15, 11, CapModel::Ratio { percent: 75 }),
 ];
 
 fn provider() -> DefaultFontProvider {
@@ -41,7 +41,7 @@ fn provider() -> DefaultFontProvider {
 #[test]
 fn builtin_letters_are_served_with_guide_metrics() {
     let p = provider();
-    for &(letter, cell, baseline) in GUIDE_CELLS {
+    for &(letter, cell, baseline, _) in GUIDE_CELLS {
         let fd = p
             .get(&FontSpec::Zebra(letter))
             .unwrap_or_else(|| panic!("font {letter:?} must be served"));
