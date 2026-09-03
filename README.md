@@ -169,7 +169,3 @@ Nothing produced by the reference engine - images, dumps, metrics,
 notes - is committed. `parity/` is gitignored scratch, and the
 committed tests assert our documented values independently of any
 external engine.
-
-## License
-
-Dual-licensed under MIT and Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`).
