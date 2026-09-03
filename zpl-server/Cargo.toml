@@ -14,3 +14,5 @@ tower-http = { version = "0.6", features = ["fs"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+# Task 23 canaries decode the archived PNGs to prove "blank render".
+png = "0.17"
