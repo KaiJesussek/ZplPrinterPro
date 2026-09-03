@@ -323,6 +323,7 @@ pub(crate) fn field_block(ctx: &mut ParseContext, params: &[u8]) {
             max_lines,
             line_spacing,
             justification,
+            fb: true,
         });
     }
 }
@@ -383,6 +384,7 @@ pub(crate) fn text_block(ctx: &mut ParseContext, params: &[u8]) {
             max_lines: 0, // no line cap: height-based truncation has no IR slot
             line_spacing: 0,
             justification: Justification::Left,
+            fb: false, // ^TB has no "narrower than the font does not print" rule
         });
     }
 }

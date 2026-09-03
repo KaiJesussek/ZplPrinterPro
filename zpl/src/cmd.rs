@@ -110,6 +110,12 @@ fn end_format(ctx: &mut ParseContext, _params: &[u8]) {
     check_malformed_utf8(ctx);
     expand_serials(ctx);
     if let Some(label) = ctx.state.end_format(&ctx.mode) {
+        // A ^IS pending from this format (guide p.249: save the format as
+        // a graphic image): render exactly the fields that were closed at
+        // the ^IS (serial expansion already applied) and store the bitmap.
+        if let Some(save) = ctx.image_save.take() {
+            memory::fulfill_image_save(ctx, &label, save);
+        }
         ctx.pending_label = Some(label);
     }
 }
@@ -118,11 +124,13 @@ fn end_format(ctx: &mut ParseContext, _params: &[u8]) {
 /// at parse time; counters live on [`ParseContext`] so the server can
 /// persist them, Task 21). Each serialized draft's data gets its counter's
 /// current value substituted for its indexed portion (the rightmost <=12
-/// integers), then the counter advances by step x `copies` - v1 renders
-/// the first copy's value
+/// integers), then the counter advances by step x the serials this batch
+/// prints - v1 renders the first copy's value
 /// on every copy (`Label.copies` carries multiplicity) while keeping the
-/// counter trajectory of a real printer, which increments once per printed
-/// label. Counters are keyed by the field's ordinal among serialized
+/// counter trajectory of a real printer: one advance per printed label,
+/// or per r+1 labels under ^PQ r replicates (guide p.341: incrementing
+/// takes place "when all replicates for each serial number have been
+/// printed"). Counters are keyed by the field's ordinal among serialized
 /// fields in the format; the same ordinal in a later format continues the
 /// counter (real printers reset transient formats to v on re-send - a
 /// documented v1 simplification; stored/resident formats keep running).
@@ -148,7 +156,17 @@ fn expand_serials(ctx: &mut ParseContext) {
                 .unwrap_or(0)
         });
         draft.data = substitute_run(&draft.data, *counter, zeros);
-        let advance = step.saturating_mul(ctx.mode.copies as i64);
+        // One counter advance per serial printed: with ^PQ r replicates,
+        // each serial prints r+1 times (guide p.324/p.341), so the number
+        // of serials over this batch is copies / (r+1). Integer division
+        // leaves a batch ending mid-replicate unadvanced - the guide's
+        // "when all replicates ... have been printed" has no rule for the
+        // partial case (documented v1 choice).
+        let serials = ctx
+            .mode
+            .copies
+            .saturating_div(ctx.mode.replicates.saturating_add(1));
+        let advance = step.saturating_mul(serials as i64);
         *counter = counter.saturating_add(advance);
         // Saturated, never wrapped: far beyond the guide's 100-150-field
         // limit, later serials would share a counter instead of panicking.
@@ -1804,4 +1822,3 @@ mod tests {
         }
     }
 }
-

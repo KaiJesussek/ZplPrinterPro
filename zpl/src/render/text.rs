@@ -30,8 +30,10 @@
 //!   (the reference hyphenates; this renderer does not - `ponytail:` add
 //!   the hyphen pass when the block formatter grows one), `max_lines`
 //!   caps (0 = unlimited), `line_spacing` 0 = font height, justification
-//!   per line. `^FB` width 0: "If the value ... is not specified, the
-//!   text does not print" - the field is skipped with a warning.
+//!   per line. `^FB` p.186: "If the value is less than the font width or
+//!   not specified, the text does not print" - a block narrower than one
+//!   character (width 0 included) is skipped with a warning. `^TB` shares
+//!   the wrap path but has no such rule (its width is 1..label width).
 //! * **Reverse video** - `^FR` p.203: field prints white on black; the
 //!   documented approximation: fill the field's layout rectangle black,
 //!   then paint the glyphs white (`ponytail:` ceiling - real Zebra
@@ -215,8 +217,28 @@ fn wrap_words(data: &str, wrap_w: u64, adv: &Advancer<'_>, max_lines: u32) -> Ve
     lines
 }
 
+/// The width of one character of this font at the field's scale: the fixed
+/// `^A` width when set, else the widest glyph advance in the font's metric
+/// table (the guide's ^FB p.186 "the font width" - a block narrower than
+/// it cannot fit any character).
+pub(crate) fn font_width_dots(t: &TextField, m: &FontMetrics, dpi: u32) -> u64 {
+    if t.font_width > 0 {
+        t.font_width as u64
+    } else {
+        let eff = if t.font_height > 0 {
+            t.font_height as f32 / m.cell_height.max(1) as f32
+        } else {
+            dpi as f32 / 203.0
+        };
+        let widest = m.advances.iter().copied().max().unwrap_or(1).max(1);
+        ((widest as f32 * eff).round()).max(1.0) as u64
+    }
+}
+
 /// Compute the field layout from metrics; `None` when the field must not
-/// print (`^FB` width 0 - the guide's "text does not print" rule).
+/// print (a `^FB` block narrower than one character - guide p.186: "If
+/// the value is less than the font width or not specified, the text does
+/// not print").
 fn layout(t: &TextField, m: &FontMetrics, dpi: u32) -> Option<FieldLayout> {
     let eff = if t.font_height > 0 {
         t.font_height as f32 / m.cell_height.max(1) as f32
@@ -237,11 +259,14 @@ fn layout(t: &TextField, m: &FontMetrics, dpi: u32) -> Option<FieldLayout> {
         eff,
         fixed,
     };
+    let font_w = font_width_dots(t, m, dpi);
     let (wrap_w, justification, max_lines) = match &t.block {
         Some(b) => {
-            if b.width == 0 {
-                // Guide ^FB: "If the value is less than the font width or
-                // not specified, the text does not print."
+            if b.fb && (b.width as u64) < font_w {
+                // Guide ^FB p.186: "If the value is less than the font
+                // width or not specified, the text does not print." A
+                // block narrower than one character prints nothing;
+                // width 0 and an omitted width are the default case.
                 return None;
             }
             (b.width as u64, b.justification.clone(), b.max_lines)
@@ -338,7 +363,8 @@ pub(crate) fn text_footprint(t: &TextField, opts: &RenderOptions) -> Option<(u32
 }
 
 /// Paint a text field into the bitmap. Warnings are appended for fields
-/// that cannot print (block width 0, unusable TTF).
+/// that cannot print (a ^FB block narrower than one character, unusable
+/// TTF).
 pub(crate) fn paint_text(
     bmp: &mut Bitmap,
     t: &TextField,
@@ -347,8 +373,11 @@ pub(crate) fn paint_text(
     warnings: &mut Vec<String>,
 ) {
     let Some(l) = layout(t, &fd.metrics, opts.dpi) else {
-        if t.block.as_ref().is_some_and(|b| b.width == 0) {
-            warnings.push("text block width 0; field not printed (guide ^FB)".to_string());
+        if let Some(b) = t.block.as_ref().filter(|b| b.fb) {
+            warnings.push(format!(
+                "text block width {} smaller than one character; field not printed (guide ^FB)",
+                b.width
+            ));
         }
         return;
     };

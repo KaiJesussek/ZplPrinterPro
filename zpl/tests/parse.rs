@@ -80,6 +80,7 @@ fn fb_block_parses() {
             max_lines: 3,
             line_spacing: 10,
             justification: Justification::Left,
+            fb: true,
         })
     );
 }
@@ -249,6 +250,7 @@ fn malformed_params_warn_not_panic() {
             max_lines: 1,
             line_spacing: 0,
             justification: Justification::Left,
+            fb: true,
         })
     );
     assert_eq!(t.data, "Hello");
@@ -333,10 +335,12 @@ fn omitted_ll_means_auto_label_height() {
 }
 
 #[test]
-fn pq_sets_copies_and_ignores_extra_params() {
-    // Guide format ^PQq,p,r,o,e: only q (1..99,999,999, default 1) matters
-    // yet; the pause/replicate/override/cut params are accepted and ignored
-    // without warning.
+fn pq_sets_copies_and_parses_replicates() {
+    // Guide format ^PQq,p,r,o,e: q (1..99,999,999, default 1) is the
+    // total quantity and sets copies; r (replicates of each serial number,
+    // 0..99,999,999, default 0) is stored on the mode for the ^SN counter
+    // trajectory. The pause/override/cut params (p/o/e) are accepted and
+    // ignored without warning.
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
     let (label, ctx) = common::parse_ctx(b"^XA^PQ5,10,1,Y^XZ", &mut diags, &mut memory);
@@ -348,6 +352,7 @@ fn pq_sets_copies_and_ignores_extra_params() {
     );
     assert_eq!(label.copies, 5);
     assert_eq!(ctx.mode.copies, 5);
+    assert_eq!(ctx.mode.replicates, 1);
 
     // Invalid q warns; the quantity stays at the previous value.
     let mut diags = Diagnostics::default();
@@ -654,6 +659,67 @@ fn sn_counter_tracks_copies_trajectory() {
 }
 
 #[test]
+fn pq_replicates_gate_serial_trajectory() {
+    // Guide ^PQ p.324: r = "replicates of each serial number" - each
+    // distinct serial prints r+1 times, so ^SN counters advance once per
+    // r+1 printed labels (p.341: incrementing happens "when all replicates
+    // for each serial number have been printed"), while q stays the TOTAL
+    // quantity (the guide's example ^PQ50,10,1,Y prints "a total of 50
+    // labels with one replicate of each serial number").
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    // r=1, q=4: 4 labels = 2 serials x 2 replicates -> 2 advances of step 1.
+    let (label, mut ctx) = common::parse_ctx(
+        b"^XA^PQ4,0,1^FO10,10^SN001,1,Y^FS^XZ",
+        &mut diags,
+        &mut memory,
+    );
+    assert_eq!(label.copies, 4, "q is the total quantity, not q \u{00D7} (r+1)");
+    assert_eq!(text_field(&label, 0).data, "001");
+    let mut scanner = zpl::scanner::Scanner::new(b"^XA^FO10,10^SN001,1,Y^FS^XZ");
+    zpl::cmd::parse_stream(&mut scanner, &mut ctx);
+    let label2 = ctx
+        .pending_label
+        .take()
+        .expect("second format never closed");
+    assert_eq!(text_field(&label2, 0).data, "003", "001 + 4/2 serials \u{00D7} 1");
+
+    // r=3, q=8 with step 2: 8 labels = 2 serials x 4 replicates -> 2
+    // advances of step 2.
+    let (label, mut ctx) = common::parse_ctx(
+        b"^XA^PQ8,0,3^FO10,10^SN001,2,Y^FS^XZ",
+        &mut diags,
+        &mut memory,
+    );
+    assert_eq!(label.copies, 8);
+    assert_eq!(ctx.mode.replicates, 3);
+    let mut scanner = zpl::scanner::Scanner::new(b"^XA^FO10,10^SN001,2,Y^FS^XZ");
+    zpl::cmd::parse_stream(&mut scanner, &mut ctx);
+    let label2 = ctx
+        .pending_label
+        .take()
+        .expect("second format never closed");
+    assert_eq!(text_field(&label2, 0).data, "005", "001 + 8/4 serials \u{00D7} 2");
+
+    // r=3, q=2: a 2-label batch never completes a serial's 4 replicates ->
+    // the counter does not advance (documented v1 reading of "when all
+    // replicates ... have been printed").
+    let (_, mut ctx) = common::parse_ctx(
+        b"^XA^PQ2,0,3^FO10,10^SN001,1,Y^FS^XZ",
+        &mut diags,
+        &mut memory,
+    );
+    assert_eq!(ctx.mode.replicates, 3);
+    let mut scanner = zpl::scanner::Scanner::new(b"^XA^FO10,10^SN001,1,Y^FS^XZ");
+    zpl::cmd::parse_stream(&mut scanner, &mut ctx);
+    let label2 = ctx
+        .pending_label
+        .take()
+        .expect("second format never closed");
+    assert_eq!(text_field(&label2, 0).data, "001", "no serial completed");
+}
+
+#[test]
 fn accept_only_set_never_warns_on_valid_params() {
     // Every Task 17 accept-only command fed guide-valid parameters: parsed,
     // zero diagnostics, format completes. ^FX (comment) and the tilde ops
@@ -673,6 +739,7 @@ fn accept_only_set_never_warns_on_valid_params() {
             max_lines: 0, // ^TB truncates by height (no IR slot); no line cap
             line_spacing: 0,
             justification: Justification::Left,
+            fb: false,
         })
     );
 }

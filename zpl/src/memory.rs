@@ -11,9 +11,9 @@ use std::collections::BTreeMap;
 use crate::cmd;
 use crate::diag::Diagnostic;
 use crate::gfxdata::decode_graphic_data;
-use crate::ir::GraphicKind;
+use crate::ir::{GraphicKind, Label};
 use crate::scanner::Scanner;
-use crate::state::{FieldDraft, FormatState, ParseContext, PrinterMode};
+use crate::state::{FieldDraft, FormatState, ImageSave, ParseContext, PrinterMode};
 use crate::textfmt::{draft_mut, head_segments, split_commas, to_u32};
 
 /// Printer storage: name-keyed maps, exactly as the plan specifies (the
@@ -116,20 +116,25 @@ pub(crate) fn strip_device(spec: &[u8]) -> &[u8] {
 }
 
 /// Normalize an image name: strip the device, default to `UNKNOWN`, and
-/// append `.GRF` when the extension is not already GRF (guide `~DG`:
-/// "If .GRF is not the specified file extension, .GRF is automatically
-/// appended"; `^XG`/`^IM`/`^IL` recall through the same key space).
+/// append `.GRF` when the extension is neither GRF nor PNG (guide `~DG`
+/// p.175: "If .GRF is not the specified file extension, .GRF is
+/// automatically appended"; `^IL`/`^IM` p.247/248 fix the stored-image
+/// extension to ".GRF, .PNG", so a `.PNG` name is legal in the image
+/// key space and is kept as-is - appending `.GRF` to it would produce
+/// `LOGO.PNG.GRF`, an object name with a period outside the guide's
+/// "1 to 8 alphanumeric characters" rule. `^XG`/`^IM`/`^IL` recall
+/// through the same key space).
 fn image_name(spec: &[u8]) -> String {
     let s = strip_device(spec);
     if s.is_empty() {
         return "UNKNOWN.GRF".into();
     }
-    let ext_is_grf = s
+    let ext_ok = s
         .rsplit(|&b| b == b'.')
         .next()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case(b"GRF"));
+        .is_some_and(|ext| ext.eq_ignore_ascii_case(b"GRF") || ext.eq_ignore_ascii_case(b"PNG"));
     let mut name = String::from_utf8_lossy(s).into_owned();
-    if !ext_is_grf {
+    if !ext_ok {
         name.push_str(".GRF");
     }
     name
@@ -275,20 +280,78 @@ pub(crate) fn image_load(ctx: &mut ParseContext, params: &[u8]) {
     }
 }
 
-/// `^ISd:o.x,p` - Image Save (guide p.249): save the label-so-far as a
-/// raster image. That requires rendering, which lands with the renderer
-/// (Task 10); instead of storing bytes that are not the rendered image, the
-/// command is parsed, validated and reported as not supported.
+/// `^ISd:o.x,p` - Image Save (guide p.249): "save that format as a graphic
+/// image rather than as a ZPL II script", typically toward the end of a
+/// format; the saved image is later recalled with ^IL/^XG. `d`/`o`/`x`
+/// normalize through [`image_name`] (extension `.GRF` or `.PNG`, default
+/// `.GRF`); `p` = print image after storing (N/Y, default Y) is validated
+/// but has no pixel effect here - the format always prints, and rendering
+/// the saved portion equals the field re-render. The request (name plus
+/// the count of drafts closed so far) is recorded on the context and
+/// fulfilled at ^XZ by [`fulfill_image_save`], which renders the
+/// format-so-far at 203 dpi (the emulator's reference resolution) and
+/// stores the bitmap. A format with several ^IS commands saves the format
+/// at the last one (v1: a single request slot).
 pub(crate) fn image_save(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
-    let name = String::from_utf8_lossy(parts.first().copied().unwrap_or(&[])).into_owned();
-    let _print_after = parts.get(1).copied().unwrap_or(b"Y"); // accepted; N/Y
-    ctx.diags.push(Diagnostic::not_supported(
-        "IS",
-        format!(
-            "'{name}' would store a rendered image of this format; rendering lands with the renderer task (^IS is parsed but not stored)"
-        ),
-    ));
+    let name = image_name(parts.first().copied().unwrap_or(&[]));
+    if let Some(p) = parts.get(1).copied() {
+        if !p.is_empty() && !matches!(p.first(), Some(b'Y') | Some(b'y') | Some(b'N') | Some(b'n'))
+        {
+            ctx.diags.push(Diagnostic::warning(
+                "IS",
+                format!("invalid p '{}'; using Y", String::from_utf8_lossy(p)),
+            ));
+        }
+    }
+    let fields = match &ctx.state {
+        FormatState::InFormat { fields } => fields.len(),
+        FormatState::Field { fields, .. } => fields.len(),
+        // ^IS is a format command; outside a format it is a no-op (like
+        // ^XG without a draft).
+        _ => return,
+    };
+    ctx.image_save = Some(ImageSave { name, fields });
+}
+
+/// Fulfill a pending ^IS request at ^XZ: render the format-so-far (the
+/// fields closed before the ^IS; serial expansion already applied) into a
+/// stored image under the normalized name. Render failures and memory-full
+/// warn and store nothing - never a panic, never a partial store.
+pub(crate) fn fulfill_image_save(ctx: &mut ParseContext, label: &Label, save: ImageSave) {
+    let count = save.fields.min(label.fields.len());
+    let mut sub = label.clone();
+    sub.fields.truncate(count);
+    let fonts = crate::fonts::DefaultFontProvider::new();
+    let opts = crate::render::RenderOptions {
+        dpi: 203, // the emulator's reference resolution (server DPI const)
+        fonts: &fonts,
+        memory: &*ctx.memory,
+        mode: &ctx.mode,
+    };
+    let outcome = match crate::render::render(&sub, &opts) {
+        Ok(o) => o,
+        Err(e) => {
+            ctx.diags.push(Diagnostic::warning(
+                "IS",
+                format!("{}: render failed ({e:?}); image not stored", save.name),
+            ));
+            return;
+        }
+    };
+    let bytes = outcome.bitmap.bits.len();
+    if !fits_total(ctx.memory, &save.name, bytes) {
+        warn_memory_full(ctx, "IS", &save.name);
+        return;
+    }
+    ctx.memory.images.insert(
+        save.name,
+        Image {
+            width: outcome.bitmap.width,
+            height: outcome.bitmap.height,
+            data: outcome.bitmap.bits,
+        },
+    );
 }
 
 /// A closed field draft recalling a stored graphic at the given position

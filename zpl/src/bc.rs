@@ -130,6 +130,16 @@ fn latin1_bytes(data: &str) -> Vec<u8> {
 /// strips parentheses and spaces and prepends FNC1 (`>8`, the guide's
 /// invocation). Combinations (`e`+`D`) are mutually exclusive on real
 /// firmware; each step applies where its data shape allows.
+///
+/// D mode (guide p.94): "The code starts in the appropriate subset
+/// followed by FNC1" - the FNC1 lead makes the encoder's four-or-more
+/// digit rule pick Subset C for numeric UCC/EAN data - and the encoder
+/// keeps the parentheses/spaces in the human-readable line (the
+/// interpret line prints the raw ^FD data). The page's remaining D-mode
+/// sentence, "Automatically sizes the human readable", names a firmware
+/// behavior with no rule to transcribe (no target size or formula is
+/// given); the interpret line follows the field's ^A font rules instead
+/// (documented v1 scope - auto-size is out of the guide's scope).
 fn prepare_ucc(f: &BarcodeField, data: Vec<u8>) -> Vec<u8> {
     let mut data = data;
     if f.model == b'D' {

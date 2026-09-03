@@ -352,10 +352,16 @@ pub(crate) fn set_darkness(ctx: &mut ParseContext, params: &[u8]) {
     );
 }
 
-/// `^PQq,p,r,o,e`: print quantity q (1..99,999,999, default 1). q sets
-/// `Label.copies` (via `PrinterMode.copies`, which Task 20's labels-remaining
-/// consumes too). The pause/replicate/override/cut params are accepted and
-/// ignored until a batch engine exists - never warned on.
+/// `^PQq,p,r,o,e` (guide p.324): q = total quantity of labels to print
+/// (1..99,999,999, default 1) sets `Label.copies` (via
+/// `PrinterMode.copies`, which Task 20's labels-remaining consumes too);
+/// r = replicates of each serial number (0..99,999,999, default 0) is
+/// stored for the ^SN counter trajectory - each distinct serial prints
+/// r+1 times, so serialized counters advance once per r+1 copies while
+/// the total quantity stays q (the guide's example ^PQ50,10,1,Y prints
+/// "a total of 50 labels with one replicate of each serial number").
+/// The pause/override/cut params (p/o/e) stay accepted and ignored until
+/// a batch engine exists - never warned on.
 pub(crate) fn print_quantity(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
     ctx.mode.copies = u32_in(
@@ -366,6 +372,15 @@ pub(crate) fn print_quantity(ctx: &mut ParseContext, params: &[u8]) {
         1,
         99_999_999,
         ctx.mode.copies,
+    );
+    ctx.mode.replicates = u32_in(
+        parts.get(2).copied(),
+        "PQ",
+        "replicates",
+        ctx.diags,
+        0,
+        99_999_999,
+        ctx.mode.replicates,
     );
 }
 

@@ -80,6 +80,12 @@ pub struct TextBlock {
     pub max_lines: u32,
     pub line_spacing: u32,
     pub justification: Justification,
+    /// True for a `^FB` block (guide p.186 width rule: "If the value is
+    /// less than the font width or not specified, the text does not
+    /// print" - the renderer suppresses such fields). `^TB` (p.356) has
+    /// no such rule, so its blocks set this false.
+    #[serde(default)]
+    pub fb: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -261,6 +267,7 @@ mod tests {
                         max_lines: 3,
                         line_spacing: 4,
                         justification: Justification::Right,
+                        fb: true,
                     }),
                     data: "Hello, ZPL".into(),
                     font_name: Some("E:FONTFILE.TTF".into()),

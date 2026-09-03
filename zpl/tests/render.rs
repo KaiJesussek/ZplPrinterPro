@@ -1011,6 +1011,65 @@ fn fb_overwide_word_breaks_without_empty_line() {
 }
 
 #[test]
+fn fb_block_narrower_than_font_does_not_print() {
+    // Guide ^FB p.186: "If the value is less than the font width or not
+    // specified, the text does not print." Width 0 (the default) and any
+    // width below one character suppress the field entirely; a width that
+    // fits a character still prints. A fixed 20-dot advance (^A0N,20,20)
+    // makes the font width deterministically 20.
+    let blank = |w: u32| {
+        render_text(format!("^XA^PW64^LL60^FO0,0^FB{w},2,0,L^A0N,20,20^FDAA^FS^XZ").as_bytes())
+    };
+    let w0 = blank(0);
+    assert!(
+        (0..60).all(|y| (0..64).all(|x| !w0.bitmap.get(x, y))),
+        "width 0 prints nothing"
+    );
+    assert!(
+        w0.warnings.iter().any(|w| w.contains("guide ^FB")),
+        "a suppressed block warns (renderer diagnostic): {0:?}",
+        w0.warnings
+    );
+    let w5 = blank(5);
+    assert!(
+        (0..60).all(|y| (0..64).all(|x| !w5.bitmap.get(x, y))),
+        "width 5 (< the 20-dot font width) prints nothing"
+    );
+    assert!(
+        w5.warnings.iter().any(|w| w.contains("guide ^FB")),
+        "sub-font width warns like width 0: {0:?}",
+        w5.warnings
+    );
+    let w20 = blank(20);
+    assert!(
+        (0..60).any(|y| (0..64).any(|x| w20.bitmap.get(x, y))),
+        "width = one advance still prints"
+    );
+    assert!(
+        w20.warnings.is_empty(),
+        "no warning when the field prints: {0:?}",
+        w20.warnings
+    );
+}
+
+#[test]
+fn tb_block_narrower_than_font_still_prints() {
+    // ^TB (guide p.356) has no "does not print" rule - its width is
+    // 1..label width, so a 5-dot block with a 20-dot advance still
+    // char-breaks and prints (unlike ^FB).
+    let out = render_text(b"^XA^PW64^LL60^FO0,0^TB0,5,20^A0N,20,20^FDAA^FS^XZ");
+    assert!(
+        (0..60).any(|y| (0..64).any(|x| out.bitmap.get(x, y))),
+        "^TB prints even below the font width"
+    );
+    assert!(
+        out.warnings.is_empty(),
+        "^TB at width 5 is valid input, no warnings: {0:?}",
+        out.warnings
+    );
+}
+
+#[test]
 fn auto_height_covers_rotated_ft_text() {
     // ^FT60,60 + R180 with no ^LL: the label auto-sizes to the R180 ^FT
     // content, which lies BELOW the origin; the glyph's bottom rows must

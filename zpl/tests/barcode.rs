@@ -332,6 +332,11 @@ fn bc_ucc_mode_d_strips_and_prepends_fnc1() {
     let (label, _) = common::parse_one(b"^XA^BC,,N,N,N,D^FD(01)123456789012345678^FS^XZ");
     let f = assert_single_barcode(&label);
     assert_eq!(f.model, b'D');
+    // The interpret line prints the raw ^FD data - the guide's D-mode
+    // "prints them [parentheses and spaces] in the human-readable
+    // section" (p.94). The encoded bars below prove they are stripped
+    // from the symbol.
+    assert_eq!(f.data, "(01)123456789012345678");
     assert_bars(
         &barcode_field(f),
         2,

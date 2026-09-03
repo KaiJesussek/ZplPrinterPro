@@ -9,7 +9,9 @@ mod common;
 use common::parse_ctx;
 use zpl::cmd::parse_stream;
 use zpl::diag::{Diagnostics, Severity};
+use zpl::fonts::DefaultFontProvider;
 use zpl::ir::{Field, GraphicKind, Rotation};
+use zpl::render::{render, RenderOptions};
 use zpl::scanner::Scanner;
 use zpl::state::{Memory, ParseContext};
 
@@ -400,10 +402,11 @@ fn eg_erases_graphics_ds_downloads_font() {
 }
 
 #[test]
-fn il_im_recall_is_not_supported() {
+fn il_im_recall_placement_and_is_stores() {
     // ^IM inside an open field behaves like ^XG without sizing; ^IL places
-    // the stored image at 0,0 without an ^FS; ^IS needs the renderer
-    // (rasterization) and reports NotSupported instead of faking data.
+    // the stored image at 0,0 without an ^FS. ^IS (guide p.249) saves the
+    // format-so-far as a stored graphic image - stored at ^XZ, recallable
+    // by ^IL/^XG. A bare ^IS in an empty format stores the blank label.
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
     let (label, ctx) = parse_ctx(
@@ -425,13 +428,190 @@ fn il_im_recall_is_not_supported() {
         Field::Graphic(g) if g.x == 100 && g.y == 100
             && matches!(&g.kind, GraphicKind::Stored(n) if n == "LOGO.GRF")));
 
-    let (label, ctx) = parse_ctx(b"^XA^ISR:SNAP.GRF^FS^XZ", &mut diags, &mut memory);
-    assert!(ctx
-        .diags
-        .items
-        .iter()
-        .any(|d| d.severity == Severity::NotSupported));
-    assert_eq!(label.fields.len(), 0);
+    let (_, ctx) = parse_ctx(
+        b"^XA^PW128^LL40^FO0,0^A0N,20,20^FDX^FS^ISR:SNAP.GRF^FS^XZ",
+        &mut diags,
+        &mut memory,
+    );
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "^IS on valid input warns nothing: {0:?}",
+        ctx.diags
+    );
+    let img = ctx
+        .memory
+        .images
+        .get("SNAP.GRF")
+        .expect("^IS stored the rendered label image");
+    assert!(
+        img.data.iter().any(|&b| b != 0),
+        "the saved raster carries the X glyph"
+    );
+}
+
+#[test]
+fn is_round_trips_identical_pixels() {
+    // The ^IS stored bitmap is EXACTLY the rendered format-so-far, and a
+    // recall of it (^IL - the guide pairs them, p.247: "The graphic was
+    // stored using the ^IS command") paints the same pixels. Fields after
+    // the ^IS are not part of the saved image.
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (label, ctx) = parse_ctx(
+        b"^XA^PW128^LL40^FO0,0^A0N,20,20^FDX^FS^ISR:SNAP.GRF^FS^XZ",
+        &mut diags,
+        &mut memory,
+    );
+    let fonts = DefaultFontProvider::new();
+    let opts = RenderOptions {
+        dpi: 203,
+        fonts: &fonts,
+        memory: &*ctx.memory,
+        mode: &ctx.mode,
+    };
+    let out = render(&label, &opts).expect("format renders");
+    let img = &ctx.memory.images["SNAP.GRF"];
+    assert_eq!(
+        (img.width, img.height),
+        (out.bitmap.width, out.bitmap.height),
+        "stored image is the rendered label's size"
+    );
+    assert_eq!(
+        img.data, out.bitmap.bits,
+        "stored image bytes are the render"
+    );
+
+    // The ^IS came after the X field only: a later field must not be part
+    // of the image.
+    let (label2, ctx2) = parse_ctx(
+        b"^XA^PW128^LL40^FO0,0^A0N,20,20^FDX^FS^ISR:EARLY.GRF^FS^FO30,0^A0N,20,20^FDY^FS^XZ",
+        &mut diags,
+        &mut memory,
+    );
+    let mut sub = label2.clone();
+    sub.fields.truncate(1);
+    let opts2 = RenderOptions {
+        dpi: 203,
+        fonts: &fonts,
+        memory: &*ctx2.memory,
+        mode: &ctx2.mode,
+    };
+    let out2 = render(&sub, &opts2).expect("early fields render");
+    assert_eq!(
+        ctx2.memory.images["EARLY.GRF"].data, out2.bitmap.bits,
+        "fields after ^IS are excluded from the saved image"
+    );
+
+    // Recall: ^IL of the saved image paints the identical pixels.
+    let (label3, ctx3) = parse_ctx(b"^XA^PW128^LL40^ILR:SNAP.GRF^XZ", &mut diags, &mut memory);
+    let opts3 = RenderOptions {
+        dpi: 203,
+        fonts: &fonts,
+        memory: &*ctx3.memory,
+        mode: &ctx3.mode,
+    };
+    let out3 = render(&label3, &opts3).expect("recalled image renders");
+    assert_eq!(
+        (out3.bitmap.width, out3.bitmap.height),
+        (out.bitmap.width, out.bitmap.height)
+    );
+    assert_eq!(
+        out3.bitmap.bits, out.bitmap.bits,
+        "recall paints the same pixels"
+    );
+}
+
+#[test]
+fn png_named_images_store_and_recall() {
+    // Guide ^IL/^IM (p.247/248): the stored-image extension is "Fixed
+    // Value: .GRF, .PNG". A PNG-named image stores and recalls under the
+    // SAME key - the old normalization appended .GRF to it ("LOGO.PNG.GRF",
+    // an object name with a period outside the guide's "1 to 8
+    // alphanumeric characters" rule). ~DG (p.175) still appends .GRF to
+    // any other/absent extension.
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (label, ctx) = parse_ctx(
+        b"~DGR:LOGO.PNG,8,1,FF00000000000000^XA^PW128^LL28^FO10,20^XGR:LOGO.PNG,1,1^FS^XZ",
+        &mut diags,
+        &mut memory,
+    );
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
+    let img = ctx
+        .memory
+        .images
+        .get("LOGO.PNG")
+        .expect("stored under its .PNG name, not LOGO.PNG.GRF");
+    assert_eq!(img.data, vec![0xFF, 0, 0, 0, 0, 0, 0, 0]);
+    assert!(matches!(&label.fields[0],
+        Field::Graphic(g) if matches!(&g.kind, GraphicKind::Stored(n) if n == "LOGO.PNG")));
+
+    // Recall by rendering the stored recall paints the identical pixels
+    // as the inline blit of the same bytes at the same origin.
+    let fonts = DefaultFontProvider::new();
+    let opts = RenderOptions {
+        dpi: 203,
+        fonts: &fonts,
+        memory: &*ctx.memory,
+        mode: &ctx.mode,
+    };
+    let recalled = render(&label, &opts).expect("recalled graphic renders");
+    let (label_gfa, ctx_gfa) = parse_ctx(
+        b"^XA^PW128^LL28^FO10,20^GFA,8,8,1,FF00000000000000^FS^XZ",
+        &mut diags,
+        &mut memory,
+    );
+    let opts_gfa = RenderOptions {
+        dpi: 203,
+        fonts: &fonts,
+        memory: &*ctx_gfa.memory,
+        mode: &ctx_gfa.mode,
+    };
+    let inline = render(&label_gfa, &opts_gfa).expect("inline blit renders");
+    assert_eq!(
+        (recalled.bitmap.width, recalled.bitmap.height),
+        (inline.bitmap.width, inline.bitmap.height)
+    );
+    assert_eq!(
+        recalled.bitmap.bits, inline.bitmap.bits,
+        "recalling the PNG-named image paints the same pixels as its data"
+    );
+    // A plain name still normalizes to .GRF for storage and recall.
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (_, ctx) = parse_ctx(
+        b"~DGLOGO,8,1,FF00000000000000^XA^XGLOGO^FS^XZ",
+        &mut diags,
+        &mut memory,
+    );
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
+    assert!(ctx.memory.images.contains_key("LOGO.GRF"));
+    // An unknown extension still gets .GRF appended (~DG's literal rule).
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (_, ctx) = parse_ctx(
+        b"~DGR:FOO.BMP,8,1,FF00000000000000^XA^XGR:FOO.BMP^FS^XZ",
+        &mut diags,
+        &mut memory,
+    );
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
+    assert!(ctx.memory.images.contains_key("FOO.BMP.GRF"));
 }
 
 #[test]
@@ -612,21 +792,16 @@ fn dy_b_truncated_warns_and_stores_nothing() {
         &mut diags,
         &mut memory,
     );
-    let dy_warns = ctx
-        .diags
-        .items
-        .iter()
-        .filter(|d| d.command == "DY")
-        .count();
+    let dy_warns = ctx.diags.items.iter().filter(|d| d.command == "DY").count();
     assert_eq!(dy_warns, 1, "one truncation warning: {diags:?}");
     assert!(
-        ctx.diags.items.iter().all(|d| d.severity == Severity::Warning),
+        ctx.diags
+            .items
+            .iter()
+            .all(|d| d.severity == Severity::Warning),
         "{diags:?}"
     );
-    assert!(
-        ctx.diags.items[0].message.contains("99"),
-        "{diags:?}"
-    );
+    assert!(ctx.diags.items[0].message.contains("99"), "{diags:?}");
     assert!(ctx.memory.fonts.is_empty(), "no partial store");
     // The input after the truncation point still parses.
     assert_eq!(label.fields.len(), 1);
@@ -644,10 +819,7 @@ fn dy_b_with_grf_extension_warns_hex_required() {
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
     let mut ctx = ParseContext::new(&mut diags, &mut memory);
-    parse_stream(
-        &mut Scanner::new(b"~DYE:LOGO.GRF,B,G,6,1,^XZ~AB"),
-        &mut ctx,
-    );
+    parse_stream(&mut Scanner::new(b"~DYE:LOGO.GRF,B,G,6,1,^XZ~AB"), &mut ctx);
     assert!(ctx.diags.items.iter().any(|d| d.command == "DY"));
     assert!(ctx.memory.fonts.is_empty());
     assert!(ctx.memory.images.is_empty());

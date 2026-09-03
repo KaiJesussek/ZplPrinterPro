@@ -44,6 +44,12 @@ pub struct PrinterMode {
     /// `^PQ` print quantity (default 1); `Label::copies` at ^XZ, and the
     /// server's labels-remaining tracking.
     pub copies: u32,
+    /// `^PQ` r replicates of each serial number (guide p.324: 0..99,999,999,
+    /// default 0). Each distinct serial prints r+1 times, so serialized
+    /// fields' counters advance once per r+1 printed copies; the total
+    /// quantity to print stays `q` (the guide's example ^PQ50,10,1 prints
+    /// "a total of 50 labels with one replicate of each serial number").
+    pub replicates: u32,
     /// `^CF` default font as `[canonical, raw]` (power-up: A).
     pub default_font: [u8; 2],
     /// `^CF` default character height in dots (power-up: 9).
@@ -91,6 +97,7 @@ impl Default for PrinterMode {
             left_shift: 0,
             mirror: false,
             copies: 1,
+            replicates: 0,
             default_font: *b"A ",
             default_font_h: 9,
             default_font_w: 5,
@@ -294,6 +301,17 @@ pub struct FieldDraft {
 pub struct SerialSetting {
     pub step: i64,
     pub zeros: bool,
+}
+
+/// A pending `^IS` image-save request, recorded by `memory::image_save` and
+/// fulfilled at ^XZ (`cmd::end_format`): the format as it stands at the
+/// `^IS` is rendered and stored in `Memory.images` under the normalized
+/// name. `fields` is the count of drafts already closed when `^IS` was
+/// parsed, so fields that follow it are not part of the saved image.
+#[derive(Debug, Clone)]
+pub(crate) struct ImageSave {
+    pub name: String,
+    pub fields: usize,
 }
 
 /// Where the parser is in the input stream.
@@ -605,6 +623,10 @@ pub struct ParseContext<'a> {
     pub diags: &'a mut Diagnostics,
     pub memory: &'a mut Memory,
     pub mode: PrinterMode,
+    /// `^IS` image-save request recorded while this parse window ran; the
+    /// ^XZ handler renders the format-so-far and stores it under the
+    /// normalized name (guide p.249).
+    pub(crate) image_save: Option<ImageSave>,
     /// Non-geometry printer settings (^MD/~SD darkness, ^MN tracking, ...).
     pub config: PrinterConfig,
     /// The most recently completed label (^XZ), for the protocol layer.
@@ -649,6 +671,7 @@ impl<'a> ParseContext<'a> {
             diags,
             memory,
             mode: PrinterMode::default(),
+            image_save: None,
             config: PrinterConfig::default(),
             pending_label: None,
             recall_depth: 0,
