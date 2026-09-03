@@ -1,12 +1,12 @@
-//! Handlers for the text-field command set: `^FO ^FT ^FD ^FV ^FH ^FR ^FB ^A`
-//! (field-scoped) and `^FW ^CF ^CW ^CI ^FC` (printer state).
+//! Handlers for the text-field command set: `^FO ^FT ^FD ^FV ^FH ^FR ^FB
+//! ^TB ^SN ^A` (field-scoped) and `^FW ^CF ^CW ^CI ^FC` (printer state).
 //!
 //! Field-scoped commands no-op outside a format (state `Outside`), matching
 //! Zebra; the printer-state commands are meaningful any time.
 
 use crate::diag::{Diagnostic, Diagnostics};
 use crate::ir::{Justification, OriginMode, Rotation, TextBlock};
-use crate::state::{FieldDraft, FormatState, ParseContext};
+use crate::state::{FieldDraft, FormatState, ParseContext, SerialSetting};
 
 /// Split command parameters on commas, trimming ASCII whitespace from each
 /// segment. Multi-line ZPL puts the line break inside the last parameter
@@ -56,6 +56,26 @@ pub(crate) fn to_u32(p: &[u8]) -> Option<u32> {
         return None;
     }
     core::str::from_utf8(p).ok()?.parse().ok()
+}
+
+/// Parse a signed decimal parameter (optional `-`); `None` for empty or
+/// malformed input. ^SN's increment is signed (a minus sign decrements),
+/// and its 12-digit maximum exceeds i32, so the result is i64 with checked
+/// accumulation (oversized input saturates; the ^SN handler range-checks).
+pub(crate) fn to_i64(p: &[u8]) -> Option<i64> {
+    let (sign, digits) = match p.first() {
+        Some(b'-') => (-1, &p[1..]),
+        Some(b'+') => (1, &p[1..]),
+        _ => (1, p),
+    };
+    if digits.is_empty() || !digits.iter().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let mut v: i64 = 0;
+    for &b in digits {
+        v = v.saturating_mul(10).saturating_add((b - b'0') as i64);
+    }
+    Some(sign * v)
 }
 
 /// Parse one numeric parameter segment: an empty/missing segment silently
@@ -180,6 +200,50 @@ pub(crate) fn field_variable(ctx: &mut ParseContext, params: &[u8]) {
     append_data(ctx, params);
 }
 
+/// `^SNv,n,z`: serialized field data (guide p.341) - v is the data string
+/// whose rightmost integer run is the index (default "1"), n the signed
+/// increment (default 1; a minus sign decrements), z = Y/N leading zeros
+/// (default N). The data is expanded at ^XZ and counters tracked on
+/// [`ParseContext`] (`cmd.rs::expand_serials`), so this command replaces
+/// `^FD` for the field - no separate field-data command follows.
+pub(crate) fn serial_number(ctx: &mut ParseContext, params: &[u8]) {
+    let parts = split_commas(params);
+    let v = match parts.first().copied() {
+        Some(p) if !p.is_empty() => p,
+        _ => b"1".as_slice(), // guide: v default 1
+    };
+    // Guide: "12-digits maximum for the portion to be indexed".
+    let step = match parts.get(1).copied() {
+        Some(p) if !p.is_empty() => match to_i64(p) {
+            Some(v) if v.unsigned_abs() <= 999_999_999_999 => v,
+            _ => {
+                ctx.diags.push(Diagnostic::warning(
+                    "SN",
+                    format!("invalid increment '{}'; using 1", String::from_utf8_lossy(p)),
+                ));
+                1
+            }
+        },
+        _ => 1,
+    };
+    let zeros = match parts.get(2).and_then(|p| p.first()) {
+        None => false, // guide: z default N
+        Some(b'Y') | Some(b'y') => true,
+        Some(b'N') | Some(b'n') => false,
+        Some(_) => {
+            ctx.diags.push(Diagnostic::warning(
+                "SN",
+                "invalid leading-zeros value; using N",
+            ));
+            false
+        }
+    };
+    if let Some(d) = draft_mut(ctx) {
+        d.data = v.to_vec();
+        d.serial = Some(SerialSetting { step, zeros });
+    }
+}
+
 fn append_data(ctx: &mut ParseContext, params: &[u8]) {
     // Copy the hex flag before borrowing the draft so `ctx.diags` stays free.
     let hex = draft_mut(ctx).and_then(|d| d.hex);
@@ -272,6 +336,37 @@ fn parse_justification(p: &[u8], diags: &mut Diagnostics) -> Justification {
             ));
             Justification::Left
         }
+    }
+}
+
+/// `^TBa,b,c`: text block (guide p.356) - a = block rotation N/R/I/B
+/// (validated; the field's own rotation from ^A/^FW is the guide's default
+/// and is not overwritten), b = block width in dots (default 1), c = block
+/// height (validated and dropped: the IR has no height slot). Applied to
+/// the open field like ^FB, wrapping within b with no line cap - height
+/// truncation is a render-time concern (see the task report).
+pub(crate) fn text_block(ctx: &mut ParseContext, params: &[u8]) {
+    let parts = split_commas(params);
+    if let Some(rot) = parts.first().copied() {
+        if !rot.is_empty() && parse_rotation(rot).is_none() {
+            ctx.diags.push(Diagnostic::warning(
+                "TB",
+                format!("invalid rotation '{}'; ignored", String::from_utf8_lossy(rot)),
+            ));
+        }
+    }
+    let width = p_u32(parts.get(1).copied(), "TB", "width", ctx.diags, 1);
+    if width == 0 {
+        ctx.diags.push(Diagnostic::warning("TB", "width must be at least 1; using 1"));
+    }
+    let _ = p_u32(parts.get(2).copied(), "TB", "height", ctx.diags, 1);
+    if let Some(d) = draft_mut(ctx) {
+        d.block = Some(TextBlock {
+            width: width.max(1),
+            max_lines: 0, // no line cap: height-based truncation has no IR slot
+            line_spacing: 0,
+            justification: Justification::Left,
+        });
     }
 }
 

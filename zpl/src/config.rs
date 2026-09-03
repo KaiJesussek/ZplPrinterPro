@@ -1,7 +1,7 @@
 //! Handlers for the label-configuration command set: `^LH ^LL ^PW ^PO ^PM
 //! ^LS ^LT ^MD ^PN ^PQ ^PR ^PH ^MN ^MT ^MM ^MU ^MF ^MI ^ML ^MP ^MW ^PA ^PF
-//! ^SC ^SZ ^ZZ ^XB ^XS`, plus the tilde forms `~SD` (set darkness) and `~PH`
-//! (slew to home).
+//! ^SC ^SZ ^ZZ ^XB ^XS ^JZ`, plus the tilde forms `~SD` (set darkness), `~PH`
+//! (slew to home) and `~TA` (tear-off adjust).
 //!
 //! Label geometry lands in `PrinterMode` - the renderer consumes it - and
 //! the few settings with real downstream consumers land in `PrinterConfig`
@@ -441,4 +441,87 @@ pub(crate) fn dynamic_calibration(ctx: &mut ParseContext, params: &[u8]) {
 /// action). Validated, not stored.
 pub(crate) fn present_now(ctx: &mut ParseContext, params: &[u8]) {
     check_num(split_commas(params).first().copied(), "PN", "eject length", ctx.diags, 0, 255);
+}
+
+// --- Task 17: accept-only remainder (validated, not stored) ----------------
+//
+// Alert/clock/sensor/hardware settings with no label-image effect: parsed
+// and validated per the guide's param tables, then discarded - the server's
+// PrinterState (Task 20) is their eventual consumer. ^SN and ^TB live in
+// textfmt.rs (they act on the field), ^TO in memory.rs, ^FX/^HU/^HY/^HZ/
+// ~WC/~JR in cmd.rs.
+
+/// `^SQa,b,c`: halt ZebraNet Alert (condition letter, destination letter,
+/// halt Y/N). Validate-only; alert routing is server-side state (Task 20).
+pub(crate) fn halt_zebranet_alert(ctx: &mut ParseContext, params: &[u8]) {
+    let parts = split_commas(params);
+    check_letters(parts.first().copied(), "SQ", "condition", ctx.diags, b"ABCDEFGHIJKLMNOQRSTUVW*");
+    check_letters(parts.get(1).copied(), "SQ", "destination", ctx.diags, b"ABCDEF*");
+    check_letters(parts.get(2).copied(), "SQ", "halt messages", ctx.diags, b"YN");
+}
+
+/// `^SR####`: set printhead resistance, a four-digit value 0488..1175.
+/// Validated, not stored - head calibration is hardware state.
+pub(crate) fn set_head_resistance(ctx: &mut ParseContext, params: &[u8]) {
+    check_num(split_commas(params).first().copied(), "SR", "resistance", ctx.diags, 488, 1175);
+}
+
+/// `^SSw,m,r,l,m2,r2,a,b,c`: set media-sensor calibration values (web/
+/// media/ribbon 000..100; label length 0001..32000; LED intensities
+/// 000..255; mark sensing 000..100/255). Validated, not stored.
+pub(crate) fn set_media_sensors(ctx: &mut ParseContext, params: &[u8]) {
+    let parts = split_commas(params);
+    let spec: &[(&str, u32, u32)] = &[
+        ("web", 0, 100),
+        ("media", 0, 100),
+        ("ribbon", 0, 100),
+        ("label length", 1, 32000),
+        ("media LED", 0, 255),
+        ("ribbon LED", 0, 255),
+        ("mark sensing", 0, 100),
+        ("mark media sensing", 0, 100),
+        ("mark LED sensing", 0, 255),
+    ];
+    for (i, (name, lo, hi)) in spec.iter().enumerate() {
+        check_num(parts.get(i).copied(), "SS", name, ctx.diags, *lo, *hi);
+    }
+}
+
+/// `^STa,b,c,d,e,f,g`: set the Real-Time Clock (month 01..12, day 01..31,
+/// year 1998..2097, hour 00..23, minute/second 00..59, format A/P/M).
+/// Validated, not stored - the clock is printer hardware state.
+pub(crate) fn set_clock(ctx: &mut ParseContext, params: &[u8]) {
+    let parts = split_commas(params);
+    check_num(parts.first().copied(), "ST", "month", ctx.diags, 1, 12);
+    check_num(parts.get(1).copied(), "ST", "day", ctx.diags, 1, 31);
+    check_num(parts.get(2).copied(), "ST", "year", ctx.diags, 1998, 2097);
+    check_num(parts.get(3).copied(), "ST", "hour", ctx.diags, 0, 23);
+    check_num(parts.get(4).copied(), "ST", "minute", ctx.diags, 0, 59);
+    check_num(parts.get(5).copied(), "ST", "second", ctx.diags, 0, 59);
+    check_letters(parts.get(6).copied(), "ST", "format", ctx.diags, b"APM");
+}
+
+/// `^SXa,b,c,d,e,f`: configure ZebraNet Alert - a condition letter, b
+/// destination letter (A-F), c/d condition-set/clear Y/N, e/f destination
+/// settings (e-mail/IP/SNMP - free-form per destination). Validated, not
+/// stored (Task 20's server-side alerts).
+pub(crate) fn set_zebranet_alert(ctx: &mut ParseContext, params: &[u8]) {
+    let parts = split_commas(params);
+    check_letters(parts.first().copied(), "SX", "condition", ctx.diags, b"ABCDEFGHIJKLMNOPQRSTUV*");
+    check_letters(parts.get(1).copied(), "SX", "destination", ctx.diags, b"ABCDEF");
+    check_letters(parts.get(2).copied(), "SX", "set alert", ctx.diags, b"YN");
+    check_letters(parts.get(3).copied(), "SX", "clear alert", ctx.diags, b"YN");
+}
+
+/// `^JZa`: reprint a partially printed label after a Ribbon/Media/Head
+/// error (Y/N, power-up Y). Validated, not stored - error-reprint policy is
+/// server-side print-job state.
+pub(crate) fn reprint_after_error(ctx: &mut ParseContext, params: &[u8]) {
+    check_letters(split_commas(params).first().copied(), "JZ", "reprint", ctx.diags, b"YN");
+}
+
+/// `~TA###`: tear-off media rest position (-120..120 dot rows; fewer than
+/// 3 characters -> ignored per guide). Validated, not stored.
+pub(crate) fn tear_off_adjust(ctx: &mut ParseContext, params: &[u8]) {
+    let _ = i32_in(split_commas(params).first().copied(), "TA", "position", ctx.diags, -120, 120, 0);
 }

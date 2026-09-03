@@ -71,6 +71,12 @@ pub struct PrinterMode {
     pub downloaded_font: Option<String>,
     /// `^FC` Real-Time Clock indicator characters (primary power-up: `%`).
     pub clock_indicators: [u8; 3],
+    /// `^CC` format-command prefix character (power-up `^`). The handler
+    /// records the change here; the parse driver applies it to the scanner
+    /// (`Scanner::set_chars`) after each dispatch.
+    pub cmd_char: u8,
+    /// `^CT` control-command (tilde) prefix character (power-up `~`).
+    pub tilde_char: u8,
 }
 
 impl Default for PrinterMode {
@@ -96,6 +102,8 @@ impl Default for PrinterMode {
             font_assignments: BTreeMap::new(),
             downloaded_font: None,
             clock_indicators: [b'%', 0, 0],
+            cmd_char: b'^',
+            tilde_char: b'~',
         }
     }
 }
@@ -265,8 +273,23 @@ pub struct FieldDraft {
     pub hex: Option<u8>,
     /// `^FV` variable field: re-evaluated per copy.
     pub re_eval: bool,
+    /// `^SN` serialization setting; the data string's rightmost integer run
+    /// is expanded at ^XZ and the counter tracked on [`ParseContext`]
+    /// (Task 17).
+    pub serial: Option<SerialSetting>,
     /// Raw command bytes of the field, for stored-format re-emission later.
     pub raw: Vec<u8>,
+}
+
+/// `^SN` serialization parameters (guide p.341) carried on a field draft.
+/// The draft's `data` is the `v` string; its rightmost integer run is the
+/// indexed portion (`step` = the signed `n` increment/decrement, `zeros` =
+/// the `z` leading-zeros flag). `cmd.rs::expand_serials` applies the
+/// counter's current value at ^XZ.
+#[derive(Debug, Clone)]
+pub struct SerialSetting {
+    pub step: i64,
+    pub zeros: bool,
 }
 
 /// Where the parser is in the input stream.
@@ -377,6 +400,7 @@ impl FieldDraft {
             symbol: false,
             hex: None,
             re_eval: false,
+            serial: None,
             raw: Vec::new(),
         }
     }
@@ -492,6 +516,10 @@ pub struct ParseContext<'a> {
     /// Active ^XF stored-format recall depth (recursion cap 4; see
     /// memory.rs `recall_format`).
     pub recall_depth: u32,
+    /// `^SN` serial counters, keyed by the field's ordinal among serialized
+    /// fields in its format, in the same order as the drafts at ^XZ. The
+    /// server persists these across sessions (Task 21).
+    pub serial_counters: BTreeMap<u8, i64>,
 }
 
 impl<'a> ParseContext<'a> {
@@ -504,6 +532,7 @@ impl<'a> ParseContext<'a> {
             config: PrinterConfig::default(),
             pending_label: None,
             recall_depth: 0,
+            serial_counters: BTreeMap::new(),
         }
     }
 }

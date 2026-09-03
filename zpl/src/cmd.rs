@@ -7,20 +7,16 @@ use crate::diag::Diagnostic;
 use crate::geom;
 use crate::memory;
 use crate::scanner::{Cmd, Scanner, Token};
-use crate::state::{FormatState, ParseContext};
+use crate::state::{FieldDraft, FormatState, ParseContext};
 use crate::textfmt;
 
 /// Command prefix: `^` (format commands) or `~` (printer operations).
+/// Dispatch matches these against the mode's *current* command/tilde
+/// characters (task 17: ^CC/^CT can move them off the literal bytes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Prefix {
     Caret,
     Tilde,
-}
-
-impl Prefix {
-    fn matches(self, prefix: u8) -> bool {
-        matches!((self, prefix), (Self::Caret, b'^') | (Self::Tilde, b'~'))
-    }
 }
 
 /// When a command is handled: format commands are meaningful inside
@@ -64,9 +60,116 @@ fn end_format(ctx: &mut ParseContext, _params: &[u8]) {
     // An open barcode field closed by ^XZ without data can't be encoded.
     check_barcode_data(ctx);
     check_malformed_utf16(ctx);
+    expand_serials(ctx);
     if let Some(label) = ctx.state.end_format(&ctx.mode) {
         ctx.pending_label = Some(label);
     }
+}
+
+/// Expand `^SN` serialized fields at `^XZ` (plan Task 17 ruling: expansion
+/// at parse time; counters live on [`ParseContext`] so the server can
+/// persist them, Task 21). Each serialized draft's data gets its counter's
+/// current value substituted for the rightmost integer run, then the
+/// counter advances by step x `copies` - v1 renders the first copy's value
+/// on every copy (`Label.copies` carries multiplicity) while keeping the
+/// counter trajectory of a real printer, which increments once per printed
+/// label. Counters are keyed by the field's ordinal among serialized
+/// fields in the format; the same ordinal in a later format continues the
+/// counter (real printers reset transient formats to v on re-send - a
+/// documented v1 simplification; stored/resident formats keep running).
+fn expand_serials(ctx: &mut ParseContext) {
+    let drafts: Vec<&mut FieldDraft> = match &mut ctx.state {
+        FormatState::InFormat { fields } => fields.iter_mut().collect(),
+        FormatState::Field { draft, fields } => {
+            fields.iter_mut().chain(core::iter::once(draft)).collect()
+        }
+        _ => return,
+    };
+    let mut ordinal = 0u8;
+    for draft in drafts {
+        let (step, zeros) = match &draft.serial {
+            Some(serial) => (serial.step, serial.zeros),
+            None => continue,
+        };
+        // Guide: "12-digits maximum for the portion to be indexed".
+        if let Some((start, end)) = rightmost_run(&draft.data) {
+            if end - start > 12 {
+                ctx.diags.push(Diagnostic::warning(
+                    "SN",
+                    "data longer than 12 digits cannot be fully indexed; using as-is",
+                ));
+            }
+        }
+        let counter = ctx.serial_counters.entry(ordinal).or_insert_with(|| {
+            rightmost_run(&draft.data)
+                .and_then(|(start, end)| parse_digits(&draft.data[start..end]))
+                .unwrap_or(0)
+        });
+        draft.data = substitute_run(&draft.data, *counter, zeros);
+        let advance = step.saturating_mul(ctx.mode.copies as i64);
+        *counter = counter.saturating_add(advance);
+        // Saturated, never wrapped: far beyond the guide's 100-150-field
+        // limit, later serials would share a counter instead of panicking.
+        ordinal = ordinal.saturating_add(1);
+    }
+}
+
+/// The byte range of the rightmost contiguous ASCII-digit run in `data`
+/// (the guide's x.14 rule: "the first integer found when scanning from the
+/// end of the backing store towards the beginning").
+fn rightmost_run(data: &[u8]) -> Option<(usize, usize)> {
+    let mut end = data.len();
+    while end > 0 && !data[end - 1].is_ascii_digit() {
+        end -= 1;
+    }
+    if end == 0 {
+        return None;
+    }
+    let mut start = end;
+    while start > 0 && data[start - 1].is_ascii_digit() {
+        start -= 1;
+    }
+    Some((start, end))
+}
+
+/// Parse an ASCII-digit slice as i64 with checked accumulation (runs up to
+/// 12 digits saturate safely; oversized input clamps rather than panics).
+fn parse_digits(p: &[u8]) -> Option<i64> {
+    if p.is_empty() || !p.iter().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let mut v: i64 = 0;
+    for &b in p {
+        v = v.saturating_mul(10).saturating_add((b - b'0') as i64);
+    }
+    Some(v)
+}
+
+/// Substitute `value` for the rightmost integer run of `data`, printing the
+/// value's sign when a decrement carries it below zero. `zeros` pads with
+/// leading zeros to the run's original width; the width grows if the value
+/// outgrows it (real printers do not truncate the counter).
+fn substitute_run(data: &[u8], value: i64, zeros: bool) -> Vec<u8> {
+    let Some((start, end)) = rightmost_run(data) else {
+        return data.to_vec();
+    };
+    let width = end - start;
+    let mag = value.unsigned_abs().to_string();
+    let mut digits = if zeros && mag.len() < width {
+        let mut padded = vec![b'0'; width - mag.len()];
+        padded.extend_from_slice(mag.as_bytes());
+        padded
+    } else {
+        mag.into_bytes()
+    };
+    let mut out = Vec::with_capacity(data.len() + 1);
+    out.extend_from_slice(&data[..start]);
+    if value < 0 {
+        out.push(b'-');
+    }
+    out.append(&mut digits);
+    out.extend_from_slice(&data[end..]);
+    out
 }
 
 fn end_field(ctx: &mut ParseContext, _params: &[u8]) {
@@ -149,6 +252,58 @@ fn start_download(ctx: &mut ParseContext, params: &[u8]) {
     }
     ctx.state.start_download(params);
 }
+
+/// `^CCx`/`~CCx`: change the format-command prefix character (guide p.152).
+/// The scanner consumed exactly one parameter byte (its "next character
+/// received" rule); the parse driver applies the change to the scanner
+/// (`Scanner::set_chars`) after this dispatch. An empty command has nothing
+/// to record and warns - the guide requires a character.
+fn change_command_char(ctx: &mut ParseContext, params: &[u8]) {
+    match params.first() {
+        Some(&c) => ctx.mode.cmd_char = c,
+        None => ctx.diags.push(Diagnostic::warning(
+            "CC",
+            "no character given; command ignored",
+        )),
+    }
+}
+
+/// `^CTx`/`~CTx`: change the control-command (tilde) prefix character
+/// (guide p.166). Same mechanics as [`change_command_char`].
+fn change_tilde_char(ctx: &mut ParseContext, params: &[u8]) {
+    match params.first() {
+        Some(&c) => ctx.mode.tilde_char = c,
+        None => ctx.diags.push(Diagnostic::warning(
+            "CT",
+            "no character given; command ignored",
+        )),
+    }
+}
+
+/// `^FX`: comment block (guide p.209). The body is the command's parameter
+/// run, which the scanner already ended at the next command character -
+/// nothing here is ever dispatched, so arbitrary bytes stay inert.
+fn comment(_ctx: &mut ParseContext, _params: &[u8]) {}
+
+/// `^HU`/`~HU`: return the configured ZebraNet Alert table to the host.
+/// The response is server-side (Task 20); parsing accepts and discards it.
+fn host_get_alerts(_ctx: &mut ParseContext, _params: &[u8]) {}
+
+/// `^HYd:o.x`: upload a graphic object (as a ~DY reply). The response is
+/// server-side (Task 20); parsing accepts and discards the request.
+fn host_upload_graphic(_ctx: &mut ParseContext, _params: &[u8]) {}
+
+/// `^HZx,y,l`: printer description in XML. The response is server-side
+/// (Task 20); parsing accepts and discards the request.
+fn host_description(_ctx: &mut ParseContext, _params: &[u8]) {}
+
+/// `~WC`: print a configuration label (printer-state dump). The dump label
+/// has no user-format rendering role here; accept and discard.
+fn print_config_label(_ctx: &mut ParseContext, _params: &[u8]) {}
+
+/// `~JR`: power-on reset. A protocol-level action with no parse state;
+/// accept and discard.
+fn power_on_reset(_ctx: &mut ParseContext, _params: &[u8]) {}
 
 /// Static command table; rows are added by later tasks as handlers land.
 const TABLE: &[CommandSpec] = &[
@@ -252,6 +407,32 @@ const TABLE: &[CommandSpec] = &[
     // is the only darkness form).
     CommandSpec { mnemonic: *b"SD", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: config::set_darkness },
     CommandSpec { mnemonic: *b"PH", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: config::slew_to_home },
+    // Task 17: command-character switches (^CC/^CT), serial numbers (^SN),
+    // and the accept-only remainder (^SQ ^SR ^SS ^ST ^SX ^TB ^TO ^FX ^HY ^HZ
+    // ^HU ^JZ, plus the tilde ops ~WC ~TA ~JR). ^SN/^TB modify the open
+    // field; the rest are parsed and validated but have no label-image
+    // effect (see config.rs / cmd.rs handler docs).
+    CommandSpec { mnemonic: *b"CC", prefix: Prefix::Caret, kind: CmdKind::Format, handler: change_command_char },
+    CommandSpec { mnemonic: *b"CC", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: change_command_char },
+    CommandSpec { mnemonic: *b"CT", prefix: Prefix::Caret, kind: CmdKind::Format, handler: change_tilde_char },
+    CommandSpec { mnemonic: *b"CT", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: change_tilde_char },
+    CommandSpec { mnemonic: *b"SN", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::serial_number },
+    CommandSpec { mnemonic: *b"TB", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::text_block },
+    CommandSpec { mnemonic: *b"SQ", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::halt_zebranet_alert },
+    CommandSpec { mnemonic: *b"SR", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::set_head_resistance },
+    CommandSpec { mnemonic: *b"SS", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::set_media_sensors },
+    CommandSpec { mnemonic: *b"ST", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::set_clock },
+    CommandSpec { mnemonic: *b"SX", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::set_zebranet_alert },
+    CommandSpec { mnemonic: *b"TO", prefix: Prefix::Caret, kind: CmdKind::Format, handler: memory::transfer_object },
+    CommandSpec { mnemonic: *b"FX", prefix: Prefix::Caret, kind: CmdKind::Format, handler: comment },
+    CommandSpec { mnemonic: *b"HY", prefix: Prefix::Caret, kind: CmdKind::Format, handler: host_upload_graphic },
+    CommandSpec { mnemonic: *b"HZ", prefix: Prefix::Caret, kind: CmdKind::Format, handler: host_description },
+    CommandSpec { mnemonic: *b"HU", prefix: Prefix::Caret, kind: CmdKind::Format, handler: host_get_alerts },
+    CommandSpec { mnemonic: *b"HU", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: host_get_alerts },
+    CommandSpec { mnemonic: *b"JZ", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::reprint_after_error },
+    CommandSpec { mnemonic: *b"WC", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: print_config_label },
+    CommandSpec { mnemonic: *b"TA", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: config::tear_off_adjust },
+    CommandSpec { mnemonic: *b"JR", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: power_on_reset },
 ];
 
 /// The command table: prefix+mnemonic -> handler. Rows accumulate across tasks.
@@ -261,9 +442,17 @@ pub fn command_table() -> &'static [CommandSpec] {
 
 /// Look up `cmd` in the table and run its handler; unknown commands become a
 /// diagnostic. Handlers receive the raw parameter bytes.
+///
+/// Prefix matching is against the mode's *current* command/tilde characters,
+/// not the literal caret/tilde bytes: after a `^CC/` the scan of `/FO...`
+/// must still find the caret rows (the scanner records the raw prefix byte).
 pub fn dispatch(ctx: &mut ParseContext, cmd: Cmd) {
     for spec in command_table() {
-        if spec.prefix.matches(cmd.prefix) && spec.mnemonic == cmd.mnemonic {
+        let prefix_matches = match spec.prefix {
+            Prefix::Caret => cmd.prefix == ctx.mode.cmd_char,
+            Prefix::Tilde => cmd.prefix == ctx.mode.tilde_char,
+        };
+        if prefix_matches && spec.mnemonic == cmd.mnemonic {
             (spec.handler)(ctx, cmd.params);
             return;
         }
@@ -281,14 +470,21 @@ pub fn dispatch(ctx: &mut ParseContext, cmd: Cmd) {
 /// is scanned as literal data - the ^FD body may contain it (Task 2's
 /// field-data model; `^FD` params absorb tildes until the next `^`).
 pub fn parse_stream(scanner: &mut Scanner, ctx: &mut ParseContext) {
+    // A stream resumed on a fresh scanner (new format batch, ^XF recall)
+    // scans with the prefix characters persisted in the mode.
+    scanner.set_chars(ctx.mode.cmd_char, ctx.mode.tilde_char);
     while let Some(token) = scanner.next(matches!(ctx.state, FormatState::Field { .. })) {
         match token {
             Token::Cmd(cmd) => {
-                let ends_download = cmd.prefix == b'^' && cmd.mnemonic == *b"FS";
+                let ends_download = cmd.prefix == ctx.mode.cmd_char && cmd.mnemonic == *b"FS";
                 if matches!(ctx.state, FormatState::DefFormat { .. }) && !ends_download {
                     ctx.state.capture(&cmd_bytes(&cmd));
                 } else {
                     dispatch(ctx, cmd);
+                    // ^CC/^CT handlers may have written new prefix
+                    // characters into the mode; re-sync the scanner so the
+                    // next token scans with them.
+                    scanner.set_chars(ctx.mode.cmd_char, ctx.mode.tilde_char);
                 }
             }
             // Outside a download, capture is a no-op.
@@ -379,6 +575,7 @@ mod tests {
                 symbol: false,
                 hex: None,
                 re_eval: false,
+                serial: None,
                 raw: b"^FDhello".to_vec(),
             },
             fields: Vec::new(),

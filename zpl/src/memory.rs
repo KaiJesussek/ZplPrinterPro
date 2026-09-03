@@ -463,10 +463,19 @@ pub(crate) fn recall_format(ctx: &mut ParseContext, params: &[u8]) {
         return;
     };
     ctx.recall_depth += 1;
+    // The stored format may have been written with a ^CC/^CT-changed prefix
+    // set: parse_stream seeds the fresh scanner with the characters
+    // currently in effect.
     let mut scanner = Scanner::new(&bytes);
     cmd::parse_stream(&mut scanner, ctx);
     ctx.recall_depth -= 1;
 }
+
+/// `^TOs:o.x,d:o.x`: transfer a stored object between storage devices.
+/// Accept-only: the guide ignores the command when the parameters are
+/// invalid ("If only ^TO is entered, the command is ignored"), and object
+/// transfer has no label-image effect.
+pub(crate) fn transfer_object(_ctx: &mut ParseContext, _params: &[u8]) {}
 
 #[cfg(test)]
 mod tests {

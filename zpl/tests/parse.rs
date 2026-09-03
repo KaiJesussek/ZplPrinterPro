@@ -448,3 +448,186 @@ fn config_malformed_params_warn_not_panic() {
     assert_eq!(ctx.config.darkness, 0);
     assert_eq!(ctx.config.zpl_mode, 2);
 }
+
+// --- Task 17: serial numbers, accept-only remainder, ^CC/^CT ---------------
+
+#[test]
+fn sn_serializes_and_increments_across_formats() {
+    // Guide ^SNv,n,z (p.341): v is the data string whose rightmost integer
+    // run is the starting value (default 1), n the signed increment (default
+    // 1), z = Y/N leading zeros (default N). Expansion happens at parse time
+    // (first copy's value); the counter lives on ParseContext, so the next
+    // format parsed in the same session continues from where the last left
+    // off (documented v1 simplification of the printer's reset-on-re-send).
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (label, mut ctx) = common::parse_ctx(b"^XA^FO10,10^SN001,1,Y^FS^XZ", &mut diags, &mut memory);
+    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(text_field(&label, 0).data, "001");
+
+    // The same format re-sent: the counter continues (001 -> 002). The ^SN
+    // command opens its own field - no ^FD needed.
+    let mut scanner = zpl::scanner::Scanner::new(b"^XA^FO10,10^SN001,1,Y^FS^XZ");
+    zpl::cmd::parse_stream(&mut scanner, &mut ctx);
+    let label2 = ctx.pending_label.take().expect("second format never closed by ^XZ");
+    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(text_field(&label2, 0).data, "002");
+}
+
+#[test]
+fn sn_defaults_decrement_and_embedded_text() {
+    // Missing n -> 1 and missing z -> N (suppress leading zeros): ^SN0005
+    // prints "5". v may embed text around the indexed run; a minus sign
+    // decrements (guide: "To indicate a decrement value, precede the value
+    // with a minus (-) sign").
+    let (label, diags) = parse_one(b"^XA^FO10,10^SN0005^FS^XZ");
+    assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
+    assert_eq!(text_field(&label, 0).data, "5");
+
+    // The counter starts at v: the first format prints the starting value,
+    // the next one prints the decremented value (n=-1: 1000 -> 999).
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (label, mut ctx) = common::parse_ctx(b"^XA^FO10,10^SNABCD1000EFGH,-1^FS^XZ", &mut diags, &mut memory);
+    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(text_field(&label, 0).data, "ABCD1000EFGH");
+    let mut scanner = zpl::scanner::Scanner::new(b"^XA^FO10,10^SNABCD1000EFGH,-1^FS^XZ");
+    zpl::cmd::parse_stream(&mut scanner, &mut ctx);
+    let label2 = ctx.pending_label.take().expect("second format never closed by ^XZ");
+    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(text_field(&label2, 0).data, "ABCD999EFGH");
+
+    // Leading zeros keep the run's width (z=Y): 0005 stays four digits and
+    // increments to 0006 on the next format.
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (label, mut ctx) = common::parse_ctx(b"^XA^FO10,10^SNABCD0005EFGH,1,Y^FS^XZ", &mut diags, &mut memory);
+    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(text_field(&label, 0).data, "ABCD0005EFGH");
+    let mut scanner = zpl::scanner::Scanner::new(b"^XA^FO10,10^SNABCD0005EFGH,1,Y^FS^XZ");
+    zpl::cmd::parse_stream(&mut scanner, &mut ctx);
+    let label2 = ctx.pending_label.take().expect("second format never closed by ^XZ");
+    assert_eq!(text_field(&label2, 0).data, "ABCD0006EFGH");
+}
+
+#[test]
+fn sn_counter_tracks_copies_trajectory() {
+    // v1 per-copy ruling: every copy of the label renders the first copy's
+    // serial value (Label.copies handles multiplicity); the counter advances
+    // by n per copy, so the next format's value lands where a real printer's
+    // would after printing all N labels.
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (label, mut ctx) = common::parse_ctx(b"^XA^PQ3^FO10,10^SN001,1,Y^FS^XZ", &mut diags, &mut memory);
+    assert_eq!(label.copies, 3);
+    assert_eq!(text_field(&label, 0).data, "001");
+    let mut scanner = zpl::scanner::Scanner::new(b"^XA^FO10,10^SN001,1,Y^FS^XZ");
+    zpl::cmd::parse_stream(&mut scanner, &mut ctx);
+    let label2 = ctx.pending_label.take().expect("second format never closed by ^XZ");
+    assert_eq!(text_field(&label2, 0).data, "004"); // 001 + 3 copies x 1
+}
+
+#[test]
+fn accept_only_set_never_warns_on_valid_params() {
+    // Every Task 17 accept-only command fed guide-valid parameters: parsed,
+    // zero diagnostics, format completes. ^FX (comment) and the tilde ops
+    // (~WC ~TA ~JR) have no rendering role.
+    let (label, diags) = parse_one(
+        b"^XA^FX pure comment text, no command chars^SQK,C,Y^SR0495^SS050,060,070,0200,128,128,050,055,128^ST06,15,2024,14,30,00,M^SXA,C,Y,N,admin@corp.com,0^TBN,120,60^FO10,10^FDTB text^FS^TO^HYR:LOGO.GRF^HZ^HU^JZY^XZ~WC~TA-12~JR",
+    );
+    assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
+    // The ^FX body never became fields; only the ^TB field has data.
+    assert_eq!(label.fields.len(), 1);
+    let t = text_field(&label, 0);
+    assert_eq!(t.data, "TB text");
+    assert_eq!(
+        t.block,
+        Some(TextBlock {
+            width: 120,
+            max_lines: 0, // ^TB truncates by height (no IR slot); no line cap
+            line_spacing: 0,
+            justification: Justification::Left,
+        })
+    );
+}
+
+#[test]
+fn accept_only_malformed_params_warn_only() {
+    // Malformed accept-only params warn and are ignored; parsing continues
+    // and never panics.
+    let (label, diags) = parse_one(
+        b"^XA^SQ1,2^SR9999^SSxxx^ST13,99,999,25,99,99,Z^SX1^JZx^XZ~TA999",
+    );
+    assert!(diags.items.len() >= 8, "expected warnings, got {diags:?}");
+    assert!(diags.items.iter().all(|d| d.severity == Severity::Warning));
+    assert_eq!(label.fields.len(), 0);
+}
+
+#[test]
+fn sn_malformed_params_warn_not_panic() {
+    // Garbage increment/leading-zeros fall back to the guide defaults with a
+    // warning; oversized 20-digit values warn (the 12-digit cap) and saturate
+    // instead of overflowing; the format still completes.
+    let (label, diags) = parse_one(b"^XA^FO10,10^SN001,x,Z^FS^XZ");
+    assert!(diags.items.len() >= 2, "expected warnings, got {diags:?}");
+    assert!(diags.items.iter().all(|d| d.severity == Severity::Warning));
+    // step falls back to 1, zeros to N: the run's value prints unpadded.
+    assert_eq!(text_field(&label, 0).data, "1");
+
+    let (label, diags) = parse_one(b"^XA^FO10,10^SN99999999999999999999,99999999999999,Y^FS^XZ");
+    assert!(diags.items.len() >= 1, "expected warnings, got {diags:?}");
+    assert!(diags.items.iter().all(|d| d.severity == Severity::Warning));
+    // The 20-digit run warns (12-digit cap) then saturates into the i64
+    // counter and renders at the original width - no panic, no overflow.
+    assert_eq!(text_field(&label, 0).data.len(), 20);
+}
+
+#[test]
+fn cc_changes_command_char_applied_by_driver() {
+    // Guide example (p.152): after ^CC/ the format continues in the new
+    // prefix character (here /), and /XZ closes it. The scanner consumes
+    // exactly one ^CC parameter byte, so the rest of the stream is not
+    // swallowed.
+    let (label, diags) = parse_one(b"^XA^CC//FO10,10/FDhi/FS/XZ");
+    assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
+    assert_eq!(label.fields.len(), 1);
+    let t = text_field(&label, 0);
+    assert_eq!((t.x, t.y), (10, 10));
+    assert_eq!(t.data, "hi");
+
+    // The guide's own layout - a newline between the changed prefix and the
+    // closing tag: ^XA ^CC/ <newline> /XZ.
+    let (label, diags) = parse_one(b"^XA^CC/\n/XZ");
+    assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
+    assert_eq!(label.fields.len(), 0);
+}
+
+#[test]
+fn ct_changes_tilde_char_applied_by_driver() {
+    // Guide example (p.166): ^CT+ makes + the control-command prefix while
+    // the caret still starts format commands. +SD19 after ^XZ dispatches as
+    // the ~SD printer operation (darkness 19 -> 190 in tenths), and +HS
+    // scans as a command (unknown here - its response is server-side,
+    // Task 20) instead of data.
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (label, ctx) = common::parse_ctx(b"^XA^CT+^XZ+SD19+HS", &mut diags, &mut memory);
+    assert_eq!(ctx.mode.tilde_char, b'+');
+    assert_eq!(ctx.config.darkness, 190);
+    assert_eq!(label.fields.len(), 0);
+    assert_eq!(ctx.diags.items.len(), 1, "expected the +HS unknown command, got {0:?}", ctx.diags);
+    assert!(matches!(ctx.diags.items[0].severity, Severity::UnknownCommand));
+}
+
+#[test]
+fn fx_comment_body_ignored() {
+    // The ^FX body (params up to the next command char) is never dispatched:
+    // it may contain arbitrary bytes, including things that would otherwise
+    // scan as commands. Tildes are excluded here because a tilde ends ^FX
+    // params outside a field (guide: "avoid using the caret or tilde
+    // commands within the ^FX statement").
+    let (label, diags) = parse_one(b"^XA^FX_body with (,<>@#%% garbage (NOT commands^FO10,10^FDreal^FS^XZ");
+    assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
+    assert_eq!(label.fields.len(), 1);
+    assert_eq!(text_field(&label, 0).data, "real");
+}

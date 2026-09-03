@@ -86,7 +86,24 @@ impl<'a> Scanner<'a> {
             let prefix = self.src[self.pos];
             self.pos += 1;
             let mnemonic = self.read_mnemonic();
-            let params = self.read_until_command(in_field_data);
+            let params = if mnemonic == *b"CC" || mnemonic == *b"CT" {
+                // ^CC/^CT change a prefix character: their parameter is
+                // exactly the next byte received (guide p.152/p.166: "the
+                // next character received is the new prefix character"),
+                // never a parameter run - a run would swallow the rest of
+                // the format, whose new prefix differs from the old set
+                // (e.g. ^CC/ followed by /FO...).
+                if self.pos < self.src.len() {
+                    let end = self.pos + 1;
+                    let p = &self.src[self.pos..end];
+                    self.pos = end;
+                    p
+                } else {
+                    &[]
+                }
+            } else {
+                self.read_until_command(in_field_data)
+            };
             Token::Cmd(Cmd {
                 prefix,
                 mnemonic,
@@ -97,9 +114,17 @@ impl<'a> Scanner<'a> {
         })
     }
 
-    fn begins_command(&self, in_field_data: bool) -> bool {
-        let b = self.src[self.pos];
+    /// Whether `b` starts a command under the current prefix characters;
+    /// the tilde character is literal inside field data (^FD may contain
+    /// it). Single source for both predicates - kept in sync with
+    /// [`Self::read_until_command`] by construction (T2 deferred minor,
+    /// landed with the ^CC/^CT wiring in T17).
+    fn is_command_char(&self, b: u8, in_field_data: bool) -> bool {
         b == self.cmd_char || (!in_field_data && b == self.tilde_char)
+    }
+
+    fn begins_command(&self, in_field_data: bool) -> bool {
+        self.is_command_char(self.src[self.pos], in_field_data)
     }
 
     /// Read the mnemonic: the first alphabetic byte always belongs to it; a
@@ -127,8 +152,7 @@ impl<'a> Scanner<'a> {
     fn read_until_command(&mut self, in_field_data: bool) -> &'a [u8] {
         let start = self.pos;
         while self.pos < self.src.len() {
-            let b = self.src[self.pos];
-            if b == self.cmd_char || (!in_field_data && b == self.tilde_char) {
+            if self.is_command_char(self.src[self.pos], in_field_data) {
                 break;
             }
             self.pos += 1;
