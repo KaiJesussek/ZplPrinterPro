@@ -107,6 +107,7 @@ fn end_format(ctx: &mut ParseContext, _params: &[u8]) {
     // An open barcode field closed by ^XZ without data can't be encoded.
     check_barcode_data(ctx);
     check_malformed_utf16(ctx);
+    check_malformed_utf8(ctx);
     expand_serials(ctx);
     if let Some(label) = ctx.state.end_format(&ctx.mode) {
         ctx.pending_label = Some(label);
@@ -232,6 +233,7 @@ fn end_field(ctx: &mut ParseContext, _params: &[u8]) {
     // captured bytes over to Memory.formats.
     check_barcode_data(ctx);
     check_malformed_utf16(ctx);
+    check_malformed_utf8(ctx);
     if let Some((name, bytes)) = ctx.state.end_field() {
         let key = memory::format_name(name.as_bytes());
         if !memory::fits_total(ctx.memory, &key, bytes.len()) {
@@ -257,6 +259,20 @@ fn check_malformed_utf16(ctx: &mut ParseContext) {
             ctx.diags.push(Diagnostic::warning(
                 "CI",
                 "malformed UTF-16 data; decoding lossily",
+            ));
+        }
+    }
+}
+
+/// A `^CI28` field whose bytes are malformed UTF-8 decodes lossily; warn
+/// so the parser's "malformed -> warning + lossy, never panic" contract is
+/// observable. Mirrors `check_malformed_utf16`.
+fn check_malformed_utf8(ctx: &mut ParseContext) {
+    if let FormatState::Field { draft, .. } = &ctx.state {
+        if draft.code_page == 28 && crate::codepage::is_malformed_utf8(&draft.data) {
+            ctx.diags.push(Diagnostic::warning(
+                "CI",
+                "malformed UTF-8 data; decoding lossily",
             ));
         }
     }

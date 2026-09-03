@@ -97,13 +97,24 @@ fn default_ci_decodes_ascii_identically() {
 }
 
 /// National sets (1-12) are "Zebra Code Page 850 with specific character
-/// replacements" (guide p.156); v1 approximates them as CP850 silently.
-/// 0x94 is o in CP850 for every national set that has it.
+/// replacements" (guide p.156). The replacements touch only ASCII-range
+/// key positions (guide p.159 chart); 0x94 stays o in every national set.
 #[test]
-fn national_sets_decode_as_cp850_silently() {
-    let (label, diags) = parse_one(b"^XA^CI5^FD\x94^FS^XZ");
-    assert_eq!(diags.items.len(), 0, "expected no warning, got {diags:?}");
-    assert_eq!(text_field(&label).data, "\u{00F6}");
+fn national_sets_share_cp850_high_bytes() {
+    for cp in 1u8..=12 {
+        for (byte, ch) in [(0x84u8, "\u{00E4}"), (0x94, "\u{00F6}"), (0xE1, "\u{00DF}")] {
+            let mut src = format!("^XA^CI{cp}^FD").into_bytes();
+            src.push(byte);
+            src.extend_from_slice(b"^FS^XZ");
+            let (label, diags) = parse_one(&src);
+            assert_eq!(
+                diags.items.len(),
+                0,
+                "^CI{cp} byte 0x{byte:02X}: unexpected diagnostics: {diags:?}",
+            );
+            assert_eq!(text_field(&label).data, ch, "^CI{cp} byte 0x{byte:02X}");
+        }
+    }
 }
 
 /// ^CI13 must print a backslash for byte 0x5C (guide's ^CI note).
@@ -171,4 +182,88 @@ fn barcode_data_decodes_via_codepage() {
         other => panic!("expected barcode field, got {other:?}"),
     };
     assert_eq!(data, "\u{00EF}");
+}
+
+/// Spot checks of the per-country remaps transcribed from the guide's
+/// International Character Sets chart (p.159): each national set replaces
+/// only its own keys, and ^CI13 (plain 850) still prints the base chars.
+#[test]
+fn country_sets_remap_their_keys() {
+    // 0x7E is avoided in ^FD payloads: `~` splits scanner data tokens and
+    // the parser drops the slice after it (pre-existing ^FD behavior) -
+    // the full-row checks for those countries live at decode level below.
+    let cases: &[(u8, &[u8], &str)] = &[
+        // ^CI2 U.K.: '#' (0x23) prints pound.
+        (2, b"\x23", "\u{00A3}"),
+        // ^CI4 Denmark/Norway.
+        (4, b"\x5B\x5C\x5D\x7B\x7C\x7D", "\u{00C6}\u{00D8}\u{00C5}\u{00E6}\u{00F8}\u{00E5}"),
+        // ^CI5 Sweden/Finland.
+        (5, b"\x40\x5B\x5C\x5D\x7B\x7C\x7D", "\u{00C4}\u{00C4}\u{00D6}\u{00C5}\u{00E4}\u{00F6}\u{00E5}"),
+        // ^CI6 Germany.
+        (6, b"\x40\x5B\x5C\x5D\x7B\x7C\x7D", "\u{00C4}\u{00C4}\u{00D6}\u{00DC}\u{00E4}\u{00F6}\u{00FC}"),
+        // ^CI7 France 1.
+        (7, b"\x40\x5B\x5C\x5D\x7B\x7C\x7D", "\u{00E0}\u{00B0}\u{00E7}\u{00A7}\u{00E9}\u{00F9}\u{00E8}"),
+        // ^CI8 France 2 (diaeresis replaced by c-cedilla at 0x7E).
+        (8, b"\x40\x5B\x5C\x5D\x7B\x7C\x7D", "\u{00E0}\u{00B0}\u{00E7}\u{00A7}\u{00E9}\u{00F9}\u{00E8}"),
+        // ^CI9 Italy.
+        (9, b"\x5B\x5C\x5D\x7B\x7C\x7D", "\u{00B0}\u{00E7}\u{00E9}\u{00E0}\u{00F2}\u{00E8}"),
+        // ^CI10 Spain.
+        (10, b"\x5B\x5C\x5D\x7B\x7C\x7D", "\u{00A1}\u{00D1}\u{00BF}\u{00E1}\u{00ED}\u{00F3}"),
+        // ^CI11 Miscellaneous: U.K.'s pound plus the German accented row.
+        (11, b"\x23\x40\x5B\x5C\x5D\x7B\x7C\x7D", "\u{00A3}\u{00C4}\u{00C4}\u{00D6}\u{00DC}\u{00E4}\u{00F6}\u{00FC}"),
+        // ^CI12 Japan: only the backslash key changes (yen).
+        (12, b"\x5C", "\u{00A5}"),
+        // ^CI13 plain 850 keeps the base characters.
+        (13, b"\x23\x5B\x5C\x5D", "#[\\]"),
+        // ^CI1 U.S.A. 2 and ^CI3 Holland replace nothing.
+        (1, b"\x23\x5B\x5C\x5D", "#[\\]"),
+        (3, b"\x40\x5B\x5C\x5D", "@[\\]"),
+    ];
+    for &(cp, bytes, want) in cases {
+        let mut src = format!("^XA^CI{cp}^FD").into_bytes();
+        src.extend_from_slice(bytes);
+        src.extend_from_slice(b"^FS^XZ");
+        let (label, diags) = parse_one(&src);
+        assert_eq!(diags.items.len(), 0, "^CI{cp}: {diags:?}");
+        assert_eq!(text_field(&label).data, want, "^CI{cp}");
+    }
+}
+
+/// The full remap rows against `decode_text` directly (all 12 positions,
+/// including 0x5E which the scanner treats as a command prefix).
+#[test]
+fn country_sets_full_rows() {
+    use zpl::codepage::decode_text;
+    let full = [0x23u8, 0x24, 0x40, 0x5B, 0x5C, 0x5D, 0x7B, 0x7C, 0x7D, 0x7E];
+    assert_eq!(decode_text(&full, 1), "#$@[\\]{|}~");
+    assert_eq!(decode_text(&full, 2), "\u{00A3}$@[\\]{|}~");
+    assert_eq!(decode_text(&full, 4), "#$@\u{00C6}\u{00D8}\u{00C5}\u{00E6}\u{00F8}\u{00E5}~");
+    assert_eq!(decode_text(&full, 5), "#$\u{00C4}\u{00C4}\u{00D6}\u{00C5}\u{00E4}\u{00F6}\u{00E5}~");
+    assert_eq!(decode_text(&full, 6), "#$\u{00C4}\u{00C4}\u{00D6}\u{00DC}\u{00E4}\u{00F6}\u{00FC}\u{00DF}");
+    assert_eq!(decode_text(&full, 7), "#$\u{00E0}\u{00B0}\u{00E7}\u{00A7}\u{00E9}\u{00F9}\u{00E8}\u{00A8}");
+    assert_eq!(decode_text(&full, 8), "#$\u{00E0}\u{00B0}\u{00E7}\u{00A7}\u{00E9}\u{00F9}\u{00E8}\u{00E7}");
+    assert_eq!(decode_text(&full, 9), "#$@\u{00B0}\u{00E7}\u{00E9}\u{00E0}\u{00F2}\u{00E8}\u{00EC}");
+    assert_eq!(decode_text(&full, 10), "#$@\u{00A1}\u{00D1}\u{00BF}\u{00E1}\u{00ED}\u{00F3}\u{00FA}");
+    assert_eq!(decode_text(&full, 11), "\u{00A3}$\u{00C4}\u{00C4}\u{00D6}\u{00DC}\u{00E4}\u{00F6}\u{00FC}\u{00DF}");
+    assert_eq!(decode_text(&full, 12), "#$@[\u{00A5}]{|}~");
+    assert_eq!(decode_text(&full, 13), "#$@[\\]{|}~");
+}
+
+/// ^CI28 with malformed UTF-8 warns exactly once and decodes lossily
+/// (U+FFFD), never panics - the UTF-8 mirror of the UTF-16 contract.
+#[test]
+fn malformed_utf8_warns_lossily() {
+    let (label, diags) = parse_one(b"^XA^CI28^FD\xFFabc^FS^XZ");
+    let warnings: Vec<_> = diags
+        .items
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
+    assert_eq!(warnings.len(), 1, "exactly one warning, got {diags:?}");
+    assert_eq!(text_field(&label).data, "\u{FFFD}abc");
+
+    // Valid UTF-8 stays clean.
+    let (label, diags) = parse_one("^XA^CI28^FDGr\u{00FC}\u{00DF}e^FS^XZ".as_bytes());
+    assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
+    assert_eq!(text_field(&label).data, "Gr\u{00FC}\u{00DF}e");
 }

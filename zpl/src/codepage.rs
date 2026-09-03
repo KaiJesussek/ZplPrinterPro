@@ -1,9 +1,17 @@
-//! `^CI` character-set selection and `^FD` text decoding (guide p.155-157).
+//! `^CI` character-set selection and `^FD` text decoding (guide p.155-159).
 //!
 //! The guide's `^CI` table maps each value to a character set. Single-byte
 //! sets decode through `encoding_rs` where it covers them and through a
 //! const Unicode table where it does not (Zebra Code Page 850, which
 //! encoding_rs does not ship). `^CI28-30` are the UTF-8/UTF-16 forms.
+//!
+//! `^CI1-12` are each "Zebra Code Page 850 with specific character
+//! replacements"; the replacements were transcribed from the guide's
+//! International Character Sets chart (p.159, a bitmap: rows ^CI0-13,
+//! columns hex positions 23/24/40/5B/5C/5D/5E/60/7B/7C/7D/7E). Only the
+//! positions that differ from 850 are listed per country below; `^CI13`
+//! is plain 850 and `^CI0/27` are 1252 (see also the 850 table at p.1566
+//! and its note that hex 5C is a backslash unless a country replaces it).
 //!
 //! Values the guide defines but this crate cannot render (the Asian
 //! double/multi-byte states 14-16/24/26, deprecated UCS-2 17) and values
@@ -23,6 +31,104 @@ use encoding_rs::{
 /// page the ^CI table needs. Public-domain mapping (Unicode Consortium
 /// vendor files, as shipped by Python's `cp850` codec); bytes undefined in
 /// 850 decode as U+FFFD.
+///
+/// National-set replacements over 850 (byte -> Unicode), transcribed from
+/// the guide's International Character Sets chart (p.159). The replaced
+/// positions are all ASCII-range keys (0x23-0x7E); 0x80-0xFF keep 850.
+static COUNTRY_SETS: [&[(u8, u16)]; 12] = [
+    // ^CI1 U.S.A. 2: 850 as-is (power-up 0 = 1252 is a separate page).
+    &[],
+    // ^CI2 U.K.: the '#' key prints pound.
+    &[(0x23, 0x00A3)],
+    // ^CI3 Holland: 850 as-is.
+    &[],
+    // ^CI4 Denmark/Norway: bracket keys print ae O A / ae o a.
+    &[
+        (0x5B, 0x00C6),
+        (0x5C, 0x00D8),
+        (0x5D, 0x00C5),
+        (0x7B, 0x00E6),
+        (0x7C, 0x00F8),
+        (0x7D, 0x00E5),
+    ],
+    // ^CI5 Sweden/Finland.
+    &[
+        (0x40, 0x00C4),
+        (0x5B, 0x00C4),
+        (0x5C, 0x00D6),
+        (0x5D, 0x00C5),
+        (0x7B, 0x00E4),
+        (0x7C, 0x00F6),
+        (0x7D, 0x00E5),
+    ],
+    // ^CI6 Germany.
+    &[
+        (0x40, 0x00C4),
+        (0x5B, 0x00C4),
+        (0x5C, 0x00D6),
+        (0x5D, 0x00DC),
+        (0x7B, 0x00E4),
+        (0x7C, 0x00F6),
+        (0x7D, 0x00FC),
+        (0x7E, 0x00DF),
+    ],
+    // ^CI7 France 1.
+    &[
+        (0x40, 0x00E0),
+        (0x5B, 0x00B0),
+        (0x5C, 0x00E7),
+        (0x5D, 0x00A7),
+        (0x7B, 0x00E9),
+        (0x7C, 0x00F9),
+        (0x7D, 0x00E8),
+        (0x7E, 0x00A8),
+    ],
+    // ^CI8 France 2 (France 1 but ~ prints c-cedilla instead of diaeresis).
+    &[
+        (0x40, 0x00E0),
+        (0x5B, 0x00B0),
+        (0x5C, 0x00E7),
+        (0x5D, 0x00A7),
+        (0x7B, 0x00E9),
+        (0x7C, 0x00F9),
+        (0x7D, 0x00E8),
+        (0x7E, 0x00E7),
+    ],
+    // ^CI9 Italy.
+    &[
+        (0x5B, 0x00B0),
+        (0x5C, 0x00E7),
+        (0x5D, 0x00E9),
+        (0x7B, 0x00E0),
+        (0x7C, 0x00F2),
+        (0x7D, 0x00E8),
+        (0x7E, 0x00EC),
+    ],
+    // ^CI10 Spain.
+    &[
+        (0x5B, 0x00A1),
+        (0x5C, 0x00D1),
+        (0x5D, 0x00BF),
+        (0x7B, 0x00E1),
+        (0x7C, 0x00ED),
+        (0x7D, 0x00F3),
+        (0x7E, 0x00FA),
+    ],
+    // ^CI11 Miscellaneous: U.K.'s pound plus the German accented row.
+    &[
+        (0x23, 0x00A3),
+        (0x40, 0x00C4),
+        (0x5B, 0x00C4),
+        (0x5C, 0x00D6),
+        (0x5D, 0x00DC),
+        (0x7B, 0x00E4),
+        (0x7C, 0x00F6),
+        (0x7D, 0x00FC),
+        (0x7E, 0x00DF),
+    ],
+    // ^CI12 Japan (ASCII with Yen): the backslash key prints yen.
+    &[(0x5C, 0x00A5)],
+];
 pub(crate) static CP850: [u16; 256] = [
     0x0000, 0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007, 0x0008, 0x0009, 0x000A, 0x000B,
     0x000C, 0x000D, 0x000E, 0x000F, 0x0010, 0x0011, 0x0012, 0x0013, 0x0014, 0x0015, 0x0016, 0x0017,
@@ -54,6 +160,8 @@ enum Page {
     Windows(&'static Encoding),
     /// Single-byte page through a const table.
     Table(&'static [u16; 256]),
+    /// 850 plus the per-country replacements (guide p.159 chart).
+    Country(&'static [(u8, u16)]),
     /// UTF-8 (^CI28).
     Utf8,
     /// UTF-16 with the given default endianness (^CI29 BE, ^CI30 LE);
@@ -71,10 +179,9 @@ fn page(cp: u8) -> Option<Page> {
         // 0 = U.S.A. 1: Zebra Code Page 1252, the power-up default.
         0 | 27 => Some(Page::Windows(WINDOWS_1252)),
         // 1-12 = national sets, all "Code Page 850 with specific character
-        // replacements" (guide p.156); v1 decodes them as 850 silently
-        // (the common umlaut bytes coincide; per-country replacements
-        // deferred).
-        1..=12 => Some(Page::Table(&CP850)),
+        // replacements" (guide p.156): 850 base + the per-country remap
+        // table transcribed from the p.159 chart.
+        1..=12 => Some(Page::Country(COUNTRY_SETS[(cp - 1) as usize])),
         // 13 = Zebra Code Page 850 ("^CI13 must be selected to print a
         // backslash" - 0x5C is a backslash in 850).
         13 => Some(Page::Table(&CP850)),
@@ -120,6 +227,7 @@ pub fn decode_text(data: &[u8], cp: u8) -> String {
             s.into_owned()
         }
         Some(Page::Table(table)) => decode_table(data, table),
+        Some(Page::Country(remap)) => decode_country(data, remap),
         // ^CI28: UTF-8 passes through; invalid sequences degrade to U+FFFD.
         Some(Page::Utf8) => String::from_utf8_lossy(data).into_owned(),
         Some(Page::Utf16 { little }) => decode_utf16(data, little),
@@ -136,6 +244,21 @@ fn decode_table(data: &[u8], table: &[u16; 256]) -> String {
     let mut s = String::with_capacity(data.len());
     for &b in data {
         s.push(char::from_u32(table[b as usize] as u32).unwrap_or('\u{FFFD}'));
+    }
+    s
+}
+
+/// Decode `data` as 850 with the country's byte->char replacements. The
+/// remapped positions are ASCII-range keys, so an unlisted byte keeps its
+/// 850 value.
+fn decode_country(data: &[u8], remap: &[(u8, u16)]) -> String {
+    let mut s = String::with_capacity(data.len());
+    for &b in data {
+        let u = remap
+            .iter()
+            .find(|&&(src, _)| src == b)
+            .map_or(CP850[b as usize], |&(_, dst)| dst);
+        s.push(char::from_u32(u as u32).unwrap_or('\u{FFFD}'));
     }
     s
 }
@@ -199,6 +322,13 @@ fn decode_utf16(data: &[u8], default_little: bool) -> String {
         s.push(ch);
     }
     s
+}
+
+/// Whether a UTF-8 `^FD` payload (^CI28) is malformed. Wired into the
+/// ^FS/^XZ finalize path like [`is_malformed_utf16`]: invalid sequences
+/// decode lossily (U+FFFD) and the parser warns once per field.
+pub(crate) fn is_malformed_utf8(data: &[u8]) -> bool {
+    std::str::from_utf8(data).is_err()
 }
 
 /// Whether a UTF-16 `^FD` payload is malformed (odd byte count or an
