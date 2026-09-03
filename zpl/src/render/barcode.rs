@@ -125,19 +125,26 @@ fn extent(b: &BarcodeField, pat: &Pattern, fd: Option<&FontData>, dpi: u32) -> E
             let pat_w: u128 = bars.iter().map(|x| x.width as u128).sum();
             let below = b.line == b'Y';
             let above = b.interpret;
-            let lc = if below || above { line_cell(b, fd, dpi) as u128 } else { 0 };
+            let lc = if below || above {
+                line_cell(b, fd, dpi) as u128
+            } else {
+                0
+            };
             // Each printed interpretation line adds its own cell: `f=Y` puts
             // one below the bars (`v` in [h, h+lc)) and `g=Y` one above them
             // (negative `v`), so the content box spans [-lc, h+lc) - the box
             // height counts the two cells separately.
             let lc_span = (u128::from(below) + u128::from(above)) * lc;
             let fh = height as u128 + lc_span;
-            let tw = if (below || above) && fd.is_some() {
-                line_width(b, fd.unwrap(), dpi) as u128
+            let tw = if below || above {
+                fd.map(|fd| line_width(b, fd, dpi) as u128).unwrap_or(0)
             } else {
                 0
             };
-            Extent { fw: cmax((2 * quiet + pat_w).max(tw)), fh: cmax(fh) }
+            Extent {
+                fw: cmax((2 * quiet + pat_w).max(tw)),
+                fh: cmax(fh),
+            }
         }
         Pattern::Modules { width, height, .. } => Extent {
             fw: cmax(module as u128 * *width as u128),
@@ -274,7 +281,9 @@ fn paint_line(
     warnings: &mut Vec<String>,
 ) {
     let Ok(face) = FontVec::try_from_vec(fd.ttf.clone()) else {
-        warnings.push("stored font bytes are not a usable TrueType font; interpretation line skipped".into());
+        warnings.push(
+            "stored font bytes are not a usable TrueType font; interpretation line skipped".into(),
+        );
         return;
     };
     let upem = face.units_per_em().unwrap_or(2048.0);
@@ -288,11 +297,16 @@ fn paint_line(
     } else {
         opts.dpi as f32 / 203.0
     };
-    let cell = ((fd.metrics.cell_height as f32 * eff).round()).clamp(1.0, MAX_GLYPH_CELL as f32) as u32;
+    let cell =
+        ((fd.metrics.cell_height as f32 * eff).round()).clamp(1.0, MAX_GLYPH_CELL as f32) as u32;
     let baseline = ((fd.metrics.baseline as f32 * eff).round()).clamp(1.0, cell as f32) as u32;
     // Same fit as text.rs: the face's ascent lands on the metric baseline.
     let scale = baseline as f32 * upem / ascent;
-    let fixed = if b.font_width > 0 { Some(b.font_width as i64) } else { None };
+    let fixed = if b.font_width > 0 {
+        Some(b.font_width as i64)
+    } else {
+        None
+    };
     let fw = g.fw as i64;
     let fh = g.fh as i64;
     let mut char_x: i64 = 0;
@@ -310,7 +324,8 @@ fn paint_line(
             let u0 = char_x.min(MAX_CONTENT as i64);
             let gid = face.glyph_id(ch);
             // Skip glyphs whose cell misses the canvas before rasterizing.
-            let on_canvas = dest_bounds(bmp, ox, oy, b.rotation, fw, fh, u0, y_top, adv, cell as i64).is_some();
+            let on_canvas =
+                dest_bounds(bmp, ox, oy, b.rotation, fw, fh, u0, y_top, adv, cell as i64).is_some();
             if gid != GlyphId(0) && on_canvas {
                 let glyph = gid.with_scale_and_position(scale, point(u0 as f32, 0.0));
                 if let Some(outlined) = face.outline_glyph(glyph) {
@@ -362,7 +377,15 @@ pub(crate) fn paint(
         None
     };
     let g = extent(b, pat, fd.as_ref(), opts.dpi);
-    let (ox, oy) = place(opts.mode, bmp.width as i64, bmp.height as i64, b.x, b.y, g.fw, g.fh);
+    let (ox, oy) = place(
+        opts.mode,
+        bmp.width as i64,
+        bmp.height as i64,
+        b.x,
+        b.y,
+        g.fw,
+        g.fh,
+    );
     let module = if b.module == 0 { 2 } else { b.module };
     let fw = g.fw as i64;
     let fh = g.fh as i64;
@@ -373,17 +396,34 @@ pub(crate) fn paint(
             let mut off: u128 = quiet as u128;
             for bar in bars {
                 if bar.black {
-                    paint_rect(bmp, ox, oy, b.rotation, fw, fh, c50(off), 0, c50(bar.width as u128), h);
+                    paint_rect(
+                        bmp,
+                        ox,
+                        oy,
+                        b.rotation,
+                        fw,
+                        fh,
+                        c50(off),
+                        0,
+                        c50(bar.width as u128),
+                        h,
+                    );
                 }
                 off += bar.width as u128;
             }
         }
-        Pattern::Modules { width, height, data } => {
+        Pattern::Modules {
+            width,
+            height,
+            data,
+        } => {
             // Paint per on-canvas destination dot: each dot maps to one
             // module cell, so the loop is bounded by the canvas.
             let m = module as i64;
-            if let Some((x0, x1, y0, y1)) = dest_bounds(bmp, ox, oy, b.rotation, fw, fh, 0, 0, fw, fh) {
-                let stride = ((*width as usize) + 7) / 8;
+            if let Some((x0, x1, y0, y1)) =
+                dest_bounds(bmp, ox, oy, b.rotation, fw, fh, 0, 0, fw, fh)
+            {
+                let stride = (*width as usize).div_ceil(8);
                 for by in y0..=y1 {
                     for bx in x0..=x1 {
                         let (u, v) = unrotate(bx - ox, by - oy, b.rotation, fw, fh);
@@ -394,7 +434,10 @@ pub(crate) fn paint(
                         if cu >= *width as i64 || cv >= *height as i64 {
                             continue;
                         }
-                        let byte = data.get(cv as usize * stride + (cu as usize >> 3)).copied().unwrap_or(0);
+                        let byte = data
+                            .get(cv as usize * stride + (cu as usize >> 3))
+                            .copied()
+                            .unwrap_or(0);
                         if byte & (0x80 >> (cu & 7)) != 0 {
                             bmp.set(bx as u32, by as u32, true);
                         }
@@ -449,7 +492,7 @@ mod tests {
             pdf_cols: 0,
             pdf_rows: 0,
             pdf_truncate: false,
-            font: [b'A', b' '],
+            font: *b"A ",
             font_height: 9,
             font_width: 5,
             font_name: None,
@@ -477,9 +520,16 @@ mod tests {
     /// black cells (0,0), (2,0), (1,1).
     #[test]
     fn modules_blit_module_cells() {
-        let pat = Pattern::Modules { width: 3, height: 2, data: vec![0b1010_0000, 0b0100_0000] };
+        let pat = Pattern::Modules {
+            width: 3,
+            height: 2,
+            data: vec![0b1010_0000, 0b0100_0000],
+        };
         let (bmp, warnings) = paint_into(pat, bc(), 32, 16);
-        assert!(warnings.is_empty(), "no warnings for a line-free 2D paint: {warnings:?}");
+        assert!(
+            warnings.is_empty(),
+            "no warnings for a line-free 2D paint: {warnings:?}"
+        );
         for x in 0..32 {
             for y in 0..16 {
                 let expect = (x < 4 || (8..12).contains(&x)) && y < 4
@@ -496,26 +546,43 @@ mod tests {
     /// hostile map dimensions with a sane module.
     #[test]
     fn hostile_modules_never_panic() {
-        let pat = Pattern::Modules { width: 2, height: 2, data: vec![0xFF, 0xFF] };
+        let pat = Pattern::Modules {
+            width: 2,
+            height: 2,
+            data: vec![0xFF, 0xFF],
+        };
         let mut f = bc();
         f.module = u32::MAX;
         f.x = 100; // the first cell still legitimately covers the canvas at x=0
         let (bmp, _) = paint_into(pat.clone(), f, 8, 8);
-        assert!((0..8).all(|x| (0..8).all(|y| !bmp.get(x, y))), "nothing intersects");
+        assert!(
+            (0..8).all(|x| (0..8).all(|y| !bmp.get(x, y))),
+            "nothing intersects"
+        );
 
         let mut f = bc();
         f.module = u32::MAX;
         f.x = 100;
         f.rotation = Rotation::R90;
         let (bmp, _) = paint_into(pat.clone(), f, 8, 8);
-        assert!((0..8).all(|x| (0..8).all(|y| !bmp.get(x, y))), "rotated nothing intersects");
+        assert!(
+            (0..8).all(|x| (0..8).all(|y| !bmp.get(x, y))),
+            "rotated nothing intersects"
+        );
 
-        let pat = Pattern::Modules { width: u32::MAX, height: u32::MAX, data: vec![0xFF] };
+        let pat = Pattern::Modules {
+            width: u32::MAX,
+            height: u32::MAX,
+            data: vec![0xFF],
+        };
         let mut f = bc();
         f.module = 2;
         f.x = 100;
         let (bmp, _) = paint_into(pat, f, 8, 8);
-        assert!((0..8).all(|x| (0..8).all(|y| !bmp.get(x, y))), "hostile dims clamped");
+        assert!(
+            (0..8).all(|x| (0..8).all(|y| !bmp.get(x, y))),
+            "hostile dims clamped"
+        );
     }
 
     /// A truncated module payload reads as white - never a panic. The
@@ -523,11 +590,21 @@ mod tests {
     /// cell 8 and rows 1..2 have no bytes and print white.
     #[test]
     fn modules_truncated_data_reads_white() {
-        let pat = Pattern::Modules { width: 9, height: 3, data: vec![0xFF] };
+        let pat = Pattern::Modules {
+            width: 9,
+            height: 3,
+            data: vec![0xFF],
+        };
         let (bmp, _) = paint_into(pat, bc(), 40, 16);
         assert!(bmp.get(0, 0), "first module of row 0 is in the payload");
-        assert!(!bmp.get(32, 0), "row 0's 9th cell has no byte and prints white");
+        assert!(
+            !bmp.get(32, 0),
+            "row 0's 9th cell has no byte and prints white"
+        );
         // Module rows 1..2 (content v in [4, 12)) have no bytes at all.
-        assert!((4..16).all(|y| (0..40).all(|x| !bmp.get(x, y))), "rows 1..2 have no bytes");
+        assert!(
+            (4..16).all(|y| (0..40).all(|x| !bmp.get(x, y))),
+            "rows 1..2 have no bytes"
+        );
     }
 }

@@ -22,8 +22,14 @@ pub(crate) fn split_commas(params: &[u8]) -> Vec<&[u8]> {
 
 /// Strip ASCII whitespace from both ends of a parameter segment.
 pub(crate) fn trim_ws(p: &[u8]) -> &[u8] {
-    let start = p.iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(p.len());
-    let end = p.iter().rposition(|b| !b.is_ascii_whitespace()).map_or(start, |i| i + 1);
+    let start = p
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(p.len());
+    let end = p
+        .iter()
+        .rposition(|b| !b.is_ascii_whitespace())
+        .map_or(start, |i| i + 1);
     &p[start..end]
 }
 
@@ -114,7 +120,7 @@ pub(crate) fn p_u32(
 /// character is kept in the second byte for fidelity (Task 11 maps both).
 fn resolve_font(spec: u8) -> Option<[u8; 2]> {
     match spec {
-        b'0' => Some([b'A', b'0']),
+        b'0' => Some(*b"A0"),
         b'1'..=b'9' => Some([spec, spec]),
         b'A'..=b'Z' => Some([spec, spec]),
         b'a'..=b'z' => {
@@ -221,7 +227,10 @@ pub(crate) fn serial_number(ctx: &mut ParseContext, params: &[u8]) {
             _ => {
                 ctx.diags.push(Diagnostic::warning(
                     "SN",
-                    format!("invalid increment '{}'; using 1", String::from_utf8_lossy(p)),
+                    format!(
+                        "invalid increment '{}'; using 1",
+                        String::from_utf8_lossy(p)
+                    ),
                 ));
                 1
             }
@@ -353,13 +362,19 @@ pub(crate) fn text_block(ctx: &mut ParseContext, params: &[u8]) {
         if !rot.is_empty() && parse_rotation(rot).is_none() {
             ctx.diags.push(Diagnostic::warning(
                 "TB",
-                format!("invalid rotation '{}'; ignored", String::from_utf8_lossy(rot)),
+                format!(
+                    "invalid rotation '{}'; ignored",
+                    String::from_utf8_lossy(rot)
+                ),
             ));
         }
     }
     let width = p_u32(parts.get(1).copied(), "TB", "width", ctx.diags, 1);
     if width == 0 {
-        ctx.diags.push(Diagnostic::warning("TB", "width must be at least 1; using 1"));
+        ctx.diags.push(Diagnostic::warning(
+            "TB",
+            "width must be at least 1; using 1",
+        ));
     }
     let _ = p_u32(parts.get(2).copied(), "TB", "height", ctx.diags, 1);
     if let Some(d) = draft_mut(ctx) {
@@ -383,8 +398,8 @@ pub(crate) fn parse_size(
     fallback: u32,
 ) -> u32 {
     match seg {
-        None => fallback,                     // ^Af or ^Af,o: no size given
-        Some(p) if p.is_empty() => fallback,  // trailing comma
+        None => fallback,     // ^Af or ^Af,o: no size given
+        Some([]) => fallback, // trailing comma
         Some(p) => match to_u32(p) {
             Some(v) => v,
             None => {
@@ -436,8 +451,20 @@ pub(crate) fn select_font(ctx: &mut ParseContext, params: &[u8]) {
         }
         _ => None,
     };
-    let h = parse_size(parts.get(1).copied(), "A", "height", ctx.diags, ctx.mode.default_font_h);
-    let w = parse_size(parts.get(2).copied(), "A", "width", ctx.diags, ctx.mode.default_font_w);
+    let h = parse_size(
+        parts.get(1).copied(),
+        "A",
+        "height",
+        ctx.diags,
+        ctx.mode.default_font_h,
+    );
+    let w = parse_size(
+        parts.get(2).copied(),
+        "A",
+        "width",
+        ctx.diags,
+        ctx.mode.default_font_w,
+    );
     if let Some(d) = draft_mut(ctx) {
         d.font = font;
         if let Some(r) = orientation {
@@ -462,10 +489,21 @@ fn select_downloaded_font(ctx: &mut ParseContext, params: &[u8]) {
         .and_then(|p| p.get(1))
         .copied()
         .filter(|o| matches!(o, b'N' | b'n' | b'R' | b'r' | b'I' | b'i' | b'B' | b'b'))
-        .map(|o| parse_rotation(&[o]))
-        .flatten();
-    let h = parse_size(parts.get(1).copied(), "A@", "height", ctx.diags, ctx.mode.default_font_h);
-    let w = parse_size(parts.get(2).copied(), "A@", "width", ctx.diags, ctx.mode.default_font_w);
+        .and_then(|o| parse_rotation(&[o]));
+    let h = parse_size(
+        parts.get(1).copied(),
+        "A@",
+        "height",
+        ctx.diags,
+        ctx.mode.default_font_h,
+    );
+    let w = parse_size(
+        parts.get(2).copied(),
+        "A@",
+        "width",
+        ctx.diags,
+        ctx.mode.default_font_w,
+    );
     let named = parts
         .get(3)
         .copied()
@@ -498,10 +536,21 @@ pub(crate) fn graphic_symbol(ctx: &mut ParseContext, params: &[u8]) {
         .first()
         .and_then(|p| p.first())
         .copied()
-        .map(|o| parse_rotation(&[o]))
-        .flatten();
-    let h = parse_size(parts.get(1).copied(), "GS", "height", ctx.diags, ctx.mode.default_font_h);
-    let w = parse_size(parts.get(2).copied(), "GS", "width", ctx.diags, ctx.mode.default_font_w);
+        .and_then(|o| parse_rotation(&[o]));
+    let h = parse_size(
+        parts.get(1).copied(),
+        "GS",
+        "height",
+        ctx.diags,
+        ctx.mode.default_font_h,
+    );
+    let w = parse_size(
+        parts.get(2).copied(),
+        "GS",
+        "width",
+        ctx.diags,
+        ctx.mode.default_font_w,
+    );
     if let Some(d) = draft_mut(ctx) {
         d.symbol = true;
         if let Some(r) = rotation {
@@ -518,7 +567,7 @@ pub(crate) fn graphic_symbol(ctx: &mut ParseContext, params: &[u8]) {
 pub(crate) fn change_default_font(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
     match parts.first().and_then(|p| p.first()).copied() {
-        None => ctx.mode.default_font = [b'A', b' '], // bare ^CF resets the font
+        None => ctx.mode.default_font = *b"A ", // bare ^CF resets the font
         Some(f) => match resolve_font(f) {
             Some(font) => ctx.mode.default_font = font,
             None => ctx.diags.push(Diagnostic::warning(
@@ -527,8 +576,18 @@ pub(crate) fn change_default_font(ctx: &mut ParseContext, params: &[u8]) {
             )),
         },
     }
-    update_size(&mut ctx.mode.default_font_h, parts.get(1).copied(), "height", ctx.diags);
-    update_size(&mut ctx.mode.default_font_w, parts.get(2).copied(), "width", ctx.diags);
+    update_size(
+        &mut ctx.mode.default_font_h,
+        parts.get(1).copied(),
+        "height",
+        ctx.diags,
+    );
+    update_size(
+        &mut ctx.mode.default_font_w,
+        parts.get(2).copied(),
+        "width",
+        ctx.diags,
+    );
 }
 
 /// Apply an explicit ^CF size; missing/garbage keep the current default.
@@ -553,7 +612,8 @@ fn update_size(slot: &mut u32, seg: Option<&[u8]>, name: &str, diags: &mut Diagn
 /// Consumed by Task 11/13 (^A@-style downloaded-font selection).
 pub(crate) fn assign_font(ctx: &mut ParseContext, params: &[u8]) {
     let Some(&a) = params.first() else {
-        ctx.diags.push(Diagnostic::warning("CW", "missing font character"));
+        ctx.diags
+            .push(Diagnostic::warning("CW", "missing font character"));
         return;
     };
     if !a.is_ascii_alphanumeric() {
@@ -623,7 +683,11 @@ pub(crate) fn change_international(ctx: &mut ParseContext, params: &[u8]) {
 /// no render effect in this task.
 pub(crate) fn set_clock_indicators(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
-    let primary = parts.first().and_then(|p| p.first()).copied().unwrap_or(b'%');
+    let primary = parts
+        .first()
+        .and_then(|p| p.first())
+        .copied()
+        .unwrap_or(b'%');
     let secondary = parts.get(1).and_then(|p| p.first()).copied().unwrap_or(0);
     let third = parts.get(2).and_then(|p| p.first()).copied().unwrap_or(0);
     ctx.mode.clock_indicators = [primary, secondary, third];
@@ -801,7 +865,10 @@ mod tests {
         let mut diags = Diagnostics::default();
         let mut memory = Memory::default();
         let ctx = parse_ctx(b"^XA^CWA,E:FONT.FNT^FC,{,#^XZ", &mut diags, &mut memory);
-        assert_eq!(ctx.mode.font_assignments.get(&b'A').map(String::as_str), Some("E:FONT.FNT"));
+        assert_eq!(
+            ctx.mode.font_assignments.get(&b'A').map(String::as_str),
+            Some("E:FONT.FNT")
+        );
         assert_eq!(ctx.mode.clock_indicators, [b'%', b'{', b'#']);
         assert!(diags.is_empty());
     }
@@ -811,7 +878,11 @@ mod tests {
         let mut diags = Diagnostics::default();
         let mut memory = Memory::default();
         let ctx = parse_ctx(b"^CIabc", &mut diags, &mut memory);
-        assert!(ctx.diags.items.iter().any(|d| d.severity == crate::diag::Severity::Warning));
+        assert!(ctx
+            .diags
+            .items
+            .iter()
+            .any(|d| d.severity == crate::diag::Severity::Warning));
         assert_eq!(ctx.mode.code_page, 0); // untouched
     }
 

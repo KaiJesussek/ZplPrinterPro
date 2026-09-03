@@ -74,7 +74,7 @@ pub(crate) fn decode_graphic_data(data: &[u8], t: usize, w: usize) -> Option<Vec
                     if out.len() + n > t {
                         return None;
                     }
-                    out.extend(std::iter::repeat(fill).take(n));
+                    out.extend(std::iter::repeat_n(fill, n));
                 }
                 i += 1;
             }

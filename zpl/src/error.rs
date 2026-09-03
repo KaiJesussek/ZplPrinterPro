@@ -14,7 +14,9 @@ pub enum ParseError {
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ParseError::TruncatedFormat => write!(f, "format started with ^XA but never closed with ^XZ"),
+            ParseError::TruncatedFormat => {
+                write!(f, "format started with ^XA but never closed with ^XZ")
+            }
             ParseError::InvalidParam { cmd, detail } => {
                 write!(f, "invalid parameter for {cmd}: {detail}")
             }

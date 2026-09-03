@@ -43,7 +43,12 @@ pub(crate) fn graphic_box(ctx: &mut ParseContext, params: &[u8]) {
     let h = p_u32(parts.get(1).copied(), "GB", "height", ctx.diags, t.max(1));
     let color = parse_color(parts.get(3).copied(), "GB", ctx.diags);
     if let Some(d) = draft_mut(ctx) {
-        d.geometry = Some(Geometry::Box { width: w, height: h, thickness: t, color });
+        d.geometry = Some(Geometry::Box {
+            width: w,
+            height: h,
+            thickness: t,
+            color,
+        });
     }
 }
 
@@ -56,7 +61,11 @@ pub(crate) fn graphic_circle(ctx: &mut ParseContext, params: &[u8]) {
     let t = p_u32(parts.get(1).copied(), "GC", "thickness", ctx.diags, 1);
     let color = parse_color(parts.get(2).copied(), "GC", ctx.diags);
     if let Some(draft) = draft_mut(ctx) {
-        draft.geometry = Some(Geometry::Circle { diameter: d, thickness: t, color });
+        draft.geometry = Some(Geometry::Circle {
+            diameter: d,
+            thickness: t,
+            color,
+        });
     }
 }
 
@@ -102,7 +111,12 @@ pub(crate) fn graphic_ellipse(ctx: &mut ParseContext, params: &[u8]) {
     let h = p_u32(parts.get(1).copied(), "GE", "height", ctx.diags, t.max(1));
     let color = parse_color(parts.get(3).copied(), "GE", ctx.diags);
     if let Some(draft) = draft_mut(ctx) {
-        draft.geometry = Some(Geometry::Ellipse { width: w, height: h, thickness: t, color });
+        draft.geometry = Some(Geometry::Ellipse {
+            width: w,
+            height: h,
+            thickness: t,
+            color,
+        });
     }
 }
 
@@ -130,17 +144,30 @@ pub(crate) fn graphic_ellipse(ctx: &mut ParseContext, params: &[u8]) {
 /// `GraphicKind::Inline` with its bytes; position comes from `^FO`/`^FT`.
 pub(crate) fn graphic_field(ctx: &mut ParseContext, params: &[u8]) {
     let (segs, data) = head_segments(params, 4);
-    let comp = segs.first().and_then(|p| p.first()).copied().unwrap_or(b'A');
+    let comp = segs
+        .first()
+        .and_then(|p| p.first())
+        .copied()
+        .unwrap_or(b'A');
     let Some(b) = segs.get(1).and_then(|p| to_u32(p)) else {
-        ctx.diags.push(Diagnostic::warning("GF", "missing binary byte count (b); field skipped"));
+        ctx.diags.push(Diagnostic::warning(
+            "GF",
+            "missing binary byte count (b); field skipped",
+        ));
         return;
     };
     let Some(c) = segs.get(2).and_then(|p| to_u32(p)) else {
-        ctx.diags.push(Diagnostic::warning("GF", "missing graphic field count (c); field skipped"));
+        ctx.diags.push(Diagnostic::warning(
+            "GF",
+            "missing graphic field count (c); field skipped",
+        ));
         return;
     };
     let Some(d) = segs.get(3).and_then(|p| to_u32(p)) else {
-        ctx.diags.push(Diagnostic::warning("GF", "missing bytes per row (d); field skipped"));
+        ctx.diags.push(Diagnostic::warning(
+            "GF",
+            "missing bytes per row (d); field skipped",
+        ));
         return;
     };
     // Guide: out-of-range values are set to the nearest limit.
@@ -164,7 +191,10 @@ pub(crate) fn graphic_field(ctx: &mut ParseContext, params: &[u8]) {
         return;
     }
     let Some(bytes) = decode_graphic_data(data, c as usize, d as usize) else {
-        ctx.diags.push(Diagnostic::warning("GF", "malformed graphic data; field skipped"));
+        ctx.diags.push(Diagnostic::warning(
+            "GF",
+            "malformed graphic data; field skipped",
+        ));
         return;
     };
     // Validation passed - only now open/extend the field draft, so a

@@ -46,7 +46,7 @@ impl Bitmap {
     pub fn new(width: u32, height: u32) -> Self {
         let width = width.max(1);
         let height = height.max(1);
-        let row = ((width as usize) + 7) / 8;
+        let row = (width as usize).div_ceil(8);
         Bitmap {
             width,
             height,
@@ -59,7 +59,7 @@ impl Bitmap {
         if x >= self.width || y >= self.height {
             return;
         }
-        let idx = y as usize * ((self.width as usize + 7) / 8) + (x as usize >> 3);
+        let idx = y as usize * (self.width as usize).div_ceil(8) + (x as usize >> 3);
         let mask = 0x80 >> (x & 7);
         if black {
             self.bits[idx] |= mask;
@@ -73,7 +73,7 @@ impl Bitmap {
         if x >= self.width || y >= self.height {
             return false;
         }
-        let idx = y as usize * ((self.width as usize + 7) / 8) + (x as usize >> 3);
+        let idx = y as usize * (self.width as usize).div_ceil(8) + (x as usize >> 3);
         self.bits[idx] & (0x80 >> (x & 7)) != 0
     }
 
@@ -101,7 +101,9 @@ impl Bitmap {
             let mut enc = png::Encoder::new(&mut out, self.width, self.height);
             enc.set_color(png::ColorType::Grayscale);
             enc.set_depth(png::BitDepth::One);
-            let mut writer = enc.write_header().expect("PNG header into memory cannot fail");
+            let mut writer = enc
+                .write_header()
+                .expect("PNG header into memory cannot fail");
             let inverted: Vec<u8> = self.bits.iter().map(|b| !b).collect();
             writer
                 .write_image_data(&inverted)
@@ -206,7 +208,16 @@ pub fn render(label: &Label, opts: &RenderOptions) -> Result<RenderOutcome, Rend
             }
             Field::Diagonal(d) => {
                 let (fx, fy) = place(opts.mode, w, h, d.x, d.y, d.width, d.height);
-                draw_diagonal(&mut bmp, fx, fy, d.width, d.height, d.direction, d.thickness, d.color);
+                draw_diagonal(
+                    &mut bmp,
+                    fx,
+                    fy,
+                    d.width,
+                    d.height,
+                    d.direction,
+                    d.thickness,
+                    d.color,
+                );
             }
             Field::Ellipse(e) => {
                 let (fx, fy) = place(opts.mode, w, h, e.x, e.y, e.width, e.height);
@@ -228,7 +239,8 @@ pub fn render(label: &Label, opts: &RenderOptions) -> Result<RenderOutcome, Rend
                     // the parser caps ^GF at 99999). Width/height are
                     // clamped to u32 and used only for extents.
                     let iw = (g.bytes_per_row as u64 * 8).min(u32::MAX as u64) as u32;
-                    let ih = (g.data.len() as u64 / g.bytes_per_row as u64).min(u32::MAX as u64) as u32;
+                    let ih =
+                        (g.data.len() as u64 / g.bytes_per_row as u64).min(u32::MAX as u64) as u32;
                     let (fx, fy) = place(opts.mode, w, h, g.x, g.y, iw, ih);
                     blit(&mut bmp, iw, ih, &g.data, fx, fy);
                 }
@@ -245,7 +257,10 @@ pub fn render(label: &Label, opts: &RenderOptions) -> Result<RenderOutcome, Rend
         }
     }
 
-    Ok(RenderOutcome { bitmap: bmp, warnings })
+    Ok(RenderOutcome {
+        bitmap: bmp,
+        warnings,
+    })
 }
 
 /// A font request from `^A`/`^A@` state. `^A@` (`font_name` set - the
@@ -257,7 +272,7 @@ pub fn render(label: &Label, opts: &RenderOptions) -> Result<RenderOutcome, Rend
 pub(crate) fn font_spec(font: [u8; 2], font_name: &Option<String>) -> FontSpec {
     if let Some(name) = font_name {
         FontSpec::Downloaded(name.clone())
-    } else if font == [b'A', b'0'] {
+    } else if font == *b"A0" {
         FontSpec::Zebra(b'0')
     } else {
         FontSpec::Zebra(font[0])
@@ -276,7 +291,11 @@ pub(crate) fn field_font_spec(t: &TextField) -> FontSpec {
 pub(crate) fn resolve_font(spec: &FontSpec, opts: &RenderOptions) -> Option<FontData> {
     match spec {
         FontSpec::Zebra(_) => opts.fonts.get(spec),
-        FontSpec::Downloaded(name) => opts.memory.fonts.get(name).and_then(|ttf| font_data_from_ttf(ttf)),
+        FontSpec::Downloaded(name) => opts
+            .memory
+            .fonts
+            .get(name)
+            .and_then(|ttf| font_data_from_ttf(ttf)),
     }
 }
 
@@ -325,8 +344,9 @@ fn footprint(field: &Field, opts: &RenderOptions) -> (Option<u32>, Option<u32>) 
         },
         // Barcode fields always print their bars (empty data aside); the
         // footprint is (y, height) with the interpret line folded in.
-        Field::Barcode(b) => barcode::footprint(b, opts)
-            .map_or((None, None), |(y, h)| (Some(y), Some(h))),
+        Field::Barcode(b) => {
+            barcode::footprint(b, opts).map_or((None, None), |(y, h)| (Some(y), Some(h)))
+        }
     }
 }
 

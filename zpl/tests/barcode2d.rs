@@ -13,7 +13,12 @@ use zpl::bc::{barcode_field, Pattern};
 use zpl::ir::{BarcodeField, Field};
 
 fn single_barcode(label: &zpl::ir::Label) -> &BarcodeField {
-    assert_eq!(label.fields.len(), 1, "one field expected, got: {:?}", label.fields);
+    assert_eq!(
+        label.fields.len(),
+        1,
+        "one field expected, got: {:?}",
+        label.fields
+    );
     match &label.fields[0] {
         Field::Barcode(f) => f,
         other => panic!("expected a barcode field, got {other:?}"),
@@ -23,15 +28,21 @@ fn single_barcode(label: &zpl::ir::Label) -> &BarcodeField {
 /// Decode a Patterns::Modules QR with rqrr (module map scaled x4,
 /// dark = black). Returns the decoded text.
 fn decode_qr(pat: &Pattern) -> Result<String, String> {
-    let Pattern::Modules { width, height, data } = pat else {
+    let Pattern::Modules {
+        width,
+        height,
+        data,
+    } = pat
+    else {
         return Err(format!("expected Modules, got {pat:?}"));
     };
     let w = *width as usize;
     let scale = 4usize;
-    let mut prepared = rqrr::PreparedImage::prepare_from_bitmap(w * scale, *height as usize * scale, |x, y| {
-        let i = (y / scale) * w + (x / scale);
-        data[i >> 3] & (0x80 >> (i & 7)) != 0
-    });
+    let mut prepared =
+        rqrr::PreparedImage::prepare_from_bitmap(w * scale, *height as usize * scale, |x, y| {
+            let i = (y / scale) * w + (x / scale);
+            data[i >> 3] & (0x80 >> (i & 7)) != 0
+        });
     let grids = prepared.detect_grids();
     for g in &grids {
         if let Ok((_meta, text)) = g.decode() {
@@ -57,7 +68,7 @@ fn modules_of(command: &[u8], data: &[u8]) -> Pattern {
 #[test]
 fn qr_roundtrip_hello_all_levels() {
     // Every EC level round-trips; the QR grid is 21+8 = 29 modules.
-    for ec in [b'H', b'Q', b'M', b'L'] {
+    for ec in *b"HQML" {
         let pat = modules_of(format!("^BQN,2,2,{}", ec as char).as_bytes(), b"hello");
         match &pat {
             Pattern::Modules { width, data, .. } => {
@@ -98,12 +109,18 @@ fn qr_version_info_and_big_payload() {
     let payload = vec![b'x'; 120];
     let pat = modules_of(b"^BQN,2,2,M", &payload);
     if let Pattern::Modules { width, .. } = &pat {
-        assert!(matches!(width, 53), "v7 at level M holds 120 bytes, got {width}");
+        assert!(
+            matches!(width, 53),
+            "v7 at level M holds 120 bytes, got {width}"
+        );
     }
     let payload = vec![b'z'; 152];
     let pat = modules_of(b"^BQN,2,2,M", &payload);
     if let Pattern::Modules { width, .. } = &pat {
-        assert!(matches!(width, 57), "v8 at level M (152 bytes), got {width}");
+        assert!(
+            matches!(width, 57),
+            "v8 at level M (152 bytes), got {width}"
+        );
     }
     assert_eq!(decode_qr(&pat).unwrap(), "z".repeat(152));
     // v10: 16-bit character-count indicator (ISO Table 3); v10-H byte
@@ -111,7 +128,10 @@ fn qr_version_info_and_big_payload() {
     let payload = vec![b'k'; 110];
     let pat = modules_of(b"^BQN,2,2,H", &payload);
     if let Pattern::Modules { width, .. } = &pat {
-        assert!(matches!(width, 65), "v10 at level H (110 bytes), got {width}");
+        assert!(
+            matches!(width, 65),
+            "v10 at level H (110 bytes), got {width}"
+        );
     }
     assert_eq!(decode_qr(&pat).unwrap(), "k".repeat(110), "v10 round-trip");
 }
@@ -127,15 +147,25 @@ fn qr_v9_v10_m_level_roundtrip_uneven_ec() {
     let payload = vec![b'x'; 170]; // v9-M byte capacity 178
     let pat = modules_of(b"^BQN,2,2,M", &payload);
     if let Pattern::Modules { width, .. } = &pat {
-        assert!(matches!(width, 61), "v9 at level M (170 bytes), got {width}");
+        assert!(
+            matches!(width, 61),
+            "v9 at level M (170 bytes), got {width}"
+        );
     }
     assert_eq!(decode_qr(&pat).unwrap(), "x".repeat(170), "v9-M round-trip");
     let payload = vec![b'y'; 190]; // v10-M byte capacity 195
     let pat = modules_of(b"^BQN,2,2,M", &payload);
     if let Pattern::Modules { width, .. } = &pat {
-        assert!(matches!(width, 65), "v10 at level M (190 bytes), got {width}");
+        assert!(
+            matches!(width, 65),
+            "v10 at level M (190 bytes), got {width}"
+        );
     }
-    assert_eq!(decode_qr(&pat).unwrap(), "y".repeat(190), "v10-M round-trip");
+    assert_eq!(
+        decode_qr(&pat).unwrap(),
+        "y".repeat(190),
+        "v10-M round-trip"
+    );
 }
 
 // --- QR: hostile inputs ---------------------------------------------------
@@ -171,11 +201,18 @@ fn dm_hello_is_12x12_with_finder() {
     // "hello" -> 5 data codewords -> the 12x12 symbol (5 data + 7 EC); the
     // grid adds the 1-module quiet zone -> 14x14 modules.
     let pat = modules_of(b"^BXN,1,200", b"hello");
-    let Pattern::Modules { width, height, data } = &pat else {
+    let Pattern::Modules {
+        width,
+        height,
+        data,
+    } = &pat
+    else {
         panic!("expected Modules");
     };
     assert_eq!((*width, *height), (14, 14));
-    let g = |x: usize, y: usize| data[y * (*width as usize) + x >> 3] & (0x80 >> ((y * (*width as usize) + x) & 7)) != 0;
+    let g = |x: usize, y: usize| {
+        data[(y * (*width as usize) + x) >> 3] & (0x80 >> ((y * (*width as usize) + x) & 7)) != 0
+    };
     // The solid finder "L": bottom row (symbol row 11 = pattern row 12)
     // and left column (symbol col 0 = pattern col 1) dark.
     for x in 1..13 {
@@ -190,14 +227,16 @@ fn dm_hello_is_12x12_with_finder() {
     assert!(!g(2, 1), "clock track alternates");
     assert!(g(3, 1));
     // EC codeword count check: 5 data + 7 EC = 12 codewords of the 12x12.
-    assert_eq!(data.len(), (14 * 14 + 7) / 8);
+    assert_eq!(data.len(), (14 * 14usize).div_ceil(8));
 }
 
 #[test]
 fn dm_digits_compress_and_grow_symbol() {
     // 22 digits -> 11 codewords -> the 16x16 symbol (12 data cws).
     let pat = modules_of(b"^BXN,1,200", b"1234567890123456789012");
-    let Pattern::Modules { width, .. } = &pat else { panic!() };
+    let Pattern::Modules { width, .. } = &pat else {
+        panic!()
+    };
     assert_eq!(*width, 16 + 2, "16x16 symbol + quiet zone");
 }
 
@@ -208,7 +247,9 @@ fn dm_largest_symbol_144x144_never_panics() {
     // codeword buffer - a regression gate for writing out of bounds.
     let payload = vec![b'a'; 1400];
     let pat = modules_of(b"^BXN,1,200", &payload);
-    let Pattern::Modules { width, height, .. } = &pat else { panic!() };
+    let Pattern::Modules { width, height, .. } = &pat else {
+        panic!()
+    };
     assert_eq!((*width, *height), (146, 146), "144x144 symbol + quiet zone");
 }
 
@@ -218,7 +259,9 @@ fn dm_extended_bytes_use_upper_shift() {
     // escape 235 + value). "ooooo" = 10 UTF-8 bytes -> 20 codewords ->
     // 20x20 symbol (22 data codewords).
     let pat = modules_of(b"^CI28^BXN,1,200", "\u{00F6}\u{00F6}\u{00F6}\u{00F6}\u{00F6}".as_bytes());
-    let Pattern::Modules { width, .. } = &pat else { panic!() };
+    let Pattern::Modules { width, .. } = &pat else {
+        panic!()
+    };
     assert_eq!(*width, 20 + 2, "20x20 symbol + quiet zone");
 }
 
@@ -229,14 +272,21 @@ fn pdf417_hello_layout() {
     // "hello": byte compaction 901 + 5 bytes -> 6 payload cws; level 0 ->
     // 2 EC; total 1 (SD) + 6 + 2 = 9 -> 2 columns x 5 rows (auto).
     let pat = modules_of(b"^B7N,3,0", b"hello");
-    let Pattern::Modules { width, height, data } = &pat else { panic!() };
+    let Pattern::Modules {
+        width,
+        height,
+        data,
+    } = &pat
+    else {
+        panic!()
+    };
     assert_eq!(*width, 17 * 2 + 69 + 4, "2 cols + quiet zone"); // 107
     assert_eq!(*height, 5 * 3, "5 rows \u{00D7} row height 3"); // ^B7 h = 3
-    // Start pattern 0x1FEA8 (17 modules): 11111111010101000.
+                                                         // Start pattern 0x1FEA8 (17 modules): 11111111010101000.
     let start: Vec<bool> = (0..17).map(|i| (0x1FEA8u32 >> (16 - i)) & 1 == 1).collect();
     for (i, &d) in start.iter().enumerate() {
         let x = 2 + i; // after the 2-module quiet zone
-        let g = data[0 * (*width as usize) + x >> 3] & (0x80 >> ((0 * (*width as usize) + x) & 7)) != 0;
+        let g = data[x >> 3] & (0x80 >> (x & 7)) != 0;
         assert_eq!(g, d, "start pattern bit {i}");
     }
     assert!(data.iter().any(|&b| b != 0), "has dark modules");
@@ -246,12 +296,16 @@ fn pdf417_hello_layout() {
 fn pdf417_security_levels_and_truncation() {
     // Security 1 -> 4 EC codewords; explicit 4 columns.
     let pat = modules_of(b"^B7N,3,1,4", b"payload-payload");
-    let Pattern::Modules { width, height, .. } = &pat else { panic!() };
+    let Pattern::Modules { width, height, .. } = &pat else {
+        panic!()
+    };
     assert_eq!(*width, 17 * 4 + 69 + 4, "4 columns + quiet zone");
     assert!(height > &0);
     // Truncated: right indicator + stop -> single bar: width 17*(c+2)+1+4.
     let pat = modules_of(b"^B7N,3,0,4,,Y", b"truncated");
-    let Pattern::Modules { width, .. } = &pat else { panic!() };
+    let Pattern::Modules { width, .. } = &pat else {
+        panic!()
+    };
     assert_eq!(*width, 17 * 4 + 35 + 4, "truncated symbol width");
 }
 
@@ -262,7 +316,14 @@ fn aztec_hello_is_compact_15x15() {
     // "hello" (40 bits) -> compact layer 1 (73 data bits at 23%) -> 15x15
     // + 1-module quiet zone = 17x17.
     let pat = modules_of(b"^B0N,2,,0", b"hello");
-    let Pattern::Modules { width, height, data } = &pat else { panic!() };
+    let Pattern::Modules {
+        width,
+        height,
+        data,
+    } = &pat
+    else {
+        panic!()
+    };
     assert_eq!((*width, *height), (17, 17), "compact layer 1 + quiet zone");
     // Bulls-eye: center cell dark, ring around it white/ring dark.
     let c = *width as usize / 2; // 8 (quiet zone shifts the center by 1: 9)
@@ -284,11 +345,15 @@ fn aztec_forced_layers_and_big_payload() {
     // 200 bytes x 8 + overhead > 512 -> full layers).
     let payload = vec![b'y'; 200];
     let pat = modules_of(b"^B0N,2,,0", &payload);
-    let Pattern::Modules { width, .. } = &pat else { panic!() };
+    let Pattern::Modules { width, .. } = &pat else {
+        panic!()
+    };
     assert!(matches!(width, 19..=151), "full-range symbol, got {width}");
     // Forced full layer 1 (d=201): 19x19 + quiet.
     let pat = modules_of(b"^B0N,2,,201", b"tiny");
-    let Pattern::Modules { width, .. } = &pat else { panic!() };
+    let Pattern::Modules { width, .. } = &pat else {
+        panic!()
+    };
     assert_eq!(*width, 19 + 2);
 }
 
@@ -305,7 +370,10 @@ fn bq_parameters_parse() {
 
 #[test]
 fn hostile_params_never_panic() {
-    let nasty = [b"^BQN,9,9,9,9^FDx^FS".to_vec(), b"^BXN,9,9,9,9,9,9,9^FDx^FS".to_vec()];
+    let nasty = [
+        b"^BQN,9,9,9,9^FDx^FS".to_vec(),
+        b"^BXN,9,9,9,9,9,9,9^FDx^FS".to_vec(),
+    ];
     for cmd in nasty {
         let mut label = b"^XA^FO0,0".to_vec();
         label.extend_from_slice(&cmd);

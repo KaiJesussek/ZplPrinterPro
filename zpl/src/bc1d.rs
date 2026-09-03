@@ -90,22 +90,22 @@ const C39: [[u8; 10]; 44] = [
 /// guide's `+$`/`-$` mode-toggle prose is legacy (Task 15 report).
 #[rustfmt::skip]
 const EXT39: [[u8; 2]; 128] = [
-    [b'%',b'U'],[b'$',b'A'],[b'$',b'B'],[b'$',b'C'],[b'$',b'D'],[b'$',b'E'],[b'$',b'F'],[b'$',b'G'],
-    [b'$',b'H'],[b'$',b'I'],[b'$',b'J'],[b'$',b'K'],[b'$',b'L'],[b'$',b'M'],[b'$',b'N'],[b'$',b'O'],
-    [b'$',b'P'],[b'$',b'Q'],[b'$',b'R'],[b'$',b'S'],[b'$',b'T'],[b'$',b'U'],[b'$',b'V'],[b'$',b'W'],
-    [b'$',b'X'],[b'$',b'Y'],[b'$',b'Z'],[b'%',b'A'],[b'%',b'B'],[b'%',b'C'],[b'%',b'D'],[b'%',b'E'],
-    [b' ', 0],[b'/',b'A'],[b'/',b'B'],[b'/',b'C'],[b'/',b'D'],[b'/',b'E'],[b'/',b'F'],[b'/',b'G'],
-    [b'/',b'H'],[b'/',b'I'],[b'/',b'J'],[b'/',b'K'],[b'/',b'L'],[b'-', 0],[b'.', 0],[b'/',b'O'],
+    *b"%U",*b"$A",*b"$B",*b"$C",*b"$D",*b"$E",*b"$F",*b"$G",
+    *b"$H",*b"$I",*b"$J",*b"$K",*b"$L",*b"$M",*b"$N",*b"$O",
+    *b"$P",*b"$Q",*b"$R",*b"$S",*b"$T",*b"$U",*b"$V",*b"$W",
+    *b"$X",*b"$Y",*b"$Z",*b"%A",*b"%B",*b"%C",*b"%D",*b"%E",
+    [b' ', 0],*b"/A",*b"/B",*b"/C",*b"/D",*b"/E",*b"/F",*b"/G",
+    *b"/H",*b"/I",*b"/J",*b"/K",*b"/L",[b'-', 0],[b'.', 0],*b"/O",
     [b'0', 0],[b'1', 0],[b'2', 0],[b'3', 0],[b'4', 0],[b'5', 0],[b'6', 0],[b'7', 0],
-    [b'8', 0],[b'9', 0],[b'/',b'Z'],[b'%',b'F'],[b'%',b'G'],[b'%',b'H'],[b'%',b'I'],[b'%',b'J'],
-    [b'%',b'V'],[b'A', 0],[b'B', 0],[b'C', 0],[b'D', 0],[b'E', 0],[b'F', 0],[b'G', 0],
+    [b'8', 0],[b'9', 0],*b"/Z",*b"%F",*b"%G",*b"%H",*b"%I",*b"%J",
+    *b"%V",[b'A', 0],[b'B', 0],[b'C', 0],[b'D', 0],[b'E', 0],[b'F', 0],[b'G', 0],
     [b'H', 0],[b'I', 0],[b'J', 0],[b'K', 0],[b'L', 0],[b'M', 0],[b'N', 0],[b'O', 0],
     [b'P', 0],[b'Q', 0],[b'R', 0],[b'S', 0],[b'T', 0],[b'U', 0],[b'V', 0],[b'W', 0],
-    [b'X', 0],[b'Y', 0],[b'Z', 0],[b'%',b'K'],[b'%',b'L'],[b'%',b'M'],[b'%',b'N'],[b'%',b'O'],
-    [b'%',b'W'],[b'+',b'A'],[b'+',b'B'],[b'+',b'C'],[b'+',b'D'],[b'+',b'E'],[b'+',b'F'],[b'+',b'G'],
-    [b'+',b'H'],[b'+',b'I'],[b'+',b'J'],[b'+',b'K'],[b'+',b'L'],[b'+',b'M'],[b'+',b'N'],[b'+',b'O'],
-    [b'+',b'P'],[b'+',b'Q'],[b'+',b'R'],[b'+',b'S'],[b'+',b'T'],[b'+',b'U'],[b'+',b'V'],[b'+',b'W'],
-    [b'+',b'X'],[b'+',b'Y'],[b'+',b'Z'],[b'%',b'P'],[b'%',b'Q'],[b'%',b'R'],[b'%',b'S'],[b'%',b'T'],
+    [b'X', 0],[b'Y', 0],[b'Z', 0],*b"%K",*b"%L",*b"%M",*b"%N",*b"%O",
+    *b"%W",*b"+A",*b"+B",*b"+C",*b"+D",*b"+E",*b"+F",*b"+G",
+    *b"+H",*b"+I",*b"+J",*b"+K",*b"+L",*b"+M",*b"+N",*b"+O",
+    *b"+P",*b"+Q",*b"+R",*b"+S",*b"+T",*b"+U",*b"+V",*b"+W",
+    *b"+X",*b"+Y",*b"+Z",*b"%P",*b"%Q",*b"%R",*b"%S",*b"%T",
 ];
 
 /// Code 93 patterns (ANSI/AIM BC5), six elements per character: three bars
@@ -308,15 +308,15 @@ const R_BITS: [&str; 10] = [
 
 /// EAN-13 first-digit parity rows over the six left digits (L/G).
 const EAN13_PARITY: [&[u8; 6]; 10] = [
-    b"LLLLLL", b"LLGLGG", b"LLGGLG", b"LLGGGL", b"LGLLGG",
-    b"LGGLLG", b"LGGGLL", b"LGLGLG", b"LGLGGL", b"LGGLGL",
+    b"LLLLLL", b"LLGLGG", b"LLGGLG", b"LLGGGL", b"LGLLGG", b"LGGLLG", b"LGGGLL", b"LGLGLG",
+    b"LGLGGL", b"LGGLGL",
 ];
 
 /// UPC-E number-system-0 parity rows selected by the check digit
 /// (G = even, L = odd; ISO/IEC 15420 Table 4).
 const UPCE_PARITY: [&[u8; 6]; 10] = [
-    b"GGGLLL", b"GGLGLL", b"GGLLGL", b"GGLLLG", b"GLGGLL",
-    b"GLLGGL", b"GLLLGG", b"GLGLGL", b"GLGLLG", b"GLLGLG",
+    b"GGGLLL", b"GGLGLL", b"GGLLGL", b"GGLLLG", b"GLGGLL", b"GLLGGL", b"GLLLGG", b"GLGLGL",
+    b"GLGLLG", b"GLLGLG",
 ];
 
 // --- shared helpers --------------------------------------------------------
@@ -334,7 +334,10 @@ fn bars_fixed(runs: &[u32], module: u32) -> Pattern {
     Pattern::Bars(
         runs.iter()
             .enumerate()
-            .map(|(i, &r)| Bar { width: sat_dots((r as u64) * (module as u64)), black: i % 2 == 0 })
+            .map(|(i, &r)| Bar {
+                width: sat_dots((r as u64) * (module as u64)),
+                black: i % 2 == 0,
+            })
             .collect(),
     )
 }
@@ -348,7 +351,10 @@ fn bars_ratio(runs: &[u32], narrow: u32, wide: u32) -> Pattern {
     Pattern::Bars(
         runs.iter()
             .enumerate()
-            .map(|(i, &r)| Bar { width: if r == 1 { narrow } else { wide }, black: i % 2 == 0 })
+            .map(|(i, &r)| Bar {
+                width: if r == 1 { narrow } else { wide },
+                black: i % 2 == 0,
+            })
             .collect(),
     )
 }
@@ -427,7 +433,11 @@ fn prepare_code11(check: u8, data: &[u8]) -> Vec<u8> {
 }
 
 fn code11_char(v: u8) -> u8 {
-    if v == 10 { b'-' } else { b'0' + v }
+    if v == 10 {
+        b'-'
+    } else {
+        b'0' + v
+    }
 }
 
 /// Weighted sum by the Code 11 / Code 93 rule: weights 1..=wrap repeat
@@ -449,7 +459,7 @@ fn weighted(vals: &[u8], wrap: u32, modulus: u32) -> u8 {
 fn prepare_i25_check(data: &[u8]) -> Vec<u8> {
     let mut out = data.to_vec();
     let all_digits = out.iter().all(u8::is_ascii_digit);
-    if all_digits && out.len() % 2 == 0 {
+    if all_digits && out.len().is_multiple_of(2) {
         out.insert(0, b'0');
     }
     if let Some(c) = crate::bc::ucc_mod10(&out) {
@@ -472,7 +482,7 @@ fn prepare_code39(check: u8, data: &[u8]) -> Vec<u8> {
             }
             if b == 127 {
                 // DEL = %T%T (guide Table 1).
-                out.extend_from_slice(&[b'%', b'T']);
+                out.extend_from_slice(b"%T");
             }
         } else {
             out.push(b); // the encoder's validation reports it
@@ -636,7 +646,11 @@ pub(crate) fn code39(data: &[u8], module: u32, ratio: u32) -> Result<Pattern, St
     let mut runs = Vec::with_capacity(data.len() * 10 + 19);
     runs.extend(C39[43].iter().map(|&e| e as u32)); // start '*' with its trailing gap
     for &b in data {
-        runs.extend(C39[position(C39_CHARS, b).unwrap() as usize].iter().map(|&e| e as u32));
+        runs.extend(
+            C39[position(C39_CHARS, b).unwrap() as usize]
+                .iter()
+                .map(|&e| e as u32),
+        );
     }
     runs.extend(C39[43][..9].iter().map(|&e| e as u32)); // stop, no trailing gap
     Ok(bars_ratio(&runs, narrow, wide))
@@ -741,7 +755,11 @@ pub(crate) fn codabar(data: &[u8], module: u32, ratio: u32) -> Result<Pattern, S
     let wide = wide_dots(module, ratio);
     let mut runs = Vec::with_capacity(data.len() * 8);
     for &b in data {
-        runs.extend(CODA[position(CODA_CHARS, b).unwrap() as usize].iter().map(|&e| e as u32));
+        runs.extend(
+            CODA[position(CODA_CHARS, b).unwrap() as usize]
+                .iter()
+                .map(|&e| e as u32),
+        );
     }
     Ok(bars_ratio(&runs, narrow, wide))
 }
@@ -847,7 +865,9 @@ pub(crate) fn upca(data: &[u8], module: u32) -> Result<Pattern, String> {
 pub(crate) fn upce(data: &[u8], module: u32) -> Result<Pattern, String> {
     check_digits(data, "UPC-E (^B9)")?;
     if data.len() != 10 {
-        return Err("UPC-E: field data must be exactly 10 digits (5 manufacturer + 5 product)".into());
+        return Err(
+            "UPC-E: field data must be exactly 10 digits (5 manufacturer + 5 product)".into(),
+        );
     }
     let Some(d) = upce_digits(data) else {
         return Err("UPC-E: the number has no valid zero-suppression form".into());
@@ -879,7 +899,7 @@ pub(crate) fn planet(data: &[u8], _module: u32) -> Result<Pattern, String> {
         return Err("Planet Code (^B5): field data is required".into());
     }
     let width = 1 + data.len() * 9 + 1; // frame + digits + frame, modules
-    let stride = (width + 7) / 8;
+    let stride = width.div_ceil(8);
     let mut grid = vec![0u8; stride * 2];
     // Short bars sit in the bottom row, tall bars fill both rows.
     for (i, &d) in data.iter().enumerate() {
@@ -897,7 +917,11 @@ pub(crate) fn planet(data: &[u8], _module: u32) -> Result<Pattern, String> {
     grid[stride] |= 0x80;
     grid[(width - 1) / 8] |= 0x80 >> ((width - 1) % 8);
     grid[stride + (width - 1) / 8] |= 0x80 >> ((width - 1) % 8);
-    Ok(Pattern::Modules { width: width as u32, height: 2, data: grid })
+    Ok(Pattern::Modules {
+        width: width as u32,
+        height: 2,
+        data: grid,
+    })
 }
 
 /// Zero-suppression (GS1 Table 5, forward direction; the guide's p.86
@@ -918,14 +942,25 @@ fn upce_digits(data: &[u8]) -> Option<[u8; 6]> {
     if m4 == b'0' && m5 == b'0' && (b'0'..=b'2').contains(&m3) && p1 == b'0' && p2 == b'0' {
         // mfr ends 000/100/200, product <= 999 (guide rule 1)
         Some([d1, d2, p3, p4, p5, m3])
-    } else if m4 == b'0' && m5 == b'0' && (b'3'..=b'9').contains(&m3) && p1 == b'0' && p2 == b'0' && p3 == b'0'
+    } else if m4 == b'0'
+        && m5 == b'0'
+        && (b'3'..=b'9').contains(&m3)
+        && p1 == b'0'
+        && p2 == b'0'
+        && p3 == b'0'
     {
         // mfr ends 300..900, product <= 99 (guide rule 2)
         Some([d1, d2, m3, p4, p5, b'3'])
     } else if m5 == b'0' && m4 != b'0' && p1 == b'0' && p2 == b'0' && p3 == b'0' && p4 == b'0' {
         // mfr ends 10..90, product <= 9 (guide rule 3)
         Some([d1, d2, m3, m4, p5, b'4'])
-    } else if m5 != b'0' && p1 == b'0' && p2 == b'0' && p3 == b'0' && p4 == b'0' && (b'5'..=b'9').contains(&p5) {
+    } else if m5 != b'0'
+        && p1 == b'0'
+        && p2 == b'0'
+        && p3 == b'0'
+        && p4 == b'0'
+        && (b'5'..=b'9').contains(&p5)
+    {
         // mfr not ending in 0, product 00005..00009 (guide rule 4)
         Some([d1, d2, m3, m4, m5, p5])
     } else {

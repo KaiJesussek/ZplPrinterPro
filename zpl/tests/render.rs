@@ -57,13 +57,17 @@ fn decode_png(png: &[u8]) -> (u32, u32, Vec<u8>) {
     let mut reader = dec.read_info().expect("png header decodes");
     let mut buf = vec![0u8; reader.output_buffer_size()];
     let info = reader.next_frame(&mut buf).expect("png frame decodes");
-    assert_eq!(info.color_type, ColorType::Grayscale, "PNG must be grayscale");
+    assert_eq!(
+        info.color_type,
+        ColorType::Grayscale,
+        "PNG must be grayscale"
+    );
     assert_eq!(info.bit_depth, BitDepth::One, "PNG must be 1-bit");
     (info.width, info.height, buf)
 }
 
 fn sample(buf: &[u8], width: u32, x: u32, y: u32) -> u8 {
-    let row = ((width as usize) + 7) / 8;
+    let row = (width as usize).div_ceil(8);
     (buf[y as usize * row + (x as usize >> 3)] >> (7 - (x & 7))) & 1
 }
 
@@ -93,7 +97,11 @@ fn png_roundtrip_dimensions() {
     for x in 0..4 {
         for y in 0..4 {
             // PNG grayscale sample 0 = black; our bitmap bit 1 = black.
-            assert_eq!(bmp.get(x, y), sample(&buf, w, x, y) == 0, "pixel {x},{y} pattern");
+            assert_eq!(
+                bmp.get(x, y),
+                sample(&buf, w, x, y) == 0,
+                "pixel {x},{y} pattern"
+            );
         }
     }
 }
@@ -107,8 +115,14 @@ fn blit_inline_graphics() {
     assert!(bmp.get(3, 5), "black pixel at blit origin");
     assert!(bmp.get(3, 6), "black pixel one row down");
     assert!(!bmp.get(4, 5), "second pixel of the byte is white");
-    assert!(!bmp.get(3, 4) && !bmp.get(3, 7), "no bleed outside the image");
-    assert!(!bmp.get(0, 0) && !bmp.get(31, 19), "rest of the label is white");
+    assert!(
+        !bmp.get(3, 4) && !bmp.get(3, 7),
+        "no bleed outside the image"
+    );
+    assert!(
+        !bmp.get(0, 0) && !bmp.get(31, 19),
+        "rest of the label is white"
+    );
 }
 
 #[test]
@@ -131,7 +145,10 @@ fn render_clamps_never_panics() {
     let bmp = &outcome.bitmap;
     assert_eq!((bmp.width, bmp.height), (10, 10));
     // Blit at (8,8): top row's black pixel at (8,8) is visible.
-    assert!(bmp.get(8, 8), "clipped blit still paints its on-canvas pixels");
+    assert!(
+        bmp.get(8, 8),
+        "clipped blit still paints its on-canvas pixels"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -163,8 +180,17 @@ fn missing_stored_image_warns_not_err() {
     // ^XG recalls LOGO.GRF, which no ^DG ever stored: the renderer warns in
     // the outcome and skips the field - it does NOT fail the render.
     let outcome = render_src(b"^XA^PW20^LL20^FO0,0^XGLOGO.GRF^FS^XZ");
-    assert_eq!(outcome.warnings.len(), 1, "one missing-image warning, got {:?}", outcome.warnings);
-    assert!(outcome.warnings[0].contains("LOGO.GRF"), "warning names the image: {}", outcome.warnings[0]);
+    assert_eq!(
+        outcome.warnings.len(),
+        1,
+        "one missing-image warning, got {:?}",
+        outcome.warnings
+    );
+    assert!(
+        outcome.warnings[0].contains("LOGO.GRF"),
+        "warning names the image: {}",
+        outcome.warnings[0]
+    );
     let bmp = &outcome.bitmap;
     for x in 0..bmp.width {
         for y in 0..bmp.height {
@@ -183,12 +209,29 @@ fn stored_image_blits_from_memory() {
         let mut ctx = ParseContext::new(&mut diags, &mut memory);
         parse_stream(&mut Scanner::new(b"~DGLOGO.GRF,2,1,8080"), &mut ctx);
     }
-    assert!(memory.images.contains_key("LOGO.GRF"), "download stored the image");
-    let outcome = render_into(b"^XA^PW32^LL20^FO3,5^XGLOGO.GRF^FS^XZ", &mut diags, &mut memory);
+    assert!(
+        memory.images.contains_key("LOGO.GRF"),
+        "download stored the image"
+    );
+    let outcome = render_into(
+        b"^XA^PW32^LL20^FO3,5^XGLOGO.GRF^FS^XZ",
+        &mut diags,
+        &mut memory,
+    );
     let bmp = &outcome.bitmap;
-    assert!(outcome.warnings.is_empty(), "stored image must not warn: {:?}", outcome.warnings);
-    assert!(bmp.get(3, 5) && bmp.get(3, 6), "stored image blits its pixels");
-    assert!(!bmp.get(4, 5), "white pixels of the stored image stay white");
+    assert!(
+        outcome.warnings.is_empty(),
+        "stored image must not warn: {:?}",
+        outcome.warnings
+    );
+    assert!(
+        bmp.get(3, 5) && bmp.get(3, 6),
+        "stored image blits its pixels"
+    );
+    assert!(
+        !bmp.get(4, 5),
+        "white pixels of the stored image stay white"
+    );
 }
 
 #[test]
@@ -198,7 +241,10 @@ fn lh_offset_applied_to_field_origins() {
     let bmp = &outcome.bitmap;
     assert!(bmp.get(7, 8), "field origin + ^LH offset");
     assert!(!bmp.get(2, 3), "un-offset origin is outside the box");
-    assert!(!bmp.get(6, 8) && !bmp.get(7, 7), "top-left corner is exactly (7,8)");
+    assert!(
+        !bmp.get(6, 8) && !bmp.get(7, 7),
+        "top-left corner is exactly (7,8)"
+    );
 }
 
 #[test]
@@ -222,8 +268,14 @@ fn po_inverted_rotates_label_180() {
     // to (20-0-4, 20-0-4) = (16,16).
     let outcome = render_src(b"^XA^PW20^LL20^POI^FO0,0^GB4,4,1,B^FS^XZ");
     let bmp = &outcome.bitmap;
-    assert!(bmp.get(16, 16) && bmp.get(19, 19), "box painted at the rotated origin");
-    assert!(!bmp.get(0, 0), "original corner is empty after the 180\u{00B0} rotation");
+    assert!(
+        bmp.get(16, 16) && bmp.get(19, 19),
+        "box painted at the rotated origin"
+    );
+    assert!(
+        !bmp.get(0, 0),
+        "original corner is empty after the 180\u{00B0} rotation"
+    );
     assert!(!bmp.get(15, 15), "just outside the rotated box");
 }
 
@@ -247,7 +299,10 @@ fn thickness_zero_fills_box() {
             assert!(bmp.get(x, y), "filled cell {x},{y}");
         }
     }
-    assert!(!bmp.get(0, 0) && !bmp.get(9, 9) && !bmp.get(7, 4) && !bmp.get(6, 5), "fill stays inside the box");
+    assert!(
+        !bmp.get(0, 0) && !bmp.get(9, 9) && !bmp.get(7, 4) && !bmp.get(6, 5),
+        "fill stays inside the box"
+    );
 }
 
 #[test]
@@ -258,8 +313,14 @@ fn white_color_erases() {
     let outcome = render_src(src);
     let bmp = &outcome.bitmap;
     assert!(bmp.get(0, 0), "black stays where no white box overlaps");
-    assert!(!bmp.get(5, 5) && !bmp.get(14, 14), "white fill erased the black");
-    assert!(bmp.get(4, 4) && bmp.get(15, 15), "black remains just outside the white box");
+    assert!(
+        !bmp.get(5, 5) && !bmp.get(14, 14),
+        "white fill erased the black"
+    );
+    assert!(
+        bmp.get(4, 4) && bmp.get(15, 15),
+        "black remains just outside the white box"
+    );
 }
 
 #[test]
@@ -270,13 +331,22 @@ fn circle_thickness_grows_inward() {
     let bmp = &outcome.bitmap;
     let at = |x: u32, y: u32| bmp.get(1 + x, 1 + y);
     assert!(!at(0, 0), "corner of the 6x6 circle box is empty");
-    assert!(at(0, 3) && at(3, 0) && at(5, 3) && at(3, 5), "cardinal edge midpoints painted");
-    assert!(!at(2, 2) && !at(3, 3) && !at(2, 3) && !at(3, 2), "1-dot ring leaves the center hole");
+    assert!(
+        at(0, 3) && at(3, 0) && at(5, 3) && at(3, 5),
+        "cardinal edge midpoints painted"
+    );
+    assert!(
+        !at(2, 2) && !at(3, 3) && !at(2, 3) && !at(3, 2),
+        "1-dot ring leaves the center hole"
+    );
 
     // Thickness >= diameter/2 fills the whole disc (thickness grows inward).
     let outcome = render_src(b"^XA^PW10^LL10^FO1,1^GC6,3,B^FS^XZ");
     let bmp = &outcome.bitmap;
-    assert!(bmp.get(4, 4), "solid disc center painted when thickness reaches the center");
+    assert!(
+        bmp.get(4, 4),
+        "solid disc center painted when thickness reaches the center"
+    );
 }
 
 #[test]
@@ -285,10 +355,16 @@ fn ellipse_paints_ring_with_hole() {
     let outcome = render_src(b"^XA^PW12^LL10^FO1,1^GE10,6,1,B^FS^XZ");
     let bmp = &outcome.bitmap;
     let at = |x: u32, y: u32| bmp.get(1 + x, 1 + y);
-    assert!(!at(0, 0) && !at(9, 0) && !at(0, 5) && !at(9, 5), "corners empty");
+    assert!(
+        !at(0, 0) && !at(9, 0) && !at(0, 5) && !at(9, 5),
+        "corners empty"
+    );
     assert!(at(4, 0) && at(5, 0), "top edge midpoint painted");
     assert!(!at(5, 2), "1-dot ellipse keeps an inner hole");
-    assert!(at(0, 2) && at(0, 3), "leftmost column painted at mid height");
+    assert!(
+        at(0, 2) && at(0, 3),
+        "leftmost column painted at mid height"
+    );
 }
 
 #[test]
@@ -299,14 +375,20 @@ fn diagonal_direction_pins_r_and_l() {
     for i in 0..5 {
         assert!(bmp.get(i, i), "R diagonal on the main diagonal at {i}");
     }
-    assert!(!bmp.get(4, 0) && !bmp.get(0, 4), "R diagonal's anti-diagonal corners empty");
+    assert!(
+        !bmp.get(4, 0) && !bmp.get(0, 4),
+        "R diagonal's anti-diagonal corners empty"
+    );
 
     let outcome = render_src(b"^XA^PW20^LL20^FO0,0^GD5,5,1,B,L^FS^XZ");
     let bmp = &outcome.bitmap;
     for i in 0..5 {
         assert!(bmp.get(4 - i, i), "L diagonal on the anti-diagonal at {i}");
     }
-    assert!(!bmp.get(0, 0) && !bmp.get(4, 4), "L diagonal's main-diagonal corners empty");
+    assert!(
+        !bmp.get(0, 0) && !bmp.get(4, 4),
+        "L diagonal's main-diagonal corners empty"
+    );
 }
 
 #[test]
@@ -333,22 +415,64 @@ fn hostile_dimensions_never_hang_or_panic() {
     // the canvas (bounded loops over the visible intersection only), and
     // width/height arithmetic must not overflow - this is the never-panic /
     // never-hang invariant the fuzz task (T18) will lean on.
-    use zpl::ir::{BoxField, CircleField, DiagonalField, EllipseField, Field, GraphicField, GraphicKind, Label};
+    use zpl::ir::{
+        BoxField, CircleField, DiagonalField, EllipseField, Field, GraphicField, GraphicKind, Label,
+    };
     let label = Label {
         width_dots: 4,
         height_dots: 0, // auto height over hostile fields must terminate
-        copies: 1,        
+        copies: 1,
         numbered: BTreeMap::new(),
         fields: vec![
-            Field::Box(BoxField { x: 0, y: 0, width: u32::MAX, height: u32::MAX, thickness: u32::MAX, color: b'B' }),
-            Field::Circle(CircleField { x: u32::MAX, y: u32::MAX, diameter: u32::MAX, thickness: u32::MAX, color: b'B' }),
-            Field::Ellipse(EllipseField { x: 2, y: 2, width: u32::MAX, height: u32::MAX, thickness: u32::MAX, color: b'W' }),
-            Field::Diagonal(DiagonalField { x: 3, y: 0, width: u32::MAX, height: u32::MAX, direction: b'L', thickness: u32::MAX, color: b'B' }),
-            Field::Graphic(GraphicField { x: u32::MAX - 1, y: 0, kind: GraphicKind::Inline, data: vec![0xFF], bytes_per_row: 1 }),
+            Field::Box(BoxField {
+                x: 0,
+                y: 0,
+                width: u32::MAX,
+                height: u32::MAX,
+                thickness: u32::MAX,
+                color: b'B',
+            }),
+            Field::Circle(CircleField {
+                x: u32::MAX,
+                y: u32::MAX,
+                diameter: u32::MAX,
+                thickness: u32::MAX,
+                color: b'B',
+            }),
+            Field::Ellipse(EllipseField {
+                x: 2,
+                y: 2,
+                width: u32::MAX,
+                height: u32::MAX,
+                thickness: u32::MAX,
+                color: b'W',
+            }),
+            Field::Diagonal(DiagonalField {
+                x: 3,
+                y: 0,
+                width: u32::MAX,
+                height: u32::MAX,
+                direction: b'L',
+                thickness: u32::MAX,
+                color: b'B',
+            }),
+            Field::Graphic(GraphicField {
+                x: u32::MAX - 1,
+                y: 0,
+                kind: GraphicKind::Inline,
+                data: vec![0xFF],
+                bytes_per_row: 1,
+            }),
             // bytes_per_row * 8 overflows u32 for values >= 2^29 (the old
             // code panicked in debug); empty data passes the multiple-of
             // check (0 % N == 0) and must render as a no-op blit.
-            Field::Graphic(GraphicField { x: 0, y: 0, kind: GraphicKind::Inline, data: Vec::new(), bytes_per_row: u32::MAX }),
+            Field::Graphic(GraphicField {
+                x: 0,
+                y: 0,
+                kind: GraphicKind::Inline,
+                data: Vec::new(),
+                bytes_per_row: u32::MAX,
+            }),
         ],
     };
     let opts = RenderOptions {
@@ -382,7 +506,10 @@ fn blit_negative_origin_reads_source_correctly() {
     let bmp = &outcome.bitmap;
     for x in 0..8 {
         assert!(bmp.get(x, 0), "src row 1 lands at dst {x},0");
-        assert!(!bmp.get(x, 1) && !bmp.get(x, 2), "src row 0 went off the top; dst rows stay white");
+        assert!(
+            !bmp.get(x, 1) && !bmp.get(x, 2),
+            "src row 0 went off the top; dst rows stay white"
+        );
     }
 
     // ^POI rotates the 16x1 image (data F00F: 0xF0 0x0F) to fx = 8-16 = -8
@@ -392,13 +519,22 @@ fn blit_negative_origin_reads_source_correctly() {
     let outcome = render_src(b"^XA^PW8^LL8^POI^FO0,0^GFA,2,2,2,F00F^FS^XZ");
     let bmp = &outcome.bitmap;
     for x in 0..4 {
-        assert!(!bmp.get(x, 7), "src cols 8..11 (0x0F leading zeros) at dst {x},7");
+        assert!(
+            !bmp.get(x, 7),
+            "src cols 8..11 (0x0F leading zeros) at dst {x},7"
+        );
     }
     for x in 4..8 {
-        assert!(bmp.get(x, 7), "src cols 12..15 (0x0F trailing ones) at dst {x},7");
+        assert!(
+            bmp.get(x, 7),
+            "src cols 12..15 (0x0F trailing ones) at dst {x},7"
+        );
     }
     for y in 0..7 {
-        assert!(!bmp.get(0, y) && !bmp.get(7, y), "no image pixels above the rotated row");
+        assert!(
+            !bmp.get(0, y) && !bmp.get(7, y),
+            "no image pixels above the rotated row"
+        );
     }
 }
 
@@ -410,7 +546,7 @@ fn degenerate_inline_graphic_is_render_error() {
     let label = zpl::ir::Label {
         width_dots: 10,
         height_dots: 10,
-        copies: 1,        
+        copies: 1,
         numbered: BTreeMap::new(),
         fields: vec![zpl::ir::Field::Graphic(zpl::ir::GraphicField {
             x: 0,
@@ -493,7 +629,11 @@ fn text_paints_black_pixels_in_cell() {
         .flat_map(|y| (0..bmp.width).map(move |x| (x, y)))
         .filter(|&(x, y)| bmp.get(x, y))
         .collect();
-    assert!(ink.len() >= 8, "an X rasterizes to a real glyph, got {} dots", ink.len());
+    assert!(
+        ink.len() >= 8,
+        "an X rasterizes to a real glyph, got {} dots",
+        ink.len()
+    );
     assert!(
         ink.iter().all(|&(_, y)| y < 40),
         "nothing paints below the 20-dot cell at a 40-tall label"
@@ -503,7 +643,10 @@ fn text_paints_black_pixels_in_cell() {
         "black pixels land inside rows 0..20 of the field origin"
     );
     let within: Vec<&(u32, u32)> = ink.iter().filter(|&&(x, y)| y < 20 && x < 40).collect();
-    assert!(!within.is_empty() && within.len() < 400, "glyph ink, not a filled region");
+    assert!(
+        !within.is_empty() && within.len() < 400,
+        "glyph ink, not a filled region"
+    );
     // Rows 22..40 stay completely white.
     assert!((22..40).all(|y| (0..bmp.width).all(|x| !bmp.get(x, y))));
 }
@@ -518,12 +661,19 @@ fn fb_wraps_at_width() {
     let r1 = first_ink_row(bmp, 0..20).expect("first line has ink");
     let r2 = first_ink_row(bmp, 20..40).expect("second wrapped line has ink");
     assert_eq!(r2, r1 + 20, "second line starts one cell below the first");
-    assert!((40..60).all(|y| (0..bmp.width).all(|x| !bmp.get(x, y))), "block stays 2 lines");
+    assert!(
+        (40..60).all(|y| (0..bmp.width).all(|x| !bmp.get(x, y))),
+        "block stays 2 lines"
+    );
     // Each line carries two A glyphs 20 dots apart (fixed ^A width) - the
     // aggregated two-line scan shows the two column clusters per line.
     let clusters = col_clusters(bmp, 0..40);
     assert_eq!(clusters.len(), 2, "two A columns per line: {clusters:?}");
-    assert_eq!(clusters[1].0 - clusters[0].0, 20, "fixed advance spaces the As");
+    assert_eq!(
+        clusters[1].0 - clusters[0].0,
+        20,
+        "fixed advance spaces the As"
+    );
 }
 
 #[test]
@@ -533,8 +683,14 @@ fn rotation_90() {
     // down the y-axis from y=10 by the 20-dot advance.
     let out = render_text(b"^XA^PW80^LL80^FO10,10^A0R,20,20^FDX^FS^XZ");
     let bmp = &out.bitmap;
-    assert!((0..80).all(|y| !bmp.get(9, y)), "nothing left of the rotated cell");
-    assert!((0..80).all(|x| !bmp.get(x, 9)), "nothing above the rotated cell");
+    assert!(
+        (0..80).all(|y| !bmp.get(9, y)),
+        "nothing left of the rotated cell"
+    );
+    assert!(
+        (0..80).all(|x| !bmp.get(x, 9)),
+        "nothing above the rotated cell"
+    );
     let ink: Vec<(u32, u32)> = (0..80)
         .flat_map(|y| (0..80).map(move |x| (x, y)))
         .filter(|&(x, y)| bmp.get(x, y))
@@ -569,7 +725,9 @@ fn reverse_field() {
     assert!(n_ink > 0, "normal render actually inks");
     // Single 'X' at the origin (Left): the layout box is [0..advance) x
     // [0..cell), advance = round(adv_X * 20/15) at the fixed 20-dot cell.
-    let metric = DefaultFontProvider::new().get(&FontSpec::Zebra(b'0')).expect("font 0");
+    let metric = DefaultFontProvider::new()
+        .get(&FontSpec::Zebra(b'0'))
+        .expect("font 0");
     let adv = (metric.metrics.advances[b'X' as usize - 32] as f32 * 20.0 / 15.0).round() as u32;
     let cell = 20u32;
     for y in 0..40 {
@@ -578,13 +736,19 @@ fn reverse_field() {
             if in_box {
                 assert_ne!(nb.get(x, y), rb.get(x, y), "box pixel {x},{y} flips");
             } else {
-                assert_eq!(nb.get(x, y), rb.get(x, y), "outside pixel {x},{y} unchanged");
+                assert_eq!(
+                    nb.get(x, y),
+                    rb.get(x, y),
+                    "outside pixel {x},{y} unchanged"
+                );
             }
         }
     }
     // The box itself is black somewhere (reverse video, not a no-op) ...
     assert!(
-        (0..cell).flat_map(|y| (0..adv).map(move |x| (x, y))).any(|(x, y)| rb.get(x, y)),
+        (0..cell)
+            .flat_map(|y| (0..adv).map(move |x| (x, y)))
+            .any(|(x, y)| rb.get(x, y)),
         "reverse paints a black field"
     );
     // ... and the glyph bits are white inside it.
@@ -613,7 +777,10 @@ fn dot_origin_baseline() {
         (21..26).any(|y| (0..40).any(|x| bmp.get(x, y))),
         "descender ink below the baseline row 20"
     );
-    assert!((26..40).all(|y| (0..40).all(|x| !bmp.get(x, y))), "descender is ~5 dots");
+    assert!(
+        (26..40).all(|y| (0..40).all(|x| !bmp.get(x, y))),
+        "descender is ~5 dots"
+    );
 }
 
 #[test]
@@ -629,14 +796,20 @@ fn a_width_rule_fixed_advance() {
     assert!(f.len() >= 2 && p.len() >= 2, "two X glyphs in both renders");
     let f_pitch = f[1].0 - f[0].0;
     let p_pitch = p[1].0 - p[0].0;
-    assert_eq!(f_pitch, 20, "fixed width w=20 spaces the glyphs 20 dots apart");
+    assert_eq!(
+        f_pitch, 20,
+        "fixed width w=20 spaces the glyphs 20 dots apart"
+    );
     let metric = DefaultFontProvider::new()
         .get(&FontSpec::Zebra(b'0'))
         .expect("font 0 served");
     let adv_x = metric.metrics.advances[b'X' as usize - 32] as u32;
     // eff = 20/15 (font 0: cell 15 -> requested height 20).
     let expected = (adv_x as f32 * 20.0 / 15.0).round() as u32;
-    assert_eq!(p_pitch, expected, "proportional pitch = round(advance * h/cell)");
+    assert_eq!(
+        p_pitch, expected,
+        "proportional pitch = round(advance * h/cell)"
+    );
 }
 
 #[test]
@@ -674,9 +847,15 @@ fn downloaded_font_text_paint() {
         &mut diags,
         &mut memory,
     );
-    assert!(out.warnings.is_empty(), "downloaded font paints cleanly: {:?}", out.warnings);
     assert!(
-        (0..20).flat_map(|y| (0..30).map(move |x| (x, y))).any(|(x, y)| out.bitmap.get(x, y)),
+        out.warnings.is_empty(),
+        "downloaded font paints cleanly: {:?}",
+        out.warnings
+    );
+    assert!(
+        (0..20)
+            .flat_map(|y| (0..30).map(move |x| (x, y)))
+            .any(|(x, y)| out.bitmap.get(x, y)),
         "downloaded-font glyph inks the cell"
     );
 }
@@ -745,7 +924,11 @@ fn reverse_field_ft_box() {
             if in_box {
                 assert_ne!(nb.get(x, y), rb.get(x, y), "box pixel {x},{y} flips");
             } else {
-                assert_eq!(nb.get(x, y), rb.get(x, y), "outside pixel {x},{y} unchanged");
+                assert_eq!(
+                    nb.get(x, y),
+                    rb.get(x, y),
+                    "outside pixel {x},{y} unchanged"
+                );
             }
         }
     }
@@ -784,12 +967,18 @@ fn reverse_field_ft_box_rotated() {
     let x1 = x0 + pitch + cell;
     for y in 0..90 {
         for x in 0..90 {
-            let in_box = (x as i64) >= x0 && (x as i64) < x1 && (y as i64) >= 20
+            let in_box = (x as i64) >= x0
+                && (x as i64) < x1
+                && (y as i64) >= 20
                 && (y as i64) < 20 + line_w as i64;
             if in_box {
                 assert_ne!(nb.get(x, y), rb.get(x, y), "box pixel {x},{y} flips");
             } else {
-                assert_eq!(nb.get(x, y), rb.get(x, y), "outside pixel {x},{y} unchanged");
+                assert_eq!(
+                    nb.get(x, y),
+                    rb.get(x, y),
+                    "outside pixel {x},{y} unchanged"
+                );
             }
         }
     }
@@ -804,7 +993,10 @@ fn fb_overwide_word_breaks_without_empty_line() {
     let r1 = first_ink_row(bmp, 0..20).expect("first char-broken line has ink");
     let r2 = first_ink_row(bmp, 20..40).expect("second char-broken line has ink");
     assert_eq!(r2, r1 + 20, "second line one pitch below");
-    assert!((40..60).all(|y| (0..bmp.width).all(|x| !bmp.get(x, y))), "capped at max_lines");
+    assert!(
+        (40..60).all(|y| (0..bmp.width).all(|x| !bmp.get(x, y))),
+        "capped at max_lines"
+    );
 
     let out1 = render_text(b"^XA^PW64^LL60^FO0,0^FB40,1,0,L^A0N,20,20^FDAAAAAAAAAA^FS^XZ");
     let bmp1 = &out1.bitmap;
@@ -812,7 +1004,10 @@ fn fb_overwide_word_breaks_without_empty_line() {
         first_ink_row(bmp1, 0..20).is_some(),
         "default max_lines=1 still prints the first fragment"
     );
-    assert!((20..60).all(|y| (0..bmp1.width).all(|x| !bmp1.get(x, y))), "one line only");
+    assert!(
+        (20..60).all(|y| (0..bmp1.width).all(|x| !bmp1.get(x, y))),
+        "one line only"
+    );
 }
 
 #[test]
@@ -902,7 +1097,10 @@ fn barcode_first_bar_after_quiet_zone() {
     );
     // First bar is 4 dots wide (elements 2,1,1,2,3,2 at module 2) and the
     // full 60 dots tall; the space element after it is white.
-    assert!(out.bitmap.get(quiet, 0) && out.bitmap.get(quiet + 3, 59), "first bar");
+    assert!(
+        out.bitmap.get(quiet, 0) && out.bitmap.get(quiet + 3, 59),
+        "first bar"
+    );
     assert!(!out.bitmap.get(quiet + 4, 0), "first space element");
     // Row 60 is the bar-height boundary: nothing below (f=:N - no line).
     assert!(
@@ -911,7 +1109,9 @@ fn barcode_first_bar_after_quiet_zone() {
     );
 
     // The painted bar run matches the T9 encoder output exactly.
-    let Pattern::Bars(bars) = barcode_field(f) else { panic!("Code 128 is a bar pattern") };
+    let Pattern::Bars(bars) = barcode_field(f) else {
+        panic!("Code 128 is a bar pattern")
+    };
     for x in 0..240 {
         for y in 0..120 {
             let expect = bar_bit_at(&bars, quiet, f.height, x, y);
@@ -932,7 +1132,9 @@ fn barcode_rotation_90() {
     let f = single_barcode(&label);
     assert_eq!(f.rotation, Rotation::R90);
     let quiet = 10 * f.module;
-    let Pattern::Bars(bars) = barcode_field(f) else { panic!("Code 128 is a bar pattern") };
+    let Pattern::Bars(bars) = barcode_field(f) else {
+        panic!("Code 128 is a bar pattern")
+    };
     // fh = bar height (no interpret line).
     let fh = f.height;
 
@@ -976,7 +1178,10 @@ fn barcode_interpret_line_below_bars() {
     assert_eq!((f.line, f.interpret), (b'Y', false));
 
     // The bars keep the full 60-dot height (the line is NOT inside it).
-    assert!(out.bitmap.get(20, 0) && out.bitmap.get(23, 59), "bars span 0..60");
+    assert!(
+        out.bitmap.get(20, 0) && out.bitmap.get(23, 59),
+        "bars span 0..60"
+    );
     // First line ink appears exactly below the bars: rows 60..69.
     assert!(
         (60..69).any(|y| (0..40).any(|x| out.bitmap.get(x, y))),
@@ -1033,9 +1238,18 @@ fn barcode_both_interpret_lines_auto_height() {
     assert_eq!((f.line, f.interpret), (b'Y', true));
     let bmp = &out.bitmap;
     assert_eq!(bmp.height, 84, "auto height covers both line cells + bars");
-    assert!((6..15).any(|y| (0..40).any(|x| bmp.get(x, y))), "above line ink");
-    assert!(bmp.get(20, 15) && bmp.get(23, 74), "bars span the full 60-dot height");
-    assert!((75..84).any(|y| (0..40).any(|x| bmp.get(x, y))), "below line ink (not clipped)");
+    assert!(
+        (6..15).any(|y| (0..40).any(|x| bmp.get(x, y))),
+        "above line ink"
+    );
+    assert!(
+        bmp.get(20, 15) && bmp.get(23, 74),
+        "bars span the full 60-dot height"
+    );
+    assert!(
+        (75..84).any(|y| (0..40).any(|x| bmp.get(x, y))),
+        "below line ink (not clipped)"
+    );
 }
 
 /// ^POI (label rotated 180 deg): a barcode with BOTH interpretation lines
@@ -1049,17 +1263,33 @@ fn barcode_poi_keeps_both_interpret_lines() {
     // (300-30-198, 300-20-78) = (72, 202): above-line rows [193,202) at
     // cols [72,112), bars rows [202,262) at cols [92,250), below-line rows
     // [262,271) at cols [72,112).
-    let (label, out) = render_bc(b"^XA^PW300^LL300^POI^FO30,20^BY2,3,60^BCN,60,Y,Y^FD12345678^FS^XZ");
+    let (label, out) =
+        render_bc(b"^XA^PW300^LL300^POI^FO30,20^BY2,3,60^BCN,60,Y,Y^FD12345678^FS^XZ");
     let f = single_barcode(&label);
     assert_eq!(f.rotation, Rotation::R0);
     assert!(out.warnings.is_empty(), "clean: {:?}", out.warnings);
     let bmp = &out.bitmap;
     assert!(bmp.get(92, 202) && bmp.get(95, 261), "bars flipped intact");
-    assert!(!(72..92).any(|x| (202..262).any(|y| bmp.get(x, y))), "bar quiet zone inside the flipped field");
-    assert!((193..202).any(|y| (72..112).any(|x| bmp.get(x, y))), "above line survived the flip");
-    assert!((262..271).any(|y| (72..112).any(|x| bmp.get(x, y))), "below line survived the flip");
-    assert!(!(0..193).any(|y| (0..300).any(|x| bmp.get(x, y))), "nothing above the flipped field");
-    assert!(!(271..300).any(|y| (0..300).any(|x| bmp.get(x, y))), "nothing below the flipped field");
+    assert!(
+        !(72..92).any(|x| (202..262).any(|y| bmp.get(x, y))),
+        "bar quiet zone inside the flipped field"
+    );
+    assert!(
+        (193..202).any(|y| (72..112).any(|x| bmp.get(x, y))),
+        "above line survived the flip"
+    );
+    assert!(
+        (262..271).any(|y| (72..112).any(|x| bmp.get(x, y))),
+        "below line survived the flip"
+    );
+    assert!(
+        !(0..193).any(|y| (0..300).any(|x| bmp.get(x, y))),
+        "nothing above the flipped field"
+    );
+    assert!(
+        !(271..300).any(|y| (0..300).any(|x| bmp.get(x, y))),
+        "nothing below the flipped field"
+    );
 }
 
 /// Hostile hand-built IR: module = u32::MAX (the parser caps ^BY at 10;
@@ -1084,19 +1314,19 @@ fn barcode_hostile_module_never_panics() {
         check: b'N',
         start: b'A',
         stop: b'A',
-            qr_ec: b'Q',
-            qr_mask: 7,
-            dm_quality: 0,
-            dm_format: 6,
-            dm_aspect: 1,
-            az_level: 0,
-            az_menu: false,
-            az_append: 1,
-            pdf_security: 0,
-            pdf_cols: 0,
-            pdf_rows: 0,
-            pdf_truncate: false,
-        font: [b'A', b' '],
+        qr_ec: b'Q',
+        qr_mask: 7,
+        dm_quality: 0,
+        dm_format: 6,
+        dm_aspect: 1,
+        az_level: 0,
+        az_menu: false,
+        az_append: 1,
+        pdf_security: 0,
+        pdf_cols: 0,
+        pdf_rows: 0,
+        pdf_truncate: false,
+        font: *b"A ",
         font_height: 9,
         font_width: 5,
         font_name: None,
@@ -1105,7 +1335,7 @@ fn barcode_hostile_module_never_panics() {
     let label = Label {
         width_dots: 8,
         height_dots: 12,
-        copies: 1,        
+        copies: 1,
         numbered: BTreeMap::new(),
         fields: vec![
             Field::Barcode(make(b'C', Rotation::R0)),
@@ -1128,7 +1358,6 @@ fn barcode_hostile_module_never_panics() {
     );
 }
 
-
 /// Task 15 smoke: every new 1D symbology renders through the full
 /// pipeline (parse -> barcode_field -> paint) without warnings or panics.
 #[test]
@@ -1146,5 +1375,10 @@ fn t15_all_symbologies_render() {
         "unexpected warnings: {:?}",
         out.warnings,
     );
-    assert!(out.bitmap.width > 100 && out.bitmap.height > 1350, "{}x{}", out.bitmap.width, out.bitmap.height);
+    assert!(
+        out.bitmap.width > 100 && out.bitmap.height > 1350,
+        "{}x{}",
+        out.bitmap.width,
+        out.bitmap.height
+    );
 }

@@ -12,7 +12,7 @@
 //! MEDIA OUT, RIBBON OUT, HEAD OPEN, REWINDER FULL, or HEAD
 //! OVER-TEMPERATURE - modeled by the `None` return.
 
-use crate::state::{PrinterState, PrintMode, Temp};
+use crate::state::{PrintMode, PrinterState, Temp};
 
 /// String-1 `aaa` - communication (interface) settings for the emulated
 /// serial port: 9600 baud, 8 data bits, no parity, 1 stop bit, DTR
@@ -43,11 +43,7 @@ pub const STRING3_MODEL: &str = "0000";
 /// over-temperature).
 pub fn hs_response(s: &PrinterState, images: usize) -> Option<Vec<u8>> {
     let c = &s.conditions;
-    if c.paper_out
-        || c.ribbon_out
-        || c.head_open
-        || c.rewind_full
-        || c.head_temp == Temp::OverTemp
+    if c.paper_out || c.ribbon_out || c.head_open || c.rewind_full || c.head_temp == Temp::OverTemp
     {
         return None;
     }
@@ -70,16 +66,16 @@ pub fn hs_response(s: &PrinterState, images: usize) -> Option<Vec<u8>> {
     let s1 = format!(
         "{:03},{},{},{:04},{:03},{},{},{},{:03},{},{},{}",
         COMM_SETTINGS,
-        c.paper_out as u8,                                     // b
-        c.pause as u8,                                         // c
-        s.label_length_dots.min(9999),                         // dddd
-        s.formats_in_buffer.min(999),                          // eee
-        s.buffer_full as u8,                                   // f
-        c.comm_diag as u8,                                     // g
-        s.partial_format as u8,                                // h
-        0,                                                     // iii
-        s.corrupt_ram as u8,                                   // j
-        0,                                                     // k
+        c.paper_out as u8,                                        // b
+        c.pause as u8,                                            // c
+        s.label_length_dots.min(9999),                            // dddd
+        s.formats_in_buffer.min(999),                             // eee
+        s.buffer_full as u8,                                      // f
+        c.comm_diag as u8,                                        // g
+        s.partial_format as u8,                                   // h
+        0,                                                        // iii
+        s.corrupt_ram as u8,                                      // j
+        0,                                                        // k
         matches!(c.head_temp, Temp::Warm | Temp::OverTemp) as u8, // l
     );
 
@@ -89,17 +85,17 @@ pub fn hs_response(s: &PrinterState, images: usize) -> Option<Vec<u8>> {
     // single-letter Kiosk modes are out of scope for a u8 state field).
     let s2 = format!(
         "{:03},{},{},{},{},{},{},{},{:08},{},{:03}",
-        mmm,                                       // mmm
-        0,                                         // n (unused)
-        c.head_open as u8,                         // o
-        c.ribbon_out as u8,                        // p
+        mmm,                                                      // mmm
+        0,                                                        // n (unused)
+        c.head_open as u8,                                        // o
+        c.ribbon_out as u8,                                       // p
         matches!(c.print_mode, PrintMode::ThermalTransfer) as u8, // q
-        s.print_mode_code,                         // r
-        s.print_width_mode,                        // s
-        s.label_waiting as u8,                     // t
-        s.labels_remaining.min(99_999_999),        // uuuuuuuu
-        1,                                         // v (always 1)
-        images.min(999),                           // www
+        s.print_mode_code,                                        // r
+        s.print_width_mode,                                       // s
+        s.label_waiting as u8,                                    // t
+        s.labels_remaining.min(99_999_999),                       // uuuuuuuu
+        1,                                                        // v (always 1)
+        images.min(999),                                          // www
     );
 
     // String 3.

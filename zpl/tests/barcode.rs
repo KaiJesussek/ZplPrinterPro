@@ -13,8 +13,8 @@ mod common;
 
 use zpl::bc::{barcode_field, Pattern};
 use zpl::diag::Severity;
-use zpl::ir::{BarcodeField, Field};
 use zpl::ir::Rotation;
+use zpl::ir::{BarcodeField, Field};
 
 /// Assert that `pattern` is exactly the `expected` module sequence (each
 /// element rendered at `module` dots), alternating black/white from black -
@@ -37,7 +37,12 @@ fn assert_bars(pattern: &Pattern, module: u32, expected: &[u32]) {
 }
 
 fn assert_single_barcode(label: &zpl::ir::Label) -> &BarcodeField {
-    assert_eq!(label.fields.len(), 1, "expected one field, got {:?}", label.fields);
+    assert_eq!(
+        label.fields.len(),
+        1,
+        "expected one field, got {:?}",
+        label.fields
+    );
     match &label.fields[0] {
         Field::Barcode(f) => f,
         other => panic!("expected a barcode field, got {other:?}"),
@@ -94,7 +99,7 @@ fn bc128_auto_switches_and_checks() {
             pdf_rows: 0,
             pdf_truncate: false,
             // No ^A in the format: the draft's ^CF power-up font (A, 9x5).
-            font: [b'A', b' '],
+            font: *b"A ",
             font_height: 9,
             font_width: 5,
             font_name: None,
@@ -105,13 +110,13 @@ fn bc128_auto_switches_and_checks() {
         &barcode_field(f),
         2,
         &[
-            2,1,1,2,3,2, // 105
-            1,1,2,2,3,2, // 12
-            1,3,1,1,2,3, // 34
-            3,3,1,1,2,1, // 56
-            2,4,1,1,1,2, // 78
-            1,3,3,1,2,1, // 47
-            2,3,3,1,1,1,2, // stop
+            2, 1, 1, 2, 3, 2, // 105
+            1, 1, 2, 2, 3, 2, // 12
+            1, 3, 1, 1, 2, 3, // 34
+            3, 3, 1, 1, 2, 1, // 56
+            2, 4, 1, 1, 1, 2, // 78
+            1, 3, 3, 1, 2, 1, // 47
+            2, 3, 3, 1, 1, 1, 2, // stop
         ],
     );
 }
@@ -128,13 +133,13 @@ fn bc128_fnc_escapes() {
         &barcode_field(f),
         2,
         &[
-            2,1,1,2,1,4, // 104 start B
-            4,1,1,1,3,1, // 102 FNC1
-            1,1,1,3,2,3, // 33 'A'
-            1,3,1,1,2,3, // 34 'B'
-            1,3,1,3,2,1, // 35 'C'
-            4,1,1,1,3,1, // 102 check
-            2,3,3,1,1,1,2, // stop
+            2, 1, 1, 2, 1, 4, // 104 start B
+            4, 1, 1, 1, 3, 1, // 102 FNC1
+            1, 1, 1, 3, 2, 3, // 33 'A'
+            1, 3, 1, 1, 2, 3, // 34 'B'
+            1, 3, 1, 3, 2, 1, // 35 'C'
+            4, 1, 1, 1, 3, 1, // 102 check
+            2, 3, 3, 1, 1, 1, 2, // stop
         ],
     );
 }
@@ -150,12 +155,12 @@ fn bc128_special_char_escapes() {
         &barcode_field(f),
         2,
         &[
-            2,1,1,2,1,4, // 104
-            2,1,2,1,2,3, // 30
-            1,3,1,1,4,1, // 94
-            4,3,1,1,1,1, // 62
-            1,1,4,3,1,1, // 96
-            2,3,3,1,1,1,2, // stop
+            2, 1, 1, 2, 1, 4, // 104
+            2, 1, 2, 1, 2, 3, // 30
+            1, 3, 1, 1, 4, 1, // 94
+            4, 3, 1, 1, 1, 1, // 62
+            1, 1, 4, 3, 1, 1, // 96
+            2, 3, 3, 1, 1, 1, 2, // stop
         ],
     );
 }
@@ -217,12 +222,12 @@ fn bc128_subset_invocations() {
         &barcode_field(f),
         2,
         &[
-            2,1,1,2,1,4, // 104
-            1,2,1,2,2,3, // 3 '#'
-            1,1,3,1,4,1, // 99 CODE C
-            1,1,2,2,3,2, // 12
-            2,3,2,1,2,1, // 32
-            2,3,3,1,1,1,2, // stop
+            2, 1, 1, 2, 1, 4, // 104
+            1, 2, 1, 2, 2, 3, // 3 '#'
+            1, 1, 3, 1, 4, 1, // 99 CODE C
+            1, 1, 2, 2, 3, 2, // 12
+            2, 3, 2, 1, 2, 1, // 32
+            2, 3, 3, 1, 1, 1, 2, // stop
         ],
     );
 
@@ -238,15 +243,15 @@ fn bc128_subset_invocations() {
         &barcode_field(f),
         2,
         &[
-            2,1,1,2,3,2, // 105
-            1,1,2,2,3,2, // 12
-            1,3,1,1,2,3, // 34
-            3,1,1,1,4,1, // 101 CODE A
-            1,1,1,3,2,3, // 33 'A'
-            1,3,1,1,2,3, // 34 'B'
-            1,3,1,3,2,1, // 35 'C'
-            1,4,2,1,1,2, // 73
-            2,3,3,1,1,1,2, // stop
+            2, 1, 1, 2, 3, 2, // 105
+            1, 1, 2, 2, 3, 2, // 12
+            1, 3, 1, 1, 2, 3, // 34
+            3, 1, 1, 1, 4, 1, // 101 CODE A
+            1, 1, 1, 3, 2, 3, // 33 'A'
+            1, 3, 1, 1, 2, 3, // 34 'B'
+            1, 3, 1, 3, 2, 1, // 35 'C'
+            1, 4, 2, 1, 1, 2, // 73
+            2, 3, 3, 1, 1, 1, 2, // stop
         ],
     );
 }
@@ -262,10 +267,10 @@ fn bc128_explicit_start_code() {
         &barcode_field(f),
         2,
         &[
-            2,1,1,2,3,2, // 105
-            1,1,2,2,3,2, // 12
-            1,2,2,2,3,1, // 14: 10011001110 -> 1,2,2,2,3,1
-            2,3,3,1,1,1,2, // stop
+            2, 1, 1, 2, 3, 2, // 105
+            1, 1, 2, 2, 3, 2, // 12
+            1, 2, 2, 2, 3, 1, // 14: 10011001110 -> 1,2,2,2,3,1
+            2, 3, 3, 1, 1, 1, 2, // stop
         ],
     );
 }
@@ -304,15 +309,15 @@ fn bc_ucc_check_digit_appends_mod10() {
         &barcode_field(f),
         2,
         &[
-            2,1,1,2,3,2, // 105
-            1,1,2,2,3,2, // 12
-            1,3,1,1,2,3, // 34
-            3,3,1,1,2,1, // 56
-            2,4,1,1,1,2, // 78 -> 10001101110 = 1,3,2,1,1,3
-            1,1,4,1,3,1, // 100 CODE B
-            2,2,1,2,3,1, // 20 '4'
-            2,1,1,3,3,1, // 49
-            2,3,3,1,1,1,2, // stop
+            2, 1, 1, 2, 3, 2, // 105
+            1, 1, 2, 2, 3, 2, // 12
+            1, 3, 1, 1, 2, 3, // 34
+            3, 3, 1, 1, 2, 1, // 56
+            2, 4, 1, 1, 1, 2, // 78 -> 10001101110 = 1,3,2,1,1,3
+            1, 1, 4, 1, 3, 1, // 100 CODE B
+            2, 2, 1, 2, 3, 1, // 20 '4'
+            2, 1, 1, 3, 3, 1, // 49
+            2, 3, 3, 1, 1, 1, 2, // stop
         ],
     );
 }
@@ -331,20 +336,20 @@ fn bc_ucc_mode_d_strips_and_prepends_fnc1() {
         &barcode_field(f),
         2,
         &[
-            2,1,1,2,3,2, // 105
-            4,1,1,1,3,1, // 102 FNC1
-            2,2,2,1,2,2, // 01
-            1,1,2,2,3,2, // 12
-            1,3,1,1,2,3, // 34
-            3,3,1,1,2,1, // 56
-            2,4,1,1,1,2, // 78
-            2,1,4,1,2,1, // 90
-            1,1,2,2,3,2, // 12
-            1,3,1,1,2,3, // 34
-            3,3,1,1,2,1, // 56
-            2,4,1,1,1,2, // 78
-            4,1,3,1,1,1, // 77
-            2,3,3,1,1,1,2, // stop
+            2, 1, 1, 2, 3, 2, // 105
+            4, 1, 1, 1, 3, 1, // 102 FNC1
+            2, 2, 2, 1, 2, 2, // 01
+            1, 1, 2, 2, 3, 2, // 12
+            1, 3, 1, 1, 2, 3, // 34
+            3, 3, 1, 1, 2, 1, // 56
+            2, 4, 1, 1, 1, 2, // 78
+            2, 1, 4, 1, 2, 1, // 90
+            1, 1, 2, 2, 3, 2, // 12
+            1, 3, 1, 1, 2, 3, // 34
+            3, 3, 1, 1, 2, 1, // 56
+            2, 4, 1, 1, 1, 2, // 78
+            4, 1, 3, 1, 1, 1, // 77
+            2, 3, 3, 1, 1, 1, 2, // stop
         ],
     );
 }
@@ -362,20 +367,15 @@ fn bc_ucc_case_mode_pads_to_19_digits() {
         &barcode_field(f),
         2,
         &[
-            2,1,1,2,3,2, // 105
-            1,1,2,2,3,2, // 12
-            1,3,1,1,2,3, // 34
-            2,1,2,2,2,2, // 00 x7
-            2,1,2,2,2,2,
-            2,1,2,2,2,2,
-            2,1,2,2,2,2,
-            2,1,2,2,2,2,
-            2,1,2,2,2,2,
-            2,1,2,2,2,2,
-            1,1,4,1,3,1, // 100 CODE B
-            1,2,3,1,2,2, // 16 '0'
-            2,2,3,1,1,2, // 22
-            2,3,3,1,1,1,2, // stop
+            2, 1, 1, 2, 3, 2, // 105
+            1, 1, 2, 2, 3, 2, // 12
+            1, 3, 1, 1, 2, 3, // 34
+            2, 1, 2, 2, 2, 2, // 00 x7
+            2, 1, 2, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 1, 2, 2, 2,
+            2, 2, 1, 2, 2, 2, 2, 1, 1, 4, 1, 3, 1, // 100 CODE B
+            1, 2, 3, 1, 2, 2, // 16 '0'
+            2, 2, 3, 1, 1, 2, // 22
+            2, 3, 3, 1, 1, 1, 2, // stop
         ],
     );
 }
@@ -421,15 +421,15 @@ fn bc_high_byte_in_subset_c_never_panics() {
         &barcode_field(f),
         2,
         &[
-            2,1,1,2,3,2, // 105
-            1,1,2,2,3,2, // 12
-            1,3,1,1,2,3, // 34
-            3,3,1,1,2,1, // 56
-            2,4,1,1,1,2, // 78
-            1,1,4,1,3,1, // 100 CODE B
-            2,1,2,3,2,1, // 31 '?'
-            1,1,2,2,3,2, // 12 (check)
-            2,3,3,1,1,1,2, // stop
+            2, 1, 1, 2, 3, 2, // 105
+            1, 1, 2, 2, 3, 2, // 12
+            1, 3, 1, 1, 2, 3, // 34
+            3, 3, 1, 1, 2, 1, // 56
+            2, 4, 1, 1, 1, 2, // 78
+            1, 1, 4, 1, 3, 1, // 100 CODE B
+            2, 1, 2, 3, 2, 1, // 31 '?'
+            1, 1, 2, 2, 3, 2, // 12 (check)
+            2, 3, 3, 1, 1, 1, 2, // stop
         ],
     );
 }
@@ -447,11 +447,11 @@ fn bc_fh_hex_escapes_apply_to_barcode_data() {
         &barcode_field(f),
         2,
         &[
-            2,1,1,2,1,4, // 104 start B
-            1,2,3,2,2,1, // 17 '1'
-            2,2,3,2,1,1, // 18 '2'
-            3,1,1,1,2,3, // 54
-            2,3,3,1,1,1,2, // stop
+            2, 1, 1, 2, 1, 4, // 104 start B
+            1, 2, 3, 2, 2, 1, // 17 '1'
+            2, 2, 3, 2, 1, 1, // 18 '2'
+            3, 1, 1, 1, 2, 3, // 54
+            2, 3, 3, 1, 1, 1, 2, // stop
         ],
     );
 }
@@ -469,16 +469,16 @@ fn bc_fh_hex_escapes_apply_to_barcode_data() {
 /// The GS1 EAN/UPC element tables (7 modules per digit): L (odd, left),
 /// G (even, left) and R (right = bitwise complement of L).
 const L: [&str; 10] = [
-    "0001101", "0011001", "0010011", "0111101", "0100011", "0110001",
-    "0101111", "0111011", "0110111", "0001011",
+    "0001101", "0011001", "0010011", "0111101", "0100011", "0110001", "0101111", "0111011",
+    "0110111", "0001011",
 ];
 const G: [&str; 10] = [
-    "0100111", "0110011", "0011011", "0100001", "0011101", "0111001",
-    "0000101", "0010001", "0001001", "0010111",
+    "0100111", "0110011", "0011011", "0100001", "0011101", "0111001", "0000101", "0010001",
+    "0001001", "0010111",
 ];
 const R: [&str; 10] = [
-    "1110010", "1100110", "1101100", "1000010", "1011100", "1001110",
-    "1010000", "1000100", "1001000", "1110100",
+    "1110010", "1100110", "1101100", "1000010", "1011100", "1001110", "1010000", "1000100",
+    "1001000", "1110100",
 ];
 
 /// Assert `pattern` is exactly the module sequence `bits` (1 = bar, 0 =
@@ -519,22 +519,14 @@ fn b3_code39_mod43_and_ratio() {
         1,
         &[
             // * start (incl. trailing narrow gap)
-            1, 3, 1, 1, 3, 1, 3, 1, 1, 1,
-            // A
-            3, 1, 1, 1, 1, 3, 1, 1, 3, 1,
-            // B
-            1, 1, 3, 1, 1, 3, 1, 1, 3, 1,
-            // C
-            3, 1, 3, 1, 1, 3, 1, 1, 1, 1,
-            // 1
-            3, 1, 1, 3, 1, 1, 1, 1, 3, 1,
-            // 2
-            1, 1, 3, 3, 1, 1, 1, 1, 3, 1,
-            // 3
-            3, 1, 3, 3, 1, 1, 1, 1, 1, 1,
-            // $ (check)
-            1, 3, 1, 3, 1, 3, 1, 1, 1, 1,
-            // * stop (no trailing gap)
+            1, 3, 1, 1, 3, 1, 3, 1, 1, 1, // A
+            3, 1, 1, 1, 1, 3, 1, 1, 3, 1, // B
+            1, 1, 3, 1, 1, 3, 1, 1, 3, 1, // C
+            3, 1, 3, 1, 1, 3, 1, 1, 1, 1, // 1
+            3, 1, 1, 3, 1, 1, 1, 1, 3, 1, // 2
+            1, 1, 3, 3, 1, 1, 1, 1, 3, 1, // 3
+            3, 1, 3, 3, 1, 1, 1, 1, 1, 1, // $ (check)
+            1, 3, 1, 3, 1, 3, 1, 1, 1, 1, // * stop (no trailing gap)
             1, 3, 1, 1, 3, 1, 3, 1, 1,
         ],
     );
@@ -547,7 +539,9 @@ fn b3_code39_mod43_and_ratio() {
 fn b3_code39_by_ratio_table_wide_dots() {
     let (label, _) = common::parse_one(b"^XA^BY3,2.5,20^B3N,N^FDB^FS^XZ");
     let f = assert_single_barcode(&label);
-    let Pattern::Bars(bars) = barcode_field(f) else { panic!("expected bars") };
+    let Pattern::Bars(bars) = barcode_field(f) else {
+        panic!("expected bars")
+    };
     // 'B' = 001001001 -> N N W N N W N N W; * B * with 3-wide gaps.
     let widths: Vec<u32> = bars.iter().map(|b| b.width).collect();
     assert_eq!(
@@ -574,12 +568,9 @@ fn b2_interleaved_2of5_pairs_and_guards() {
         1,
         &[
             // start NNNN
-            1, 1, 1, 1,
-            // pair 1,2: bars(1)=31113, spaces(2)=13113
-            3, 1, 1, 3, 1, 1, 1, 1, 3, 3,
-            // pair 3,4: bars(3)=33111, spaces(4)=11313
-            3, 1, 3, 1, 1, 3, 1, 1, 1, 3,
-            // stop WNN
+            1, 1, 1, 1, // pair 1,2: bars(1)=31113, spaces(2)=13113
+            3, 1, 1, 3, 1, 1, 1, 1, 3, 3, // pair 3,4: bars(3)=33111, spaces(4)=11313
+            3, 1, 3, 1, 1, 3, 1, 1, 1, 3, // stop WNN
             3, 1, 1,
         ],
     );
@@ -595,12 +586,9 @@ fn b2_interleaved_2of5_odd_count_pads_leading_zero() {
         &barcode_field(f),
         1,
         &[
-            1, 1, 1, 1,
-            // pair 0,1: bars(0)=11331, spaces(1)=31113
-            1, 3, 1, 1, 3, 1, 3, 1, 1, 3,
-            // pair 2,3
-            1, 3, 3, 3, 1, 1, 1, 1, 3, 1,
-            3, 1, 1,
+            1, 1, 1, 1, // pair 0,1: bars(0)=11331, spaces(1)=31113
+            1, 3, 1, 1, 3, 1, 3, 1, 1, 3, // pair 2,3
+            1, 3, 3, 3, 1, 1, 1, 1, 3, 1, 3, 1, 1,
         ],
     );
 }
@@ -616,14 +604,10 @@ fn b2_interleaved_2of5_mod10_check_digit() {
         &barcode_field(f),
         1,
         &[
-            1, 1, 1, 1,
-            // pair 0,1
-            1, 3, 1, 1, 3, 1, 3, 1, 1, 3,
-            // pair 2,3
-            1, 3, 3, 3, 1, 1, 1, 1, 3, 1,
-            // pair 4,8: bars(4)=11313, spaces(8)=31131
-            1, 3, 1, 1, 3, 1, 1, 3, 3, 1,
-            3, 1, 1,
+            1, 1, 1, 1, // pair 0,1
+            1, 3, 1, 1, 3, 1, 3, 1, 1, 3, // pair 2,3
+            1, 3, 3, 3, 1, 1, 1, 1, 3, 1, // pair 4,8: bars(4)=11313, spaces(8)=31131
+            1, 3, 1, 1, 3, 1, 1, 3, 3, 1, 3, 1, 1,
         ],
     );
 }
@@ -640,7 +624,11 @@ fn be_ean13_parity_and_check_digit() {
     let mut bits = String::from("101");
     // Parity row for first digit 4 (GS1 Table): LGLLGG.
     for (d, p) in b"006381".iter().zip("LGLLGG".bytes()) {
-        bits.push_str(if p == b'L' { L[(d - b'0') as usize] } else { G[(d - b'0') as usize] });
+        bits.push_str(if p == b'L' {
+            L[(d - b'0') as usize]
+        } else {
+            G[(d - b'0') as usize]
+        });
     }
     bits.push_str("01010");
     for d in b"333931".iter() {
@@ -986,25 +974,27 @@ fn b3_hostile_ratio_module_saturates() {
         check: b'N',
         start: b'A',
         stop: b'A',
-            qr_ec: b'Q',
-            qr_mask: 7,
-            dm_quality: 0,
-            dm_format: 6,
-            dm_aspect: 1,
-            az_level: 0,
-            az_menu: false,
-            az_append: 1,
-            pdf_security: 0,
-            pdf_cols: 0,
-            pdf_rows: 0,
-            pdf_truncate: false,
-        font: [b'A', b' '],
+        qr_ec: b'Q',
+        qr_mask: 7,
+        dm_quality: 0,
+        dm_format: 6,
+        dm_aspect: 1,
+        az_level: 0,
+        az_menu: false,
+        az_append: 1,
+        pdf_security: 0,
+        pdf_cols: 0,
+        pdf_rows: 0,
+        pdf_truncate: false,
+        font: *b"A ",
         font_height: 9,
         font_width: 5,
         font_name: None,
         rotation: Rotation::R0,
     };
-    let Pattern::Bars(bars) = barcode_field(&f) else { panic!("expected bars") };
+    let Pattern::Bars(bars) = barcode_field(&f) else {
+        panic!("expected bars")
+    };
     assert!(!bars.is_empty());
     assert!(
         bars.iter().all(|b| b.width == u32::MAX),
@@ -1024,7 +1014,9 @@ fn ba_code93_del_is_one_pair() {
     let (label, diags) = common::parse_one(b"^XA^BY1,3,20^BAN,20^FD\x7f^FS^XZ");
     assert!(diags.items.is_empty(), "expected no warnings: {diags:?}");
     let f = assert_single_barcode(&label);
-    let Pattern::Bars(bars) = barcode_field(f) else { panic!("expected bars") };
+    let Pattern::Bars(bars) = barcode_field(f) else {
+        panic!("expected bars")
+    };
     assert_eq!(
         bars.iter().map(|b| b.width).sum::<u32>(),
         55,
@@ -1045,7 +1037,9 @@ fn invalid_1d_barcode_data_warns_and_skips() {
         diags.items.iter().any(|d| d.severity == Severity::Warning),
         "expected warning, got {diags:?}",
     );
-    assert!(matches!(barcode_field(assert_single_barcode(&label)), Pattern::Bars(b) if b.is_empty()));
+    assert!(
+        matches!(barcode_field(assert_single_barcode(&label)), Pattern::Bars(b) if b.is_empty())
+    );
 
     // ^B9 demands exactly 10 digits.
     let (label, diags) = common::parse_one(b"^XA^B9N,20^FD123^FS^XZ");
@@ -1053,7 +1047,9 @@ fn invalid_1d_barcode_data_warns_and_skips() {
         diags.items.iter().any(|d| d.severity == Severity::Warning),
         "expected warning, got {diags:?}",
     );
-    assert!(matches!(barcode_field(assert_single_barcode(&label)), Pattern::Bars(b) if b.is_empty()));
+    assert!(
+        matches!(barcode_field(assert_single_barcode(&label)), Pattern::Bars(b) if b.is_empty())
+    );
 
     // ^B9 input with no valid zero-suppression (mfr not ending in 0 and a
     // product above 00009 breaks every case).
@@ -1062,7 +1058,9 @@ fn invalid_1d_barcode_data_warns_and_skips() {
         diags.items.iter().any(|d| d.severity == Severity::Warning),
         "expected warning, got {diags:?}",
     );
-    assert!(matches!(barcode_field(assert_single_barcode(&label)), Pattern::Bars(b) if b.is_empty()));
+    assert!(
+        matches!(barcode_field(assert_single_barcode(&label)), Pattern::Bars(b) if b.is_empty())
+    );
 
     // ^B5 rejects non-digits (Planet is numeric-only).
     let (label, diags) = common::parse_one(b"^XA^B5N,20^FD12A4^FS^XZ");
@@ -1070,7 +1068,9 @@ fn invalid_1d_barcode_data_warns_and_skips() {
         diags.items.iter().any(|d| d.severity == Severity::Warning),
         "expected warning, got {diags:?}",
     );
-    assert!(matches!(barcode_field(assert_single_barcode(&label)), Pattern::Bars(b) if b.is_empty()));
+    assert!(
+        matches!(barcode_field(assert_single_barcode(&label)), Pattern::Bars(b) if b.is_empty())
+    );
 
     // ^BM e=A caps the field at 13 digits (guide p.122).
     let (label, diags) = common::parse_one(b"^XA^BMN,A,20,N,N^FD12345678901234^FS^XZ");
@@ -1078,7 +1078,9 @@ fn invalid_1d_barcode_data_warns_and_skips() {
         diags.items.iter().any(|d| d.severity == Severity::Warning),
         "expected warning, got {diags:?}",
     );
-    assert!(matches!(barcode_field(assert_single_barcode(&label)), Pattern::Bars(b) if b.is_empty()));
+    assert!(
+        matches!(barcode_field(assert_single_barcode(&label)), Pattern::Bars(b) if b.is_empty())
+    );
 
     // Byte >= 0x80 is outside Code 39's full-ASCII set.
     let (label, diags) = common::parse_one(b"^XA^B3N,N,20,N,N^FDAB\x80^FS^XZ");
@@ -1086,5 +1088,7 @@ fn invalid_1d_barcode_data_warns_and_skips() {
         diags.items.iter().any(|d| d.severity == Severity::Warning),
         "expected warning, got {diags:?}",
     );
-    assert!(matches!(barcode_field(assert_single_barcode(&label)), Pattern::Bars(b) if b.is_empty()));
+    assert!(
+        matches!(barcode_field(assert_single_barcode(&label)), Pattern::Bars(b) if b.is_empty())
+    );
 }

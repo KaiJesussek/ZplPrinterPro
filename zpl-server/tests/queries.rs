@@ -84,7 +84,7 @@ fn s2_fields(resp: &[u8]) -> Vec<String> {
 }
 
 fn s1_fields(resp: &[u8]) -> Vec<String> {
-    let l = resp.split(|&b| b == b'\n').nth(0).unwrap();
+    let l = resp.split(|&b| b == b'\n').next().unwrap();
     l[1..l.len() - 2]
         .split(|&b| b == b',')
         .map(|f| String::from_utf8(f.to_vec()).unwrap())
@@ -117,7 +117,9 @@ async fn hv_honors_byte_count_header_and_termination() {
 
     let mut sock = TcpStream::connect(addr).await.unwrap();
     // ^HV1,3,<,>! -> n=3 bytes of "Hello", header "<", terminator ">!".
-    sock.write_all(b"^XA^FN1^FDHello^FS^XZ^HV1,3,<,>!").await.unwrap();
+    sock.write_all(b"^XA^FN1^FDHello^FS^XZ^HV1,3,<,>!")
+        .await
+        .unwrap();
     let mut buf = [0u8; 64];
     let n = tokio::time::timeout(Duration::from_secs(3), sock.read(&mut buf))
         .await
@@ -159,7 +161,12 @@ async fn hv_unknown_field_returns_empty_data() {
     sock.write_all(b"^XA^FN1^FDHello^FS^XZ^HV9").await.unwrap();
     // A never-defined field number returns no data (and no header/terminator
     // default), so the raw reply is zero bytes: assert silence.
-    assert_no_burst(&mut sock, Duration::from_millis(400), "^HV for an unknown field").await;
+    assert_no_burst(
+        &mut sock,
+        Duration::from_millis(400),
+        "^HV for an unknown field",
+    )
+    .await;
     drop(sock);
 }
 
@@ -172,7 +179,9 @@ async fn labels_remaining_decrements_per_printed_copy() {
     let mut sock = TcpStream::connect(addr).await.unwrap();
     // A ^PQ2 batch: 2 copies received at ^XZ; the completion consumes the
     // first printed copy, so 1 label remains when ~HS is answered.
-    sock.write_all(b"^XA^GB50,50,2,B^FS^PQ2^XZ~HS").await.unwrap();
+    sock.write_all(b"^XA^GB50,50,2,B^FS^PQ2^XZ~HS")
+        .await
+        .unwrap();
     let resp = read_until_frames(&mut sock, 1).await;
     let f = s2_fields(&resp);
     assert_eq!(f[8], "00000001", "uuuuuuuu = labels remaining in batch");
@@ -225,12 +234,21 @@ async fn tilde_inside_fd_data_is_not_a_query() {
     // treats '~' as text, so the ONLY response must come from the trailing
     // real query. (The old raw byte-scan answered both - the regression
     // this test pins.)
-    sock.write_all(b"^XA^FD~HS inside data^FS^XZ~HS").await.unwrap();
+    sock.write_all(b"^XA^FD~HS inside data^FS^XZ~HS")
+        .await
+        .unwrap();
     let resp = read_until_frames(&mut sock, 1).await;
     // One ~HS response = three STX-framed lines; a spurious query from the
     // ^FD body would double the count to six.
-    assert_eq!(frames(&resp), 3, "exactly one ~HS response, from the trailing query");
-    assert!(resp.starts_with(b"\x02158,"), "the one response is a status string");
+    assert_eq!(
+        frames(&resp),
+        3,
+        "exactly one ~HS response, from the trailing query"
+    );
+    assert!(
+        resp.starts_with(b"\x02158,"),
+        "the one response is a status string"
+    );
     drop(sock);
     wait_labels(&state, 1).await; // the label still archives normally
 }

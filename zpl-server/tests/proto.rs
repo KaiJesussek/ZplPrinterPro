@@ -112,7 +112,7 @@ fn frames(resp: &[u8]) -> usize {
 
 /// String 1's comma fields of the first frame in `resp`.
 fn s1_fields(resp: &[u8]) -> Vec<String> {
-    let l = resp.split(|&b| b == b'\n').nth(0).unwrap();
+    let l = resp.split(|&b| b == b'\n').next().unwrap();
     l[1..l.len() - 2]
         .split(|&b| b == b',')
         .map(|f| String::from_utf8(f.to_vec()).unwrap())
@@ -200,7 +200,11 @@ async fn fire_and_forget_label_archives_row_and_png() {
     let arc = state.archive.lock().await;
     assert_eq!(arc.len(), 1, "exactly one archive row");
     assert_eq!(arc.rows()[0].row.bytes, payload.len());
-    assert_eq!(arc.rows()[0].row.diags, 0, "no diagnostics on a clean label");
+    assert_eq!(
+        arc.rows()[0].row.diags,
+        0,
+        "no diagnostics on a clean label"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -255,10 +259,8 @@ async fn hs_suppressed_while_media_out_via_put() {
 
     // Media out, set through the Task 21 API (the same PrinterState the
     // TCP responder reads).
-    let (status, body) = body_string(
-        put_json(&state, "/api/printer-state", r#"{"paper_out":true}"#).await,
-    )
-    .await;
+    let (status, body) =
+        body_string(put_json(&state, "/api/printer-state", r#"{"paper_out":true}"#).await).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("\"paper_out\":true"), "PUT echoes the merge");
 
@@ -307,7 +309,9 @@ async fn pq3_leaves_two_labels_remaining_in_status() {
     let mut sock = TcpStream::connect(addr).await.unwrap();
     // A ^PQ3 batch: 3 copies received at ^XZ; the completion consumes the
     // first printed copy, so 2 labels remain when ~HS is answered.
-    sock.write_all(b"^XA^GB50,50,2,B^FS^PQ3^XZ~HS").await.unwrap();
+    sock.write_all(b"^XA^GB50,50,2,B^FS^PQ3^XZ~HS")
+        .await
+        .unwrap();
     let resp = read_until_frames(&mut sock, 1).await;
     assert_eq!(frames(&resp), 3, "one ~HS response");
     let f = s2_fields(&resp);
@@ -349,7 +353,9 @@ async fn unknown_commands_keep_connection_alive() {
     // ^ZZ (printer sleep; a real T17 command - must not affect the
     // session) and the genuinely-unknown ^QX, then a label and a query in
     // the SAME conversation: the socket must survive the junk and print.
-    sock.write_all(b"^ZZ^QX^XA^GB50,50,2,B^XZ~HS").await.unwrap();
+    sock.write_all(b"^ZZ^QX^XA^GB50,50,2,B^XZ~HS")
+        .await
+        .unwrap();
 
     wait_labels(&state, 1).await;
     assert!(
@@ -390,8 +396,7 @@ async fn ci13_decodes_cp850_byte_into_archived_ir() {
         payload,
         "raw bytes archived verbatim (the 0x94 survives)"
     );
-    let ir: Label =
-        serde_json::from_slice(&std::fs::read(labels.join("1.json")).unwrap()).unwrap();
+    let ir: Label = serde_json::from_slice(&std::fs::read(labels.join("1.json")).unwrap()).unwrap();
     match &ir.fields[0] {
         Field::Text(t) => assert_eq!(t.data, "\u{00F6}", "^CI13 decodes 0x94 through CP850"),
         other => panic!("expected a text field, got {other:?}"),

@@ -165,7 +165,9 @@ async fn label_split_across_reads_excludes_preamble_from_raw() {
     // format that is left OPEN (no ^XZ). Read 2 closes it.
     let preamble = b"\x00\x01\x02junk-before-the-label";
     let label = b"^XA^GB50,50,2,B";
-    sock.write_all(&[&preamble[..], &label[..]].concat()).await.unwrap();
+    sock.write_all(&[&preamble[..], &label[..]].concat())
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await; // separate reads
     sock.write_all(b"^XZ").await.unwrap();
     sock.shutdown().await.unwrap();
@@ -173,13 +175,13 @@ async fn label_split_across_reads_excludes_preamble_from_raw() {
     wait_labels(&state, 1).await;
     let raw = std::fs::read(dir.join("labels/1.zpl")).unwrap();
     assert_eq!(
-        raw,
-        b"^XA^GB50,50,2,B^XZ",
+        raw, b"^XA^GB50,50,2,B^XZ",
         "raw .zpl must be the exact label span \u{2014} preamble excluded"
     );
     // LabelRow.bytes == raw.len() (the archived file's length).
     assert_eq!(raw.len(), b"^XA^GB50,50,2,B^XZ".len());
-    let ir: Label = serde_json::from_slice(&std::fs::read(dir.join("labels/1.json")).unwrap()).unwrap();
+    let ir: Label =
+        serde_json::from_slice(&std::fs::read(dir.join("labels/1.json")).unwrap()).unwrap();
     assert_eq!(ir.fields.len(), 1, "the ^GB parsed into one field");
 }
 
@@ -192,7 +194,9 @@ async fn garbage_and_unknown_commands_do_not_kill_the_connection() {
     let mut sock = TcpStream::connect(addr).await.unwrap();
     // Binary junk plus an unknown command: parser must diagnose, not panic,
     // and the socket must stay open for the label that follows.
-    sock.write_all(b"\x00\x01\xfe\xff^QX nonsense\r\n").await.unwrap();
+    sock.write_all(b"\x00\x01\xfe\xff^QX nonsense\r\n")
+        .await
+        .unwrap();
     sock.write_all(b"^XA^GB50,50,2,B^XZ").await.unwrap();
     sock.shutdown().await.unwrap();
 

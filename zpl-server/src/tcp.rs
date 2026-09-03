@@ -31,6 +31,7 @@ pub use crate::state::{AppState, Counters};
 /// rebuilt per chunk so the shared `Memory` lock is held only for the parse
 /// window, not for the whole connection: an idle socket must not stall
 /// other connections, and Task 21's HTTP rerender takes the same lock.
+#[derive(Default)]
 struct Persist {
     state: FormatState,
     mode: PrinterMode,
@@ -41,18 +42,6 @@ struct Persist {
     /// by ^XZ in a later one would otherwise archive from offset 0 - which
     /// includes any retained preamble before the ^XA.
     format_start: usize,
-}
-
-impl Default for Persist {
-    fn default() -> Self {
-        Persist {
-            state: FormatState::default(),
-            mode: PrinterMode::default(),
-            config: PrinterConfig::default(),
-            serials: BTreeMap::new(),
-            format_start: 0,
-        }
-    }
 }
 
 impl Persist {
@@ -158,9 +147,13 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
                 // continuity only holds while the stream is untrimmed).
                 ctx.token_start = chunk_start;
                 ctx.token_end = chunk_start;
-                parse_stream_collect(&mut Scanner::new(&input[chunk_start..]), &mut ctx, &mut labels);
+                parse_stream_collect(
+                    &mut Scanner::new(&input[chunk_start..]),
+                    &mut ctx,
+                    &mut labels,
+                );
                 persist.hand_out(&mut ctx);
-                queries = ctx.queries.drain(..).collect();
+                queries = std::mem::take(&mut ctx.queries);
             }
             for pl in &labels {
                 let raw = &input[pl.start..pl.end];
@@ -211,7 +204,10 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
                 match archive.push(&mut row, raw, &pl.label, &png, &messages) {
                     Ok(_id) => {
                         state.counters.labels.fetch_add(1, Ordering::Relaxed);
-                        state.counters.warnings.fetch_add(diag_count as u64, Ordering::Relaxed);
+                        state
+                            .counters
+                            .warnings
+                            .fetch_add(diag_count as u64, Ordering::Relaxed);
                         // Label completion -> printer state. `labels_remaining`
                         // adds this format's ^PQ copies and consumes the
                         // first printed copy (v1 renders each format once, so
@@ -308,9 +304,6 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
         let msg = "connection closed with an unfinished format; label not archived";
         eprintln!("tcp: {msg}");
         diags.push(Diagnostic::warning("^XA", msg));
-        state
-            .counters
-            .warnings
-            .fetch_add(1, Ordering::Relaxed);
+        state.counters.warnings.fetch_add(1, Ordering::Relaxed);
     }
 }

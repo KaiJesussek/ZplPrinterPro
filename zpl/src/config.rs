@@ -36,7 +36,11 @@ fn to_i32(p: &[u8]) -> Option<i32> {
     if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
         return None;
     }
-    core::str::from_utf8(digits).ok()?.parse::<i32>().ok().map(|v| sign * v)
+    core::str::from_utf8(digits)
+        .ok()?
+        .parse::<i32>()
+        .ok()
+        .map(|v| sign * v)
 }
 
 /// Unsigned parameter confined to `[min, max]`. A missing/empty segment
@@ -107,7 +111,11 @@ pub(crate) fn to_tenths(p: &[u8]) -> Option<i32> {
         Some(pos) => (&rest[..pos], &rest[pos + 1..]),
         None => (rest, &[][..]),
     };
-    if whole.is_empty() || !whole.iter().all(u8::is_ascii_digit) || frac.len() > 1 || !frac.iter().all(u8::is_ascii_digit) {
+    if whole.is_empty()
+        || !whole.iter().all(u8::is_ascii_digit)
+        || frac.len() > 1
+        || !frac.iter().all(u8::is_ascii_digit)
+    {
         return None;
     }
     let w: i32 = core::str::from_utf8(whole).ok()?.parse().ok()?;
@@ -155,10 +163,7 @@ fn pick_letter(
     diags: &mut Diagnostics,
     allowed: &[u8],
 ) -> Option<u8> {
-    let p = seg.unwrap_or(&[]);
-    let Some(&c) = p.first() else {
-        return None;
-    };
+    let &c = seg.unwrap_or(&[]).first()?;
     let up = c.to_ascii_uppercase();
     if allowed.contains(&up) {
         return Some(up);
@@ -199,8 +204,24 @@ fn check_num(
 /// coordinates in the IR.
 pub(crate) fn label_home(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
-    ctx.mode.lh_x = u32_in(parts.first().copied(), "LH", "x", ctx.diags, 0, 32000, ctx.mode.lh_x);
-    ctx.mode.lh_y = u32_in(parts.get(1).copied(), "LH", "y", ctx.diags, 0, 32000, ctx.mode.lh_y);
+    ctx.mode.lh_x = u32_in(
+        parts.first().copied(),
+        "LH",
+        "x",
+        ctx.diags,
+        0,
+        32000,
+        ctx.mode.lh_x,
+    );
+    ctx.mode.lh_y = u32_in(
+        parts.get(1).copied(),
+        "LH",
+        "y",
+        ctx.diags,
+        0,
+        32000,
+        ctx.mode.lh_y,
+    );
 }
 
 /// `^LLy[,x]`: label length (y 1..32000). 0 in the IR means AUTO - ^LL
@@ -209,7 +230,15 @@ pub(crate) fn label_home(ctx: &mut ParseContext, params: &[u8]) {
 /// media, default N) is validated and dropped: no IR slot.
 pub(crate) fn label_length(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
-    ctx.mode.ll_dots = u32_in(parts.first().copied(), "LL", "length", ctx.diags, 1, 32000, ctx.mode.ll_dots);
+    ctx.mode.ll_dots = u32_in(
+        parts.first().copied(),
+        "LL",
+        "length",
+        ctx.diags,
+        1,
+        32000,
+        ctx.mode.ll_dots,
+    );
     check_letters(parts.get(1).copied(), "LL", "media scope", ctx.diags, b"YN");
 }
 
@@ -219,7 +248,15 @@ pub(crate) fn label_length(ctx: &mut ParseContext, params: &[u8]) {
 /// hardware clamps an oversized width; we accept the value as given.
 pub(crate) fn print_width(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
-    ctx.mode.pw_dots = u32_in(parts.first().copied(), "PW", "width", ctx.diags, 2, u32::MAX, ctx.mode.pw_dots);
+    ctx.mode.pw_dots = u32_in(
+        parts.first().copied(),
+        "PW",
+        "width",
+        ctx.diags,
+        2,
+        u32::MAX,
+        ctx.mode.pw_dots,
+    );
 }
 
 /// `^POa`: print orientation - N = normal (0), I = invert 180deg (1). The
@@ -227,7 +264,13 @@ pub(crate) fn print_width(ctx: &mut ParseContext, params: &[u8]) {
 /// missing/invalid is ignored, keeping the current setting.
 pub(crate) fn print_orientation(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
-    match pick_letter(parts.first().copied(), "PO", "orientation", ctx.diags, b"NI") {
+    match pick_letter(
+        parts.first().copied(),
+        "PO",
+        "orientation",
+        ctx.diags,
+        b"NI",
+    ) {
         Some(b'I') => ctx.mode.orientation = 1,
         Some(_) => ctx.mode.orientation = 0,
         None => {}
@@ -249,8 +292,15 @@ pub(crate) fn mirror_image(ctx: &mut ParseContext, params: &[u8]) {
 /// 0) for Z-130 format compatibility. Renderer-consumed.
 pub(crate) fn label_shift(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
-    ctx.mode.left_shift =
-        i32_in(parts.first().copied(), "LS", "shift", ctx.diags, -9999, 9999, ctx.mode.left_shift);
+    ctx.mode.left_shift = i32_in(
+        parts.first().copied(),
+        "LS",
+        "shift",
+        ctx.diags,
+        -9999,
+        9999,
+        ctx.mode.left_shift,
+    );
 }
 
 /// `^LTx`: label top offset (-120..120 on most printers), moving the whole
@@ -258,8 +308,15 @@ pub(crate) fn label_shift(ctx: &mut ParseContext, params: &[u8]) {
 /// specified or the command is ignored. Renderer-consumed.
 pub(crate) fn label_top(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
-    ctx.mode.label_top =
-        i32_in(parts.first().copied(), "LT", "top", ctx.diags, -120, 120, ctx.mode.label_top);
+    ctx.mode.label_top = i32_in(
+        parts.first().copied(),
+        "LT",
+        "top",
+        ctx.diags,
+        -120,
+        120,
+        ctx.mode.label_top,
+    );
 }
 
 /// `^MDa`: darkness adjustment relative to the current setting (-30..30,
@@ -267,7 +324,15 @@ pub(crate) fn label_top(ctx: &mut ParseContext, params: &[u8]) {
 /// guide's 0.1 steps survive.
 pub(crate) fn media_darkness(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
-    let v = tenths_in(parts.first().copied(), "MD", "darkness", ctx.diags, -300, 300, 0);
+    let v = tenths_in(
+        parts.first().copied(),
+        "MD",
+        "darkness",
+        ctx.diags,
+        -300,
+        300,
+        0,
+    );
     ctx.config.darkness += v;
 }
 
@@ -276,8 +341,15 @@ pub(crate) fn media_darkness(ctx: &mut ParseContext, params: &[u8]) {
 /// format. The guide's ^MD comment notes the two are additive; ~SD writes
 /// the base.
 pub(crate) fn set_darkness(ctx: &mut ParseContext, params: &[u8]) {
-    ctx.config.darkness =
-        tenths_in(split_commas(params).first().copied(), "SD", "darkness", ctx.diags, 0, 300, ctx.config.darkness);
+    ctx.config.darkness = tenths_in(
+        split_commas(params).first().copied(),
+        "SD",
+        "darkness",
+        ctx.diags,
+        0,
+        300,
+        ctx.config.darkness,
+    );
 }
 
 /// `^PQq,p,r,o,e`: print quantity q (1..99,999,999, default 1). q sets
@@ -286,7 +358,15 @@ pub(crate) fn set_darkness(ctx: &mut ParseContext, params: &[u8]) {
 /// ignored until a batch engine exists - never warned on.
 pub(crate) fn print_quantity(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
-    ctx.mode.copies = u32_in(parts.first().copied(), "PQ", "quantity", ctx.diags, 1, 99_999_999, ctx.mode.copies);
+    ctx.mode.copies = u32_in(
+        parts.first().copied(),
+        "PQ",
+        "quantity",
+        ctx.diags,
+        1,
+        99_999_999,
+        ctx.mode.copies,
+    );
 }
 
 /// `^PRp,s,b`: print/slew/backfeed speeds (numeric 1-14, or letters A-E).
@@ -321,13 +401,27 @@ pub(crate) fn media_tracking(ctx: &mut ParseContext, params: &[u8]) {
     if let Some(m) = pick_letter(parts.first().copied(), "MN", "media", ctx.diags, b"NYWMAV") {
         ctx.config.media_tracking = m;
     }
-    let _ = i32_in(parts.get(1).copied(), "MN", "mark offset", ctx.diags, -120, 283, 0);
+    let _ = i32_in(
+        parts.get(1).copied(),
+        "MN",
+        "mark offset",
+        ctx.diags,
+        -120,
+        283,
+        0,
+    );
 }
 
 /// `^MTa`: media type - T thermal transfer / D direct thermal. Validated,
 /// not stored.
 pub(crate) fn media_type(ctx: &mut ParseContext, params: &[u8]) {
-    check_letters(split_commas(params).first().copied(), "MT", "media type", ctx.diags, b"TD");
+    check_letters(
+        split_commas(params).first().copied(),
+        "MT",
+        "media type",
+        ctx.diags,
+        b"TD",
+    );
 }
 
 /// `^MMa,b`: print mode (T/P/R/A/C/D/F/L/U/K; b = pre-peel Y/N). Validated,
@@ -335,7 +429,13 @@ pub(crate) fn media_type(ctx: &mut ParseContext, params: &[u8]) {
 /// hardware behavior with no label-image effect).
 pub(crate) fn print_mode(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
-    check_letters(parts.first().copied(), "MM", "mode", ctx.diags, b"TPRACDFLUK");
+    check_letters(
+        parts.first().copied(),
+        "MM",
+        "mode",
+        ctx.diags,
+        b"TPRACDFLUK",
+    );
     check_letters(parts.get(1).copied(), "MM", "pre-peel", ctx.diags, b"YN");
 }
 
@@ -348,52 +448,113 @@ pub(crate) fn units(ctx: &mut ParseContext, params: &[u8]) {
     if let Some(u) = pick_letter(parts.first().copied(), "MU", "units", ctx.diags, b"DIM") {
         ctx.config.units = u;
     }
-    check_num(parts.get(1).copied(), "MU", "format base", ctx.diags, 150, 300);
-    check_num(parts.get(2).copied(), "MU", "desired dpi", ctx.diags, 300, 600);
+    check_num(
+        parts.get(1).copied(),
+        "MU",
+        "format base",
+        ctx.diags,
+        150,
+        300,
+    );
+    check_num(
+        parts.get(2).copied(),
+        "MU",
+        "desired dpi",
+        ctx.diags,
+        300,
+        600,
+    );
 }
 
 /// `^MFp,h`: media feed action at power-up / after head close (F/C/L/N/S).
 pub(crate) fn media_feed(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
-    check_letters(parts.first().copied(), "MF", "feed action", ctx.diags, b"FCLNS");
-    check_letters(parts.get(1).copied(), "MF", "feed action", ctx.diags, b"FCLNS");
+    check_letters(
+        parts.first().copied(),
+        "MF",
+        "feed action",
+        ctx.diags,
+        b"FCLNS",
+    );
+    check_letters(
+        parts.get(1).copied(),
+        "MF",
+        "feed action",
+        ctx.diags,
+        b"FCLNS",
+    );
 }
 
 /// `^MItype,message`: maintenance alert message (type R/C; the message text
 /// is dropped - no render effect).
 pub(crate) fn maintenance_message(ctx: &mut ParseContext, params: &[u8]) {
-    check_letters(split_commas(params).first().copied(), "MI", "alert type", ctx.diags, b"RC");
+    check_letters(
+        split_commas(params).first().copied(),
+        "MI",
+        "alert type",
+        ctx.diags,
+        b"RC",
+    );
 }
 
 /// `^MLa`: maximum label length in dot rows (printer-dependent; validated,
 /// not stored).
 pub(crate) fn max_label_length(ctx: &mut ParseContext, params: &[u8]) {
-    check_num(split_commas(params).first().copied(), "ML", "maximum length", ctx.diags, 1, u32::MAX);
+    check_num(
+        split_commas(params).first().copied(),
+        "ML",
+        "maximum length",
+        ctx.diags,
+        1,
+        u32::MAX,
+    );
 }
 
 /// `^MPa`: mode protection (D/P/C/E/S/W/F/X/M).
 pub(crate) fn mode_protection(ctx: &mut ParseContext, params: &[u8]) {
-    check_letters(split_commas(params).first().copied(), "MP", "mode", ctx.diags, b"DPCESWFXM");
+    check_letters(
+        split_commas(params).first().copied(),
+        "MP",
+        "mode",
+        ctx.diags,
+        b"DPCESWFXM",
+    );
 }
 
 /// `^MWa`: head cold warning enable (Y/N; no parameter -> instruction
 /// ignored).
 pub(crate) fn head_cold_warning(ctx: &mut ParseContext, params: &[u8]) {
-    check_letters(split_commas(params).first().copied(), "MW", "warning", ctx.diags, b"YN");
+    check_letters(
+        split_commas(params).first().copied(),
+        "MW",
+        "warning",
+        ctx.diags,
+        b"YN",
+    );
 }
 
 /// `^PAa,b,c,d`: advanced text properties (default glyph, bidirectional
 /// text, shaping, OpenType - each 0/1). Validated, not stored.
 pub(crate) fn advanced_text(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
-    for (i, name) in ["default glyph", "bidirectional text", "shaping", "OpenType"].iter().enumerate() {
+    for (i, name) in ["default glyph", "bidirectional text", "shaping", "OpenType"]
+        .iter()
+        .enumerate()
+    {
         check_num(parts.get(i).copied(), "PA", name, ctx.diags, 0, 1);
     }
 }
 
 /// `^PF#`: slew a given number of dot rows (0..32000) at high speed.
 pub(crate) fn slew_rows(ctx: &mut ParseContext, params: &[u8]) {
-    check_num(split_commas(params).first().copied(), "PF", "rows", ctx.diags, 0, 32000);
+    check_num(
+        split_commas(params).first().copied(),
+        "PF",
+        "rows",
+        ctx.diags,
+        0,
+        32000,
+    );
 }
 
 /// `^SCa,b,c,d,e,f`: serial communications (baud 110..115200, word 7/8,
@@ -407,14 +568,28 @@ pub(crate) fn serial_comms(ctx: &mut ParseContext, params: &[u8]) {
     check_letters(parts.get(2).copied(), "SC", "parity", ctx.diags, b"NEO");
     check_letters(parts.get(3).copied(), "SC", "stop bits", ctx.diags, b"12");
     check_letters(parts.get(4).copied(), "SC", "protocol", ctx.diags, b"XDRM");
-    check_letters(parts.get(5).copied(), "SC", "zebra protocol", ctx.diags, b"ANZ");
+    check_letters(
+        parts.get(5).copied(),
+        "SC",
+        "zebra protocol",
+        ctx.diags,
+        b"ANZ",
+    );
 }
 
 /// `^SZa`: ZPL mode (1 = ZPL, 2 = ZPL II; power-up 2). Mode 1 selects the
 /// legacy ZPL language, deliberately unimplemented here (the plan drops ZPL
 /// I); the value is recorded either way.
 pub(crate) fn zpl_mode(ctx: &mut ParseContext, params: &[u8]) {
-    let v = u32_in(split_commas(params).first().copied(), "SZ", "mode", ctx.diags, 1, 2, ctx.config.zpl_mode as u32);
+    let v = u32_in(
+        split_commas(params).first().copied(),
+        "SZ",
+        "mode",
+        ctx.diags,
+        1,
+        2,
+        ctx.config.zpl_mode as u32,
+    );
     ctx.config.zpl_mode = v as u8;
 }
 
@@ -422,8 +597,21 @@ pub(crate) fn zpl_mode(ctx: &mut ParseContext, params: &[u8]) {
 /// Y/N; battery printers only). Validated, not stored.
 pub(crate) fn printer_sleep(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
-    check_num(parts.first().copied(), "ZZ", "idle time", ctx.diags, 0, 999_999);
-    check_letters(parts.get(1).copied(), "ZZ", "label status", ctx.diags, b"YN");
+    check_num(
+        parts.first().copied(),
+        "ZZ",
+        "idle time",
+        ctx.diags,
+        0,
+        999_999,
+    );
+    check_letters(
+        parts.get(1).copied(),
+        "ZZ",
+        "label status",
+        ctx.diags,
+        b"YN",
+    );
 }
 
 /// `^XB`: suppress backfeed. No parameters.
@@ -440,7 +628,14 @@ pub(crate) fn dynamic_calibration(ctx: &mut ParseContext, params: &[u8]) {
 /// `^PNa`: presenter eject length 0..255 additional mm (KR403 present-now
 /// action). Validated, not stored.
 pub(crate) fn present_now(ctx: &mut ParseContext, params: &[u8]) {
-    check_num(split_commas(params).first().copied(), "PN", "eject length", ctx.diags, 0, 255);
+    check_num(
+        split_commas(params).first().copied(),
+        "PN",
+        "eject length",
+        ctx.diags,
+        0,
+        255,
+    );
 }
 
 // --- Task 17: accept-only remainder (validated, not stored) ----------------
@@ -455,15 +650,40 @@ pub(crate) fn present_now(ctx: &mut ParseContext, params: &[u8]) {
 /// halt Y/N). Validate-only; alert routing is server-side state (Task 20).
 pub(crate) fn halt_zebranet_alert(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
-    check_letters(parts.first().copied(), "SQ", "condition", ctx.diags, b"ABCDEFGHIJKLMNOQRSTUVW*");
-    check_letters(parts.get(1).copied(), "SQ", "destination", ctx.diags, b"ABCDEF*");
-    check_letters(parts.get(2).copied(), "SQ", "halt messages", ctx.diags, b"YN");
+    check_letters(
+        parts.first().copied(),
+        "SQ",
+        "condition",
+        ctx.diags,
+        b"ABCDEFGHIJKLMNOQRSTUVW*",
+    );
+    check_letters(
+        parts.get(1).copied(),
+        "SQ",
+        "destination",
+        ctx.diags,
+        b"ABCDEF*",
+    );
+    check_letters(
+        parts.get(2).copied(),
+        "SQ",
+        "halt messages",
+        ctx.diags,
+        b"YN",
+    );
 }
 
 /// `^SR####`: set printhead resistance, a four-digit value 0488..1175.
 /// Validated, not stored - head calibration is hardware state.
 pub(crate) fn set_head_resistance(ctx: &mut ParseContext, params: &[u8]) {
-    check_num(split_commas(params).first().copied(), "SR", "resistance", ctx.diags, 488, 1175);
+    check_num(
+        split_commas(params).first().copied(),
+        "SR",
+        "resistance",
+        ctx.diags,
+        488,
+        1175,
+    );
 }
 
 /// `^SSw,m,r,l,m2,r2,a,b,c`: set media-sensor calibration values (web/
@@ -507,8 +727,20 @@ pub(crate) fn set_clock(ctx: &mut ParseContext, params: &[u8]) {
 /// stored (Task 20's server-side alerts).
 pub(crate) fn set_zebranet_alert(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
-    check_letters(parts.first().copied(), "SX", "condition", ctx.diags, b"ABCDEFGHIJKLMNOPQRSTUV*");
-    check_letters(parts.get(1).copied(), "SX", "destination", ctx.diags, b"ABCDEF");
+    check_letters(
+        parts.first().copied(),
+        "SX",
+        "condition",
+        ctx.diags,
+        b"ABCDEFGHIJKLMNOPQRSTUV*",
+    );
+    check_letters(
+        parts.get(1).copied(),
+        "SX",
+        "destination",
+        ctx.diags,
+        b"ABCDEF",
+    );
     check_letters(parts.get(2).copied(), "SX", "set alert", ctx.diags, b"YN");
     check_letters(parts.get(3).copied(), "SX", "clear alert", ctx.diags, b"YN");
 }
@@ -517,11 +749,25 @@ pub(crate) fn set_zebranet_alert(ctx: &mut ParseContext, params: &[u8]) {
 /// error (Y/N, power-up Y). Validated, not stored - error-reprint policy is
 /// server-side print-job state.
 pub(crate) fn reprint_after_error(ctx: &mut ParseContext, params: &[u8]) {
-    check_letters(split_commas(params).first().copied(), "JZ", "reprint", ctx.diags, b"YN");
+    check_letters(
+        split_commas(params).first().copied(),
+        "JZ",
+        "reprint",
+        ctx.diags,
+        b"YN",
+    );
 }
 
 /// `~TA###`: tear-off media rest position (-120..120 dot rows; fewer than
 /// 3 characters -> ignored per guide). Validated, not stored.
 pub(crate) fn tear_off_adjust(ctx: &mut ParseContext, params: &[u8]) {
-    let _ = i32_in(split_commas(params).first().copied(), "TA", "position", ctx.diags, -120, 120, 0);
+    let _ = i32_in(
+        split_commas(params).first().copied(),
+        "TA",
+        "position",
+        ctx.diags,
+        -120,
+        120,
+        0,
+    );
 }

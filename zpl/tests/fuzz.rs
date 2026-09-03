@@ -74,26 +74,28 @@ fn raw_input() -> impl Strategy<Value = Vec<u8>> {
 /// machinery while hostile cases still occur.
 fn soup_input() -> impl Strategy<Value = Vec<u8>> {
     const MNEMONICS: &[&[u8]] = &[
-        b"XA", b"XZ", b"XF", b"XG", b"IL", b"IS", b"ID", b"DF", b"DG", b"DY",
-        b"PW", b"LL", b"LH", b"LT", b"LS", b"PO", b"PM", b"PQ", b"FO", b"FT",
-        b"FD", b"FS", b"FR", b"FB", b"FH", b"FW", b"A ", b"CI", b"BY", b"BC",
-        b"SN", b"GF", b"GB", b"GC", b"GE", b"GD", b"GS", b"B1", b"B2", b"B3",
-        b"B5", b"B8", b"B9", b"BA", b"BE", b"BK", b"BM", b"BU",
+        b"XA", b"XZ", b"XF", b"XG", b"IL", b"IS", b"ID", b"DF", b"DG", b"DY", b"PW", b"LL", b"LH",
+        b"LT", b"LS", b"PO", b"PM", b"PQ", b"FO", b"FT", b"FD", b"FS", b"FR", b"FB", b"FH", b"FW",
+        b"A ", b"CI", b"BY", b"BC", b"SN", b"GF", b"GB", b"GC", b"GE", b"GD", b"GS", b"B1", b"B2",
+        b"B3", b"B5", b"B8", b"B9", b"BA", b"BE", b"BK", b"BM", b"BU",
     ];
     const GEOM: &[&[u8]] = &[
-        b"PW", b"LL", b"LH", b"LT", b"LS", b"PO", b"PM", b"PQ", b"FO", b"FT",
-        b"FB", b"A ", b"BY", b"CI", b"GB", b"GC", b"GE", b"GD", b"FW",
+        b"PW", b"LL", b"LH", b"LT", b"LS", b"PO", b"PM", b"PQ", b"FO", b"FT", b"FB", b"A ", b"BY",
+        b"CI", b"GB", b"GC", b"GE", b"GD", b"FW",
     ];
     const SYMS: &[&[u8]] = &[
-        b"Q", b"X", b"7", b"0", b"C", b"1", b"2", b"3", b"5", b"8", b"9", b"A",
-        b"E", b"K", b"M", b"U",
+        b"Q", b"X", b"7", b"0", b"C", b"1", b"2", b"3", b"5", b"8", b"9", b"A", b"E", b"K", b"M",
+        b"U",
     ];
 
     // Hostile, mostly non-numeric parameter bytes (may include ^/~).
     let param = prop::collection::vec(any::<u8>(), 0..=128);
     // Digit/comma/- soup: numeric parameters that reach clamping,
     // saturation, and arithmetic (serials, geometry, quantities).
-    let numparam = prop::collection::vec(prop_oneof![0x30u8..=0x39, Just(0x2Cu8), Just(0x2Du8)], 0..=64);
+    let numparam = prop::collection::vec(
+        prop_oneof![0x30u8..=0x39, Just(0x2Cu8), Just(0x2Du8)],
+        0..=64,
+    );
     // ^FD payload bytes: raw (may close the field early) or printable
     // ASCII without ^/~.
     let payload_byte = prop_oneof![any::<u8>(), 0x20u8..=0x5D, 0x60u8..=0x7D];
@@ -128,16 +130,17 @@ fn soup_input() -> impl Strategy<Value = Vec<u8>> {
         c
     });
     // A complete barcode field: ^B<sym><params>^FD<data>^FS.
-    let barcode = (prop::sample::select(SYMS), param.clone(), barcode_data).prop_map(|(s, p, d)| {
-        let mut c = Vec::with_capacity(8 + p.len() + d.len());
-        c.extend_from_slice(b"^B");
-        c.extend_from_slice(s);
-        c.extend(p);
-        c.extend_from_slice(b"^FD");
-        c.extend(d);
-        c.extend_from_slice(b"^FS");
-        c
-    });
+    let barcode =
+        (prop::sample::select(SYMS), param.clone(), barcode_data).prop_map(|(s, p, d)| {
+            let mut c = Vec::with_capacity(8 + p.len() + d.len());
+            c.extend_from_slice(b"^B");
+            c.extend_from_slice(s);
+            c.extend(p);
+            c.extend_from_slice(b"^FD");
+            c.extend(d);
+            c.extend_from_slice(b"^FS");
+            c
+        });
     // A complete serialized field: ^SN<v,d,c>^FD<data>^FS - digit params
     // drive counter clamping/overflow, digit-rich data drives indexing.
     let serial = (numparam, serial_data).prop_map(|(p, d)| {
@@ -204,11 +207,19 @@ fn render_fuzz(label: &Label) {
     let fonts = DefaultFontProvider::new();
     let memory = Memory::default();
     let mode = PrinterMode::default();
-    let opts = RenderOptions { dpi: 203, fonts: &fonts, memory: &memory, mode: &mode };
+    let opts = RenderOptions {
+        dpi: 203,
+        fonts: &fonts,
+        memory: &memory,
+        mode: &mode,
+    };
     let out = render(label, &opts).expect("fuzz label renders (defined RenderError only)");
     let (w, h) = (out.bitmap.width, out.bitmap.height);
     assert!(w >= 1 && h >= 1, "canvas is never zero-sized");
-    assert!(w <= MAX_DOTS && h <= MAX_DOTS, "canvas respects the 32000\u{00B2} cap (got {w}\u{00D7}{h})");
+    assert!(
+        w <= MAX_DOTS && h <= MAX_DOTS,
+        "canvas respects the 32000\u{00B2} cap (got {w}\u{00D7}{h})"
+    );
 }
 
 proptest! {

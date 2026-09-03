@@ -227,25 +227,31 @@ impl AppState {
         let persist_dir = archive.dir.clone();
 
         let mut conditions = Conditions::default();
-        match fs::read(persist_dir.join("state.json")) {
-            Ok(bytes) => match serde_json::from_slice::<Conditions>(&bytes) {
+        if let Ok(bytes) = fs::read(persist_dir.join("state.json")) {
+            match serde_json::from_slice::<Conditions>(&bytes) {
                 Ok(c) => conditions = c,
-                Err(e) => eprintln!("state: ignoring unreadable {}: {e}", persist_dir.join("state.json").display()),
-            },
-            Err(_) => {} // first boot
-        }
+                Err(e) => eprintln!(
+                    "state: ignoring unreadable {}: {e}",
+                    persist_dir.join("state.json").display()
+                ),
+            }
+        } // first boot
 
         let mut memory = Memory::default();
-        match fs::read(persist_dir.join("memory.json")) {
-            Ok(bytes) => match serde_json::from_slice::<Memory>(&bytes) {
+        if let Ok(bytes) = fs::read(persist_dir.join("memory.json")) {
+            match serde_json::from_slice::<Memory>(&bytes) {
                 Ok(m) => memory = m,
-                Err(e) => eprintln!("state: ignoring unreadable {}: {e}", persist_dir.join("memory.json").display()),
-            },
-            Err(_) => {} // first boot
-        }
+                Err(e) => eprintln!(
+                    "state: ignoring unreadable {}: {e}",
+                    persist_dir.join("memory.json").display()
+                ),
+            }
+        } // first boot
 
-        let mut printer = PrinterState::default();
-        printer.conditions = conditions;
+        let printer = PrinterState {
+            conditions,
+            ..Default::default()
+        };
         let (events, _) = broadcast::channel(EVENT_CAP);
         AppState {
             archive: Mutex::new(archive),

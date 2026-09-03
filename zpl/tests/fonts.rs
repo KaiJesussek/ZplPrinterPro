@@ -45,7 +45,10 @@ fn builtin_letters_are_served_with_guide_metrics() {
         let fd = p
             .get(&FontSpec::Zebra(letter))
             .unwrap_or_else(|| panic!("font {letter:?} must be served"));
-        assert!(!fd.ttf.is_empty(), "bundled ttf bytes present for {letter:?}");
+        assert!(
+            !fd.ttf.is_empty(),
+            "bundled ttf bytes present for {letter:?}"
+        );
         assert!(
             ab_glyph::FontVec::try_from_vec(fd.ttf.clone()).is_ok(),
             "bundled ttf parses for {letter:?}"
@@ -57,7 +60,11 @@ fn builtin_letters_are_served_with_guide_metrics() {
             m.baseline <= m.cell_height,
             "baseline inside the cell for {letter:?}"
         );
-        assert_eq!(m.advances.len(), 95, "advance table len (char - 32) for {letter:?}");
+        assert_eq!(
+            m.advances.len(),
+            95,
+            "advance table len (char - 32) for {letter:?}"
+        );
         assert!(
             m.advances.iter().all(|&a| a > 0),
             "every printable ASCII advance nonzero for {letter:?}"
@@ -101,13 +108,20 @@ fn downloaded_font_data_from_ttf_measures_sane_metrics() {
 fn downloaded_font_resolves_through_render() {
     let mut diags = zpl::diag::Diagnostics::default();
     let mut memory = Memory::default();
-    memory.fonts.insert("FONTFILE.TTF".into(), FIXTURE_TTF.to_vec());
+    memory
+        .fonts
+        .insert("FONTFILE.TTF".into(), FIXTURE_TTF.to_vec());
     let (label, ctx) = common::parse_ctx(
         b"^XA^PW120^LL40^FO5,5^A@N,20,20,E:FONTFILE.TTF^FDhello^FS^XZ",
         &mut diags,
         &mut memory,
     );
-    assert_eq!(ctx.diags.items.len(), 0, "parse of ^A@ must be clean: {:?}", ctx.diags.items);
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "parse of ^A@ must be clean: {:?}",
+        ctx.diags.items
+    );
     let opts = RenderOptions {
         dpi: 203,
         fonts: &provider(),
@@ -115,7 +129,11 @@ fn downloaded_font_resolves_through_render() {
         mode: &ctx.mode,
     };
     let out = zpl::render::render(&label, &opts).expect("render with a downloaded font");
-    assert!(out.warnings.is_empty(), "no warning with the font stored: {:?}", out.warnings);
+    assert!(
+        out.warnings.is_empty(),
+        "no warning with the font stored: {:?}",
+        out.warnings
+    );
 }
 
 /// A plain text field resolves its built-in Zebra font (`^A`/`^CF`
@@ -136,7 +154,11 @@ fn builtin_font_resolves_through_render() {
         mode: &ctx.mode,
     };
     let out = zpl::render::render(&label, &opts).expect("render");
-    assert!(out.warnings.is_empty(), "built-in font must not warn: {:?}", out.warnings);
+    assert!(
+        out.warnings.is_empty(),
+        "built-in font must not warn: {:?}",
+        out.warnings
+    );
 }
 
 /// A text field naming a font that was never downloaded warns and skips;
@@ -157,7 +179,11 @@ fn missing_downloaded_font_warns_and_skips() {
         mode: &ctx.mode,
     };
     let out = zpl::render::render(&label, &opts).expect("render never fails on a missing font");
-    assert!(!out.warnings.is_empty(), "missing font must warn: {:?}", out.warnings);
+    assert!(
+        !out.warnings.is_empty(),
+        "missing font must warn: {:?}",
+        out.warnings
+    );
     assert!(
         out.warnings.iter().any(|w| w.contains("NOPE.TTF")),
         "warning names the font: {:?}",

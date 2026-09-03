@@ -83,7 +83,7 @@ mod tests {
     #[test]
     fn diagnostics_append_and_iterate() {
         let mut d = Diagnostics::default();
-        d.push(Diagnostic::unknown_command(b'^', &[b'Z', b'Z'], 12));
+        d.push(Diagnostic::unknown_command(b'^', b"ZZ", 12));
         assert_eq!(d.items.len(), 1);
         assert!(matches!(d.items[0].severity, Severity::UnknownCommand));
         assert_eq!(d.items[0].offset, 12);

@@ -31,6 +31,9 @@ pub fn parse_ctx<'a>(
 ) -> (Label, ParseContext<'a>) {
     let mut ctx = ParseContext::new(diags, memory);
     parse_stream(&mut Scanner::new(src), &mut ctx);
-    let label = ctx.pending_label.take().expect("format never closed by ^XZ");
+    let label = ctx
+        .pending_label
+        .take()
+        .expect("format never closed by ^XZ");
     (label, ctx)
 }

@@ -13,7 +13,7 @@
 //!
 //! Cell heights and baselines come **only** from the ZPL II Programming
 //! Guide's font tables; advance widths are **self-consistent measurements**
-//! of our own bundled free font - nothing labelary-derived is committed.
+//! of our own bundled free font - nothing reference-derived is committed.
 //!
 //! * Cell height `cell_height`: Guide Table 31 "8 dot/mm (203 dpi)
 //!   Printhead" character matrices (Fonts and Barcodes chapter).
@@ -29,7 +29,8 @@
 //!
 //! The bundled face is a metrically-condensed sans stand-in for the real
 //! Zebra bitmapped fonts; all letters map to this one face for now
-//! (per-font metric parity is the labelary refinement procedure, later).
+//! (per-font metric parity is the external-reference refinement procedure,
+//! later).
 
 use ab_glyph::{Font, FontVec};
 
@@ -175,6 +176,12 @@ impl FontProvider for DefaultFontProvider {
             ttf: BUNDLED_TTF.to_vec(),
             metrics: self.metrics[idx].clone(),
         })
+    }
+}
+
+impl Default for DefaultFontProvider {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

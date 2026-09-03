@@ -1,0 +1,175 @@
+# ZplPrinterPro
+
+A ZPL II parser and renderer for Rust, plus a print server that speaks
+the protocol over TCP. It turns plain ZPL II format strings into
+1-bit grayscale PNGs - text, barcodes, graphics - with geometry and
+host-status responses anchored to the *ZPL II Programming Guide*.
+
+The workspace is two crates:
+
+- **`zpl`** - the library. Parses ZPL II into an intermediate
+  representation (`^XA`...`^XZ` formats, stored formats, downloaded
+  objects) and rasterizes labels: text fields with a bundled TrueType
+  face (metrics anchored to the guide's character matrices), 1D and 2D
+  barcodes, boxes/circles/diagonals/shading, graphic fields, `^CI`
+  codepages, printer memory, and byte-exact host responses
+  (`~HS`, `~HQ`, `~HI`, `~HU`, `~WD`, `^HV`).
+- **`zpl-server`** - a print server. Accepts raw ZPL sessions on a TCP
+  port, archives every label (raw `.zpl` span + rendered PNG), answers
+  host queries on the socket, and exposes an HTTP API with a web UI for
+  labels, printer state, and storage.
+
+## Quickstart
+
+```sh
+cargo run -p zpl-server
+```
+
+This starts the server on the defaults below and prints a banner with
+the effective settings. Send a label:
+
+```sh
+printf '^XA^FO50,50^A0N,30,30^FDHello, ZPL!^FS^XZ' | nc 127.0.0.1 9100
+```
+
+The raw session is parsed, the label is archived (`.zpl` + `.png`),
+and the web UI is served at <http://localhost:8080>.
+
+### Environment variables
+
+All optional; defaults shown.
+
+| Variable              | Default            | Meaning                                      |
+| --------------------- | ------------------ | -------------------------------------------- |
+| `ZPL_TCP_PORT`        | `9100`             | Raw ZPL TCP listen port                      |
+| `ZPL_HTTP_PORT`       | `8080`             | HTTP API / web UI port                       |
+| `ZPL_ARCHIVE_DIR`     | `./zpl-archive`    | Directory for archived labels (`.zpl`+`.png`)|
+| `ZPL_ARCHIVE_KEEP`    | `10000`            | Archived labels retained (newest)            |
+| `ZPL_ARCHIVE_MAX_MB`  | `1024`             | Archive size cap before oldest is pruned     |
+
+## Library usage
+
+Parse a format and rasterize it to a PNG:
+
+```rust
+use zpl::cmd::parse_stream;
+use zpl::diag::Diagnostics;
+use zpl::fonts::DefaultFontProvider;
+use zpl::render::{render, RenderOptions};
+use zpl::scanner::Scanner;
+use zpl::state::{Memory, ParseContext};
+
+fn main() {
+    let format = b"^XA^FO50,50^A0N,30,30^FDHello, ZPL!^FS^XZ";
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let mut ctx = ParseContext::new(&mut diags, &mut memory);
+    parse_stream(&mut Scanner::new(format), &mut ctx);
+    let label = ctx.pending_label.take().expect("^XZ must close a label");
+    let fonts = DefaultFontProvider::new();
+    let opts = RenderOptions {
+        dpi: 203,
+        fonts: &fonts,
+        memory: &*ctx.memory,
+        mode: &ctx.mode,
+    };
+    let png = render(&label, &opts)
+        .expect("render is structural")
+        .bitmap
+        .to_png();
+    std::fs::write("label.png", png).unwrap();
+}
+```
+
+This is exactly the file `zpl/examples/render_label.rs` (run it with
+`cargo run -p zpl --example render_label`); the example is compiled by
+`cargo test --workspace`, so this snippet is guaranteed to match the
+current API. The render options pass the parser's printer state
+(`^LH`/`^PO`/`^PM`/`^LL`) straight into the renderer; `RenderOptions::dpi`
+rescales text and barcode metrics from the guide's 203 dpi reference
+values.
+
+## Command coverage
+
+| Area | Implemented | Not yet |
+| --- | --- | --- |
+| Formats & fields | `^XA`/`^XZ`, `^FO`/`^FT`/`^FV`/`^FR`/`^FS`, `^FD`/`^FH`/`^FC`/`^FN`, `^FB` block formatting, `^FW` rotation, `^SN` serialization, `^PQ` copies | `^PQ r` replicate-serial re-print (v1 prints the first copy's value on every copy) |
+| Text & fonts | `^A0`..`^A@` font selection, `^CF` default font, `^CW` font assignment, bundled DejaVu face with guide-anchored cell/baseline metrics | Full downloaded-font parity: `^A@`/`~DS`/`~DT`/`~DU` faces render at a fixed reference size rescaled to the field, not Zebra's exact hinting |
+| Printer geometry & config | `^PW`, `^LL` (incl. auto height), `^LH`, `^LS`, `^LT`, `^PO`, `^PM`, `^MD`/`~SD` darkness, `^MN` media tracking, `^MU` units, `^CC`/`^CT` command chars, `~PH` slew, `~TA` tear-off, `~JR` reset, `~WC` config label | `^PR ^MT ^MM ^MF ^MI ^ML ^MP ^MW ^PA ^PF ^SC ^SZ ^ZZ ^XB ^XS ^PN` are parsed and validated but not stored - media/hardware actions with no effect on the label image |
+| Graphics | `^GB` box, `^GC` circle, `^GD` diagonal, `^GE` ellipse, `^GS` shading, `^GF` graphic field (hex compression), `^DY`/`~DG` downloads, `~EG` erase, `^XG` recall | SVG/PDF output backends - the renderer is a 1-bit raster (PNG only) |
+| 1D barcodes | Code 11 (`^B1`), Interleaved 2 of 5 (`^B2`), Code 39 (`^B3`), Planet (`^B5`), EAN-8 (`^B8`), UPC-E (`^B9`), Code 93 (`^BA`), Code 128 (`^BC`), EAN-13 (`^BE`), Codabar (`^BK`), MSI (`^BM`), UPC-A (`^BU`); `^BY` module/ratio/height | - |
+| 2D barcodes | QR (`^BQ`), Data Matrix (`^BX`), PDF417 (`^B7`), Aztec (`^B0`) | - |
+| Codepages | `^CI` 0/27 (1252 default), 1-13 (Zebra 850), 28 (UTF-8), 29/30 (UTF-16), 31/33/34/35/36 (1250/1251/1253/1254/1255) | Per-country `^CI` 1-12 substitution tables (v1 decodes them as plain 850); Asian DBCS sets 14/15/16/24/26 and UCS-2 17 warn and fall back to 1252 |
+| Memory | `^DF` stored formats (+ `^XF` recall), `^DG`/`^DY` graphics, `~DS`/`~DT`/`~DU` fonts, `~DN` abort, `^ID` delete, `^IL`/`^IS` load/store, `^XG` graphics recall | - |
+| Host protocol | `~HS`, `~HQ`, `~HI`, `~HU`, `~WD`, `^HV`; raw TCP sessions parse per chunk and answer on the socket | LPR/SNMP - raw 9100 TCP only |
+
+## Testing
+
+```sh
+cargo test --workspace
+```
+
+- **Unit + integration** - parser, renderer, barcode encoders
+  (decode-verified: QR is re-decoded with `rqrr`), fonts, codepages,
+  geometry, memory, and server suites (`zpl/tests/*`,
+  `zpl-server/tests/*`).
+- **Protocol suite** - `zpl-server/tests/proto.rs`, `tcp.rs`,
+  `queries.rs`, `hs.rs` drive the real TCP session and HTTP layers over
+  a local socket and assert byte-exact host-status frames.
+- **Fuzz properties** - `zpl/tests/fuzz.rs` runs proptest invariants
+  over adversarial byte strings up to the 64 KiB ceiling: the parse
+  path never panics on any input, the IR serde round-trip holds, and
+  the renderer never panics and stays inside its 32000^2 dot canvas.
+  Panics found by fuzzing are pinned into the regression corpus and
+  replayed on every run.
+- **Exhaustive guide checks** - `parse.rs`, `render.rs`, `barcode.rs`
+  pin the guide's tables and byte layouts so a regression against a
+  documented value fails loudly.
+
+## Parity runbook
+
+> Repository policy: **nothing reference-derived is ever committed.**
+> This section documents a *local* cross-check workflow only - no
+> external renderer's images, outputs, corpora, or metrics ever enter
+> this repository, and `parity/` (gitignored) is scratch space.
+
+Verify rendering parity against an external reference renderer of your
+choosing - any ZPL-to-image engine you trust: a commercial rasterizer,
+an open-source one, or a printer driver that can echo its raster.
+
+1. **Build a corpus of *our* labels.** Reuse the formats from the test
+   fixtures and write a few of your own covering text, `^FB` blocks,
+   1D and 2D barcodes, graphics, and codepages. Save them as
+   `parity/corpus/*.zpl`. The corpus is *ours* - never the reference
+   engine's sample data.
+2. **Render with our engine.** Run them through the library example
+   above (or the server's archive) into `parity/ours/`.
+3. **Render with the reference engine** into `parity/reference/`, using
+   the same resolution (203 dpi) and media dimensions.
+4. **Diff at three levels.**
+   - **Graphics, byte-exact:** compare the raw rasters pixel by pixel.
+     Expect small systematic offsets (quiet-zone margins, padding
+     policies); classify them per label type rather than chasing noise.
+   - **Barcodes, geometry + decode:** module widths and heights,
+     quiet zones, and - decisively - decode. Both outputs must decode
+     to the same payload with an independent scanner; a barcode that
+     decodes identically is correct even where pixels differ by a dot.
+   - **Text, structural:** character cells, baselines, line breaks,
+     `^FB` block layout. Compare positions and structure, not
+     sub-pixel glyph shapes - the bundled face is close to, but not
+     identical with, a real printer's fonts.
+5. **Record metric corrections as local overrides.** Any measured
+   nudge (a module width off by a dot, a cell height that needs
+   adjusting) goes into an uncommitted notes file under `parity/`
+   alongside the scratch outputs. Corrections stay local until
+   validated against real hardware; they are never folded into the
+   tree as reference-derived "golden data".
+
+Nothing produced by the reference engine - images, dumps, metrics,
+notes - is committed. `parity/` is gitignored scratch, and the
+committed tests assert our documented values independently of any
+external engine.
+
+## License
+
+Dual-licensed under MIT and Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`).

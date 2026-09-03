@@ -20,9 +20,9 @@ fn env_port(key: &str, default: &str) -> std::io::Result<u16> {
 
 fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> std::io::Result<T> {
     match std::env::var(key) {
-        Ok(v) => v
-            .parse()
-            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{key}: '{v}'"))),
+        Ok(v) => v.parse().map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{key}: '{v}'"))
+        }),
         Err(_) => Ok(default),
     }
 }
@@ -33,7 +33,8 @@ async fn main() -> std::io::Result<()> {
     let http_port = env_port("ZPL_HTTP_PORT", "8080")?;
     let archive_dir = env_or("ZPL_ARCHIVE_DIR", "./zpl-archive");
     let keep = env_parse("ZPL_ARCHIVE_KEEP", DEFAULT_KEEP)?;
-    let max_bytes = env_parse("ZPL_ARCHIVE_MAX_MB", DEFAULT_MAX_BYTES / (1024 * 1024))? * (1024 * 1024);
+    let max_bytes =
+        env_parse("ZPL_ARCHIVE_MAX_MB", DEFAULT_MAX_BYTES / (1024 * 1024))? * (1024 * 1024);
 
     let archive = Archive::open_with(archive_dir.clone().into(), keep, max_bytes)?;
     let state = Arc::new(AppState::new(archive));

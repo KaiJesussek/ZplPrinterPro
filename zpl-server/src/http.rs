@@ -70,7 +70,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/labels", get(list_labels))
         .route("/api/labels/{id}", get(label_get))
         .route("/api/labels/{id}/rerender", post(rerender))
-        .route("/api/printer-state", get(get_printer_state).put(put_printer_state))
+        .route(
+            "/api/printer-state",
+            get(get_printer_state).put(put_printer_state),
+        )
         .route("/api/storage", get(get_storage))
         .route("/api/diagnostics", get(get_diagnostics))
         .route("/api/events", get(events_sse))
@@ -91,19 +94,32 @@ struct AppError {
 
 impl AppError {
     fn not_found(message: impl Into<String>) -> Self {
-        AppError { status: StatusCode::NOT_FOUND, message: message.into() }
+        AppError {
+            status: StatusCode::NOT_FOUND,
+            message: message.into(),
+        }
     }
     fn bad_request(message: impl Into<String>) -> Self {
-        AppError { status: StatusCode::BAD_REQUEST, message: message.into() }
+        AppError {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+        }
     }
     fn internal(message: impl Into<String>) -> Self {
-        AppError { status: StatusCode::INTERNAL_SERVER_ERROR, message: message.into() }
+        AppError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: message.into(),
+        }
     }
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        (self.status, Json(serde_json::json!({ "error": self.message }))).into_response()
+        (
+            self.status,
+            Json(serde_json::json!({ "error": self.message })),
+        )
+            .into_response()
     }
 }
 
@@ -158,7 +174,9 @@ async fn label_get(
     } else {
         (id.as_str(), "detail")
     };
-    let id: u64 = base.parse().map_err(|_| AppError::not_found("no such label"))?;
+    let id: u64 = base
+        .parse()
+        .map_err(|_| AppError::not_found("no such label"))?;
 
     match kind {
         "zpl" => {
@@ -216,7 +234,9 @@ async fn rerender(
     Path(id): Path<String>,
     Query(params): Query<RerenderParams>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let id: u64 = id.parse().map_err(|_| AppError::not_found("no such label"))?;
+    let id: u64 = id
+        .parse()
+        .map_err(|_| AppError::not_found("no such label"))?;
     if params.dpi == 0 {
         return Err(AppError::bad_request("dpi must be >= 1"));
     }
@@ -261,7 +281,11 @@ async fn rerender(
         };
         let outcome = render(&label, &opts)
             .map_err(|e| AppError::internal(format!("re-render of label {id} failed: {e:?}")))?;
-        (outcome.bitmap.to_png(), outcome.bitmap.width, outcome.bitmap.height)
+        (
+            outcome.bitmap.to_png(),
+            outcome.bitmap.width,
+            outcome.bitmap.height,
+        )
     };
 
     state
@@ -282,9 +306,7 @@ async fn rerender(
 // ---------------------------------------------------------------------------
 // GET|PUT /api/printer-state
 
-async fn get_printer_state(
-    State(state): State<Arc<AppState>>,
-) -> Json<Conditions> {
+async fn get_printer_state(State(state): State<Arc<AppState>>) -> Json<Conditions> {
     Json(state.printer_state.lock().await.conditions.clone())
 }
 
@@ -320,7 +342,10 @@ where
 {
     type Rejection = AppError;
 
-    async fn from_request(req: axum::http::Request<axum::body::Body>, state: &S) -> Result<Self, Self::Rejection> {
+    async fn from_request(
+        req: axum::http::Request<axum::body::Body>,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
         let Json(value) = Json::<T>::from_request(req, state)
             .await
             .map_err(|_| AppError::bad_request("malformed JSON body"))?;
@@ -416,8 +441,16 @@ async fn get_storage(State(state): State<Arc<AppState>>) -> Json<StorageView> {
                 )
             })
             .collect(),
-        fonts: memory.fonts.iter().map(|(n, b)| (n.clone(), b.len())).collect(),
-        formats: memory.formats.iter().map(|(n, b)| (n.clone(), b.len())).collect(),
+        fonts: memory
+            .fonts
+            .iter()
+            .map(|(n, b)| (n.clone(), b.len()))
+            .collect(),
+        formats: memory
+            .formats
+            .iter()
+            .map(|(n, b)| (n.clone(), b.len()))
+            .collect(),
         counts: StorageCounts {
             images: memory.images.len(),
             fonts: memory.fonts.len(),
@@ -454,12 +487,14 @@ async fn events_sse(
 ) -> Sse<impl tokio_stream::Stream<Item = Result<SseEvent, Infallible>>> {
     let rx = state.events.subscribe();
     let stream = BroadcastStream::new(rx).filter_map(|item| match item {
-        Ok(Event::Label(row)) => Some(Ok(
-            SseEvent::default().event("label").json_data(row).expect("LabelRow serializes"),
-        )),
-        Ok(Event::State(conditions)) => Some(Ok(
-            SseEvent::default().event("state").json_data(conditions).expect("Conditions serializes"),
-        )),
+        Ok(Event::Label(row)) => Some(Ok(SseEvent::default()
+            .event("label")
+            .json_data(row)
+            .expect("LabelRow serializes"))),
+        Ok(Event::State(conditions)) => Some(Ok(SseEvent::default()
+            .event("state")
+            .json_data(conditions)
+            .expect("Conditions serializes"))),
         // A subscriber that lagged behind is dropped from the stream (the
         // browser reconnects and the UI repaints from GETs); a closed
         // sender ends the stream naturally.
@@ -479,15 +514,21 @@ async fn events_sse(
 pub async fn persist_now(state: &AppState) {
     let memory = {
         let m = state.memory.lock().await;
-        serde_json::to_vec(&*m).ok().map(|b| (state.persist_dir.join("memory.json"), b))
+        serde_json::to_vec(&*m)
+            .ok()
+            .map(|b| (state.persist_dir.join("memory.json"), b))
     };
     let conditions = {
         let ps = state.printer_state.lock().await;
-        serde_json::to_vec(&ps.conditions).ok().map(|b| (state.persist_dir.join("state.json"), b))
+        serde_json::to_vec(&ps.conditions)
+            .ok()
+            .map(|b| (state.persist_dir.join("state.json"), b))
     };
     let rows = {
         let archive = state.archive.lock().await;
-        serde_json::to_vec(archive.rows()).ok().map(|b| (state.persist_dir.join("index.json"), b))
+        serde_json::to_vec(archive.rows())
+            .ok()
+            .map(|b| (state.persist_dir.join("index.json"), b))
     };
     for (path, bytes) in [memory, conditions, rows].into_iter().flatten() {
         if let Err(e) = write_atomic(&path, &bytes) {
@@ -529,7 +570,11 @@ async fn fingerprint(state: &AppState) -> Fingerprint {
             archive.rows().last().map(|e| e.row.id),
         )
     };
-    Fingerprint { memory, conditions, rows }
+    Fingerprint {
+        memory,
+        conditions,
+        rows,
+    }
 }
 
 /// Spawn the debounced persistence loop: wakes every 500 ms, writes only
@@ -544,7 +589,9 @@ pub fn spawn_persistence(state: Arc<AppState>) -> JoinHandle<()> {
         loop {
             tokio::time::sleep(Duration::from_millis(500)).await;
             let now = fingerprint(&state).await;
-            if now.memory != last.memory || now.conditions != last.conditions || now.rows != last.rows
+            if now.memory != last.memory
+                || now.conditions != last.conditions
+                || now.rows != last.rows
             {
                 persist_now(&state).await;
                 last = now;

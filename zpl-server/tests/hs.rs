@@ -8,7 +8,7 @@
 //! xxxx = 0000 with static RAM installed (y = 1).
 
 use zpl_server::hs::hs_response;
-use zpl_server::state::{MediaType, PrinterState, PrintMode, Temp};
+use zpl_server::state::{MediaType, PrintMode, PrinterState, Temp};
 
 /// All-clear, freshly-powered printer (no labels received, no images):
 /// the three STX...ETX-CRLF strings transcribed from the guide verbatim.
@@ -39,12 +39,28 @@ fn hs_golden_bytes() {
 fn hs_suppressed_on_hard_conditions() {
     // Each of the guide's five no-response conditions (p.233 note):
     // MEDIA OUT, RIBBON OUT, HEAD OPEN, REWINDER FULL, HEAD OVER-TEMP.
-    let conditions: Vec<(&str, Box<dyn Fn(&mut PrinterState)>)> = vec![
-        ("paper out", Box::new(|s: &mut PrinterState| s.conditions.paper_out = true)),
-        ("ribbon out", Box::new(|s: &mut PrinterState| s.conditions.ribbon_out = true)),
-        ("head open", Box::new(|s: &mut PrinterState| s.conditions.head_open = true)),
-        ("rewinder full", Box::new(|s: &mut PrinterState| s.conditions.rewind_full = true)),
-        ("head over-temperature", Box::new(|s: &mut PrinterState| s.conditions.head_temp = Temp::OverTemp)),
+    type Trigger = Box<dyn Fn(&mut PrinterState)>;
+    let conditions: Vec<(&str, Trigger)> = vec![
+        (
+            "paper out",
+            Box::new(|s: &mut PrinterState| s.conditions.paper_out = true),
+        ),
+        (
+            "ribbon out",
+            Box::new(|s: &mut PrinterState| s.conditions.ribbon_out = true),
+        ),
+        (
+            "head open",
+            Box::new(|s: &mut PrinterState| s.conditions.head_open = true),
+        ),
+        (
+            "rewinder full",
+            Box::new(|s: &mut PrinterState| s.conditions.rewind_full = true),
+        ),
+        (
+            "head over-temperature",
+            Box::new(|s: &mut PrinterState| s.conditions.head_temp = Temp::OverTemp),
+        ),
     ];
     for (name, condition) in conditions {
         let mut s = PrinterState::default();
@@ -69,8 +85,16 @@ fn hs_flags_reflect_state() {
     let out = hs_response(&s, 0).expect("pause + warm do not suppress");
     let l1 = s1(&out);
     assert_eq!(field(&l1, 2), "1", "c = pause flag");
-    assert_eq!(field(&l1, 11), "1", "l = over-temperature-range flag (Warm)");
-    assert_eq!(field(&l1, 10), "0", "k = under-temperature range stays clear");
+    assert_eq!(
+        field(&l1, 11),
+        "1",
+        "l = over-temperature-range flag (Warm)"
+    );
+    assert_eq!(
+        field(&l1, 10),
+        "0",
+        "k = under-temperature range stays clear"
+    );
 
     // media/print-mode bits: TT mode -> q=1 and mmm bit 0; continuous
     // media -> mmm bit 7; comm diagnostics -> g=1 and mmm bit 5.
@@ -103,12 +127,15 @@ fn hs_string3_static_ram_and_counts() {
     let mut s = PrinterState::default();
     s.conditions.static_ram = false;
     let out = hs_response(&s, 0).unwrap();
-    assert!(out.ends_with(b"\x020000,0\x03\r\n"), "static RAM flag clears y");
+    assert!(
+        out.ends_with(b"\x020000,0\x03\r\n"),
+        "static RAM flag clears y"
+    );
 }
 
 /// First line ("String 1"), verbatim bytes between STX and ETX.
 fn s1(resp: &[u8]) -> Vec<u8> {
-    let l = resp.split(|&b| b == b'\n').nth(0).unwrap();
+    let l = resp.split(|&b| b == b'\n').next().unwrap();
     l[1..l.len() - 2].to_vec() // strip STX ... ETX CR
 }
 

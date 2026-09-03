@@ -2,3 +2,5 @@
 /target
 /parity/
 .superpowers/
+# Default server archive dir when run from the repo root.
+/zpl-archive/

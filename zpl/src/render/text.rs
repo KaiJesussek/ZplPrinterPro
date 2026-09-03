@@ -112,7 +112,9 @@ impl Advancer<'_> {
         if self.fixed > 0 {
             return self.fixed;
         }
-        (ref_advance(self.metrics, c) as f32 * self.eff).round().max(0.0) as u64
+        (ref_advance(self.metrics, c) as f32 * self.eff)
+            .round()
+            .max(0.0) as u64
     }
 }
 
@@ -152,7 +154,10 @@ fn wrap_words(data: &str, wrap_w: u64, adv: &Advancer<'_>, max_lines: u32) -> Ve
     let flush = |lines: &mut Vec<Line>, cur: &mut Vec<char>, cur_w: &mut u64| {
         if !cur.is_empty() || lines.is_empty() {
             let width = *cur_w;
-            lines.push(Line { chars: core::mem::take(cur), width });
+            lines.push(Line {
+                chars: core::mem::take(cur),
+                width,
+            });
         }
         *cur_w = 0;
     };
@@ -222,8 +227,16 @@ fn layout(t: &TextField, m: &FontMetrics, dpi: u32) -> Option<FieldLayout> {
     let baseline = ((m.baseline as f32 * eff).round()).clamp(1.0, cell as f32) as u64;
     let spacing = t.block.as_ref().map(|b| b.line_spacing as u64).unwrap_or(0);
     let pitch = cell + spacing;
-    let fixed = if t.font_width > 0 { t.font_width as u64 } else { 0 };
-    let adv = Advancer { metrics: m, eff, fixed };
+    let fixed = if t.font_width > 0 {
+        t.font_width as u64
+    } else {
+        0
+    };
+    let adv = Advancer {
+        metrics: m,
+        eff,
+        fixed,
+    };
     let (wrap_w, justification, max_lines) = match &t.block {
         Some(b) => {
             if b.width == 0 {
@@ -258,7 +271,10 @@ fn layout(t: &TextField, m: &FontMetrics, dpi: u32) -> Option<FieldLayout> {
         lines.push(l);
     }
     if lines.is_empty() {
-        lines.push(Line { chars: Vec::new(), width: 0 });
+        lines.push(Line {
+            chars: Vec::new(),
+            width: 0,
+        });
         starts.push(0);
         box_left = 0;
         box_right = 0;
@@ -340,7 +356,8 @@ pub(crate) fn paint_text(
         return; // empty field: nothing to paint, nothing to warn about
     }
     let Ok(mut face) = FontVec::try_from_vec(fd.ttf.clone()) else {
-        warnings.push("stored font bytes are not a usable TrueType font; field skipped".to_string());
+        warnings
+            .push("stored font bytes are not a usable TrueType font; field skipped".to_string());
         return;
     };
     let upem = face.units_per_em().unwrap_or(2048.0);
@@ -360,14 +377,25 @@ pub(crate) fn paint_text(
         } else {
             opts.dpi as f32 / 203.0
         },
-        fixed: if t.font_width > 0 { t.font_width as u64 } else { 0 },
+        fixed: if t.font_width > 0 {
+            t.font_width as u64
+        } else {
+            0
+        },
     };
 
     let (_, fw, fh) = extents(t, &l);
     let fw = u32::try_from(fw).unwrap_or(u32::MAX);
     let fh = u32::try_from(fh).unwrap_or(u32::MAX);
-    let (ox, oy) =
-        crate::render::place(opts.mode, bmp.width as i64, bmp.height as i64, t.x, t.y, fw, fh);
+    let (ox, oy) = crate::render::place(
+        opts.mode,
+        bmp.width as i64,
+        bmp.height as i64,
+        t.x,
+        t.y,
+        fw,
+        fh,
+    );
     let n_lines = l.lines.len() as i64;
     let last_pitch = (n_lines - 1) * l.pitch as i64;
     // The last line's first character advance: the ^FT R270 re-anchor
@@ -443,21 +471,33 @@ fn paint_reverse_box(
     // lands on the origin).
     let (x, y, w, h) = match (t.rotation, t.origin) {
         (Rotation::R0, OriginMode::Block) => (l.box_left as i64, 0, box_w, l.block_h as i64),
-        (Rotation::R0, OriginMode::Dot) => {
-            (l.box_left as i64, -(baseline + last_pitch), box_w, l.block_h as i64)
-        }
+        (Rotation::R0, OriginMode::Dot) => (
+            l.box_left as i64,
+            -(baseline + last_pitch),
+            box_w,
+            l.block_h as i64,
+        ),
         (Rotation::R90, OriginMode::Block) => (0, l.box_left as i64, block_w, box_w),
-        (Rotation::R90, OriginMode::Dot) => {
-            (baseline - last_pitch - cell + 1, l.box_left as i64, block_w, box_w)
-        }
+        (Rotation::R90, OriginMode::Dot) => (
+            baseline - last_pitch - cell + 1,
+            l.box_left as i64,
+            block_w,
+            box_w,
+        ),
         (Rotation::R180, OriginMode::Block) => (0, 0, box_w, l.block_h as i64),
-        (Rotation::R180, OriginMode::Dot) => {
-            (-(l.box_right as i64 - 1), baseline - cell + 1, box_w, l.block_h as i64)
-        }
+        (Rotation::R180, OriginMode::Dot) => (
+            -(l.box_right as i64 - 1),
+            baseline - cell + 1,
+            box_w,
+            l.block_h as i64,
+        ),
         (Rotation::R270, OriginMode::Block) => (0, l.box_left as i64, block_w, box_w),
-        (Rotation::R270, OriginMode::Dot) => {
-            (-(baseline + last_pitch), l.box_left as i64 - ft_adv, block_w, box_w)
-        }
+        (Rotation::R270, OriginMode::Dot) => (
+            -(baseline + last_pitch),
+            l.box_left as i64 - ft_adv,
+            block_w,
+            box_w,
+        ),
     };
     fill_rect(bmp, ox + x, oy + y, w, h, b'B');
 }
@@ -561,8 +601,8 @@ fn paint_glyph(
     let (mut min_x, mut min_y, mut max_x, mut max_y) = (i64::MAX, i64::MAX, i64::MIN, i64::MIN);
     for (gx, gy) in [(0i64, 0i64), (pen_adv, 0i64), (0, cell), (pen_adv, cell)] {
         let (bx, by) = rotate_point(
-            gx, gy, line_top, cell_left, rotation, origin, cell, baseline,
-            box_right, block_h, last_pitch, pen_adv, first_adv,
+            gx, gy, line_top, cell_left, rotation, origin, cell, baseline, box_right, block_h,
+            last_pitch, pen_adv, first_adv,
         );
         min_x = min_x.min(bx);
         min_y = min_y.min(by);
@@ -603,8 +643,8 @@ fn paint_glyph(
             return;
         }
         let (bx, by) = rotate_point(
-            cell_rel_x, cell_rel_y, line_top, cell_left, rotation, origin, cell,
-            baseline, box_right, block_h, last_pitch, pen_adv, first_adv,
+            cell_rel_x, cell_rel_y, line_top, cell_left, rotation, origin, cell, baseline,
+            box_right, block_h, last_pitch, pen_adv, first_adv,
         );
         bmp.set((bx + ox) as u32, (by + oy) as u32, black);
     });
@@ -620,7 +660,11 @@ mod tests {
         let mut advances = vec![0u16; 95];
         advances[0] = 12; // ' ' advance
         advances[b'X' as usize - 32] = 20;
-        FontMetrics { cell_height: 15, baseline: 11, advances }
+        FontMetrics {
+            cell_height: 15,
+            baseline: 11,
+            advances,
+        }
     }
 
     #[test]
@@ -631,16 +675,28 @@ mod tests {
         // 'Y' is absent from the table (0 entry) -> space advance.
         assert_eq!(ref_advance(&m, 'Y'), 12, "0 entry prints as a space");
         // Outside printable ASCII (e.g. codepage (C)) -> space advance too.
-        assert_eq!(ref_advance(&m, '\u{00A9}'), 12, "out-of-table char prints as space");
+        assert_eq!(
+            ref_advance(&m, '\u{00A9}'),
+            12,
+            "out-of-table char prints as space"
+        );
         // A fully-zero table still cannot panic and collapses to 0.
-        let empty = FontMetrics { cell_height: 15, baseline: 11, advances: vec![0; 95] };
+        let empty = FontMetrics {
+            cell_height: 15,
+            baseline: 11,
+            advances: vec![0; 95],
+        };
         assert_eq!(ref_advance(&empty, 'X'), 0);
     }
 
     #[test]
     fn fixed_width_overrides_proportional_advance() {
         let m = metrics_with_missing();
-        let adv = Advancer { metrics: &m, eff: 1.0, fixed: 40 };
+        let adv = Advancer {
+            metrics: &m,
+            eff: 1.0,
+            fixed: 40,
+        };
         assert_eq!(adv.dots('X'), 40);
         assert_eq!(adv.dots(' '), 40);
     }

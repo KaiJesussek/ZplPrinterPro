@@ -96,7 +96,12 @@ fn fw_rotations() {
     ];
     for (src, want) in cases {
         let (label, diags) = parse_one(src);
-        assert_eq!(diags.items.len(), 0, "{:?}: {diags:?}", String::from_utf8_lossy(src));
+        assert_eq!(
+            diags.items.len(),
+            0,
+            "{:?}: {diags:?}",
+            String::from_utf8_lossy(src)
+        );
         assert_eq!(text_field(&label, 0).rotation, *want);
     }
 
@@ -258,8 +263,14 @@ fn config_commands_affect_label() {
     // render time (fields keep their own coordinates in the IR).
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
-    let (label, ctx) = common::parse_ctx(b"^XA^PW812^LL500^LH20,30^PQ3^XZ", &mut diags, &mut memory);
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    let (label, ctx) =
+        common::parse_ctx(b"^XA^PW812^LL500^LH20,30^PQ3^XZ", &mut diags, &mut memory);
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
     assert_eq!(label.width_dots, 812);
     assert_eq!(label.height_dots, 500);
     assert_eq!(label.copies, 3);
@@ -269,7 +280,12 @@ fn config_commands_affect_label() {
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
     let (label, ctx) = common::parse_ctx(b"^XA^LH20,30^FO10,10^FDx^FS^XZ", &mut diags, &mut memory);
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
     assert_eq!((ctx.mode.lh_x, ctx.mode.lh_y), (20, 30));
     assert_eq!((text_field(&label, 0).x, text_field(&label, 0).y), (10, 10));
 }
@@ -284,7 +300,12 @@ fn defaults_match_guide() {
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
     let (label, ctx) = common::parse_ctx(b"^XA^XZ", &mut diags, &mut memory);
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
     assert_eq!(label.width_dots, 832);
     assert_eq!(label.height_dots, 0); // auto
     assert_eq!(label.copies, 1);
@@ -319,7 +340,12 @@ fn pq_sets_copies_and_ignores_extra_params() {
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
     let (label, ctx) = common::parse_ctx(b"^XA^PQ5,10,1,Y^XZ", &mut diags, &mut memory);
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
     assert_eq!(label.copies, 5);
     assert_eq!(ctx.mode.copies, 5);
 
@@ -327,7 +353,12 @@ fn pq_sets_copies_and_ignores_extra_params() {
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
     let (label, ctx) = common::parse_ctx(b"^XA^PQabc^XZ", &mut diags, &mut memory);
-    assert_eq!(ctx.diags.items.len(), 1, "expected one warning, got {0:?}", ctx.diags);
+    assert_eq!(
+        ctx.diags.items.len(),
+        1,
+        "expected one warning, got {0:?}",
+        ctx.diags
+    );
     assert!(matches!(ctx.diags.items[0].severity, Severity::Warning));
     assert_eq!(label.copies, 1);
     assert_eq!(ctx.mode.copies, 1);
@@ -339,7 +370,12 @@ fn orientation_mirror_and_shifts_store_in_mode() {
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
     let (_, ctx) = common::parse_ctx(b"^XA^POI^PMY^LS-50^LT-10^XZ", &mut diags, &mut memory);
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
     assert_eq!(ctx.mode.orientation, 1); // I = inverted
     assert!(ctx.mode.mirror);
     assert_eq!(ctx.mode.left_shift, -50);
@@ -349,7 +385,12 @@ fn orientation_mirror_and_shifts_store_in_mode() {
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
     let (_, ctx) = common::parse_ctx(b"^XA^POS^PMx^LS99999^LT999^XZ", &mut diags, &mut memory);
-    assert_eq!(ctx.diags.items.len(), 4, "expected four warnings, got {0:?}", ctx.diags);
+    assert_eq!(
+        ctx.diags.items.len(),
+        4,
+        "expected four warnings, got {0:?}",
+        ctx.diags
+    );
     assert_eq!(ctx.mode.orientation, 0);
     assert!(!ctx.mode.mirror);
     assert_eq!(ctx.mode.left_shift, 0);
@@ -364,7 +405,12 @@ fn darkness_media_units_and_zpl_mode_stored_in_config() {
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
     let (_, ctx) = common::parse_ctx(b"^XA^MD8.3^MNV^MUI^SZ2^XZ", &mut diags, &mut memory);
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
     assert_eq!(ctx.config.darkness, 83);
     assert_eq!(ctx.config.media_tracking, b'V');
     assert_eq!(ctx.config.units, b'I');
@@ -374,14 +420,24 @@ fn darkness_media_units_and_zpl_mode_stored_in_config() {
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
     let (_, ctx) = common::parse_ctx(b"^XA~SD24^XZ", &mut diags, &mut memory);
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
     assert_eq!(ctx.config.darkness, 240);
 
     // Malformed values warn and keep the current setting.
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
     let (_, ctx) = common::parse_ctx(b"^XA^MDabc^MN0^MUx^SZ3^XZ", &mut diags, &mut memory);
-    assert_eq!(ctx.diags.items.len(), 4, "expected four warnings, got {0:?}", ctx.diags);
+    assert_eq!(
+        ctx.diags.items.len(),
+        4,
+        "expected four warnings, got {0:?}",
+        ctx.diags
+    );
     assert_eq!(ctx.config.darkness, 0);
     assert_eq!(ctx.config.media_tracking, 0);
     assert_eq!(ctx.config.units, b'D');
@@ -406,21 +462,36 @@ fn oversized_darkness_params_warn_not_panic() {
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
     let (_, ctx) = common::parse_ctx(b"^XA^MD214748365^XZ", &mut diags, &mut memory);
-    assert_eq!(ctx.diags.items.len(), 1, "expected one warning, got {0:?}", ctx.diags);
+    assert_eq!(
+        ctx.diags.items.len(),
+        1,
+        "expected one warning, got {0:?}",
+        ctx.diags
+    );
     assert!(matches!(ctx.diags.items[0].severity, Severity::Warning));
     assert_eq!(ctx.config.darkness, 0);
 
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
     let (_, ctx) = common::parse_ctx(b"^XA^MD-214748365^XZ", &mut diags, &mut memory);
-    assert_eq!(ctx.diags.items.len(), 1, "expected one warning, got {0:?}", ctx.diags);
+    assert_eq!(
+        ctx.diags.items.len(),
+        1,
+        "expected one warning, got {0:?}",
+        ctx.diags
+    );
     assert!(matches!(ctx.diags.items[0].severity, Severity::Warning));
     assert_eq!(ctx.config.darkness, 0);
 
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
     let (_, ctx) = common::parse_ctx(b"^XA~SD999999999^XZ", &mut diags, &mut memory);
-    assert_eq!(ctx.diags.items.len(), 1, "expected one warning, got {0:?}", ctx.diags);
+    assert_eq!(
+        ctx.diags.items.len(),
+        1,
+        "expected one warning, got {0:?}",
+        ctx.diags
+    );
     assert!(matches!(ctx.diags.items[0].severity, Severity::Warning));
     assert_eq!(ctx.config.darkness, 0);
 }
@@ -441,8 +512,16 @@ fn config_malformed_params_warn_not_panic() {
         &mut diags,
         &mut memory,
     );
-    assert!(ctx.diags.items.len() >= 35, "expected >= 35 warnings, got {}", ctx.diags.items.len());
-    assert!(ctx.diags.items.iter().all(|d| d.severity == Severity::Warning));
+    assert!(
+        ctx.diags.items.len() >= 35,
+        "expected >= 35 warnings, got {}",
+        ctx.diags.items.len()
+    );
+    assert!(ctx
+        .diags
+        .items
+        .iter()
+        .all(|d| d.severity == Severity::Warning));
     assert_eq!(ctx.mode.lh_x, 0);
     assert_eq!(ctx.mode.pw_dots, 832); // kept (guide default)
     assert_eq!(ctx.config.darkness, 0);
@@ -461,16 +540,30 @@ fn sn_serializes_and_increments_across_formats() {
     // off (documented v1 simplification of the printer's reset-on-re-send).
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
-    let (label, mut ctx) = common::parse_ctx(b"^XA^FO10,10^SN001,1,Y^FS^XZ", &mut diags, &mut memory);
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    let (label, mut ctx) =
+        common::parse_ctx(b"^XA^FO10,10^SN001,1,Y^FS^XZ", &mut diags, &mut memory);
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
     assert_eq!(text_field(&label, 0).data, "001");
 
     // The same format re-sent: the counter continues (001 -> 002). The ^SN
     // command opens its own field - no ^FD needed.
     let mut scanner = zpl::scanner::Scanner::new(b"^XA^FO10,10^SN001,1,Y^FS^XZ");
     zpl::cmd::parse_stream(&mut scanner, &mut ctx);
-    let label2 = ctx.pending_label.take().expect("second format never closed by ^XZ");
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    let label2 = ctx
+        .pending_label
+        .take()
+        .expect("second format never closed by ^XZ");
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
     assert_eq!(text_field(&label2, 0).data, "002");
 }
 
@@ -488,25 +581,54 @@ fn sn_defaults_decrement_and_embedded_text() {
     // the next one prints the decremented value (n=-1: 1000 -> 999).
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
-    let (label, mut ctx) = common::parse_ctx(b"^XA^FO10,10^SNABCD1000EFGH,-1^FS^XZ", &mut diags, &mut memory);
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    let (label, mut ctx) = common::parse_ctx(
+        b"^XA^FO10,10^SNABCD1000EFGH,-1^FS^XZ",
+        &mut diags,
+        &mut memory,
+    );
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
     assert_eq!(text_field(&label, 0).data, "ABCD1000EFGH");
     let mut scanner = zpl::scanner::Scanner::new(b"^XA^FO10,10^SNABCD1000EFGH,-1^FS^XZ");
     zpl::cmd::parse_stream(&mut scanner, &mut ctx);
-    let label2 = ctx.pending_label.take().expect("second format never closed by ^XZ");
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    let label2 = ctx
+        .pending_label
+        .take()
+        .expect("second format never closed by ^XZ");
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
     assert_eq!(text_field(&label2, 0).data, "ABCD999EFGH");
 
     // Leading zeros keep the run's width (z=Y): 0005 stays four digits and
     // increments to 0006 on the next format.
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
-    let (label, mut ctx) = common::parse_ctx(b"^XA^FO10,10^SNABCD0005EFGH,1,Y^FS^XZ", &mut diags, &mut memory);
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    let (label, mut ctx) = common::parse_ctx(
+        b"^XA^FO10,10^SNABCD0005EFGH,1,Y^FS^XZ",
+        &mut diags,
+        &mut memory,
+    );
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
     assert_eq!(text_field(&label, 0).data, "ABCD0005EFGH");
     let mut scanner = zpl::scanner::Scanner::new(b"^XA^FO10,10^SNABCD0005EFGH,1,Y^FS^XZ");
     zpl::cmd::parse_stream(&mut scanner, &mut ctx);
-    let label2 = ctx.pending_label.take().expect("second format never closed by ^XZ");
+    let label2 = ctx
+        .pending_label
+        .take()
+        .expect("second format never closed by ^XZ");
     assert_eq!(text_field(&label2, 0).data, "ABCD0006EFGH");
 }
 
@@ -518,12 +640,16 @@ fn sn_counter_tracks_copies_trajectory() {
     // would after printing all N labels.
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
-    let (label, mut ctx) = common::parse_ctx(b"^XA^PQ3^FO10,10^SN001,1,Y^FS^XZ", &mut diags, &mut memory);
+    let (label, mut ctx) =
+        common::parse_ctx(b"^XA^PQ3^FO10,10^SN001,1,Y^FS^XZ", &mut diags, &mut memory);
     assert_eq!(label.copies, 3);
     assert_eq!(text_field(&label, 0).data, "001");
     let mut scanner = zpl::scanner::Scanner::new(b"^XA^FO10,10^SN001,1,Y^FS^XZ");
     zpl::cmd::parse_stream(&mut scanner, &mut ctx);
-    let label2 = ctx.pending_label.take().expect("second format never closed by ^XZ");
+    let label2 = ctx
+        .pending_label
+        .take()
+        .expect("second format never closed by ^XZ");
     assert_eq!(text_field(&label2, 0).data, "004"); // 001 + 3 copies x 1
 }
 
@@ -555,9 +681,8 @@ fn accept_only_set_never_warns_on_valid_params() {
 fn accept_only_malformed_params_warn_only() {
     // Malformed accept-only params warn and are ignored; parsing continues
     // and never panics.
-    let (label, diags) = parse_one(
-        b"^XA^SQ1,2^SR9999^SSxxx^ST13,99,999,25,99,99,Z^SX1^JZx^TOx^XZ~TA999",
-    );
+    let (label, diags) =
+        parse_one(b"^XA^SQ1,2^SR9999^SSxxx^ST13,99,999,25,99,99,Z^SX1^JZx^TOx^XZ~TA999");
     assert!(diags.items.len() >= 9, "expected warnings, got {diags:?}");
     assert!(diags.items.iter().all(|d| d.severity == Severity::Warning));
     assert_eq!(label.fields.len(), 0);
@@ -578,7 +703,7 @@ fn sn_malformed_params_warn_not_panic() {
     // right-most integers are subject to indexing", so the first copy prints
     // its run byte-for-byte unchanged (never a saturated substitution).
     let (label, diags) = parse_one(b"^XA^FO10,10^SN12345678901234567890,99999999999999^FS^XZ");
-    assert!(diags.items.len() >= 1, "expected warnings, got {diags:?}");
+    assert!(!diags.items.is_empty(), "expected warnings, got {diags:?}");
     assert!(diags.items.iter().all(|d| d.severity == Severity::Warning));
     assert_eq!(text_field(&label, 0).data, "12345678901234567890");
 }
@@ -590,12 +715,24 @@ fn sn_indexes_only_the_rightmost_12_digits() {
     // literal.
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
-    let (label, mut ctx) = common::parse_ctx(b"^XA^FO10,10^SN12345678901234567890,1^FS^XZ", &mut diags, &mut memory);
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    let (label, mut ctx) = common::parse_ctx(
+        b"^XA^FO10,10^SN12345678901234567890,1^FS^XZ",
+        &mut diags,
+        &mut memory,
+    );
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
     assert_eq!(text_field(&label, 0).data, "12345678901234567890");
     let mut scanner = zpl::scanner::Scanner::new(b"^XA^FO10,10^SN12345678901234567890,1^FS^XZ");
     zpl::cmd::parse_stream(&mut scanner, &mut ctx);
-    let label2 = ctx.pending_label.take().expect("second format never closed by ^XZ");
+    let label2 = ctx
+        .pending_label
+        .take()
+        .expect("second format never closed by ^XZ");
     // 901234567890 + 1 only: the leading 8 digits are literal.
     assert_eq!(text_field(&label2, 0).data, "12345678901234567891");
 }
@@ -644,7 +781,8 @@ fn fx_comment_body_ignored() {
     // scan as commands. Tildes are excluded here because a tilde ends ^FX
     // params outside a field (guide: "avoid using the caret or tilde
     // commands within the ^FX statement").
-    let (label, diags) = parse_one(b"^XA^FX_body with (,<>@#%% garbage (NOT commands^FO10,10^FDreal^FS^XZ");
+    let (label, diags) =
+        parse_one(b"^XA^FX_body with (,<>@#%% garbage (NOT commands^FO10,10^FDreal^FS^XZ");
     assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
     assert_eq!(label.fields.len(), 1);
     assert_eq!(text_field(&label, 0).data, "real");

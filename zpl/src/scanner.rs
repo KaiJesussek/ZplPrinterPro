@@ -24,26 +24,22 @@ pub enum Token<'a> {
 /// (the `^A` mnemonic is one letter), not some `^AA`. FUTURE TABLE ROWS THAT
 /// ADD A 2-LETTER COMMAND MUST EXTEND THIS LIST.
 static TWO_LETTER: &[&[u8; 2]] = &[
-    b"BA", b"BB", b"BC", b"BD", b"BE", b"BF", b"BI", b"BJ", b"BK", b"BL", b"BM", b"BO", b"BP", b"BQ", b"BR", b"BS", b"BT", b"BU", b"BX", b"BY", b"BZ",
-    b"CC", b"CD", b"CF", b"CI", b"CM", b"CN", b"CO", b"CP", b"CT", b"CV", b"CW",
-    b"DB", b"DE", b"DF", b"DG", b"DN", b"DS", b"DT", b"DU", b"DY",
-    b"EG",
-    b"FB", b"FC", b"FD", b"FE", b"FH", b"FL", b"FM", b"FN", b"FO", b"FP", b"FR", b"FS", b"FT", b"FV", b"FW", b"FX",
-    b"GB", b"GC", b"GD", b"GE", b"GF", b"GS",
-    b"HB", b"HD", b"HF", b"HG", b"HH", b"HI", b"HL", b"HM", b"HQ", b"HR", b"HS", b"HT", b"HU", b"HV", b"HW", b"HY", b"HZ",
-    b"ID", b"IL", b"IM", b"IS",
-    b"JA", b"JB", b"JC", b"JD", b"JE", b"JF", b"JG", b"JH", b"JI", b"JJ", b"JL", b"JM", b"JN", b"JO", b"JP", b"JQ", b"JR", b"JS", b"JT", b"JU", b"JW", b"JX", b"JZ",
-    b"KB", b"KC", b"KD", b"KL", b"KN", b"KP", b"KV",
-    b"LF", b"LH", b"LL", b"LR", b"LS", b"LT",
-    b"MA", b"MC", b"MD", b"MF", b"MI", b"ML", b"MM", b"MN", b"MP", b"MT", b"MU", b"MW",
-    b"NB", b"NC", b"ND", b"NI", b"NN", b"NP", b"NR", b"NS", b"NT", b"NW",
-    b"PA", b"PF", b"PH", b"PL", b"PM", b"PN", b"PO", b"PP", b"PQ", b"PR", b"PS", b"PW",
-    b"RB", b"RF", b"RO", b"RL", b"RS", b"RU", b"RW",
-    b"SC", b"SD", b"SE", b"SF", b"SI", b"SL", b"SN", b"SO", b"SP", b"SQ", b"SR", b"SS", b"ST", b"SX", b"SZ",
-    b"TA", b"TB", b"TO",
-    b"WA", b"WC", b"WD", b"WE", b"WL", b"WP", b"WQ", b"WR", b"WS", b"WX",
-    b"XA", b"XB", b"XF", b"XG", b"XS", b"XZ",
-    b"ZZ",
+    b"BA", b"BB", b"BC", b"BD", b"BE", b"BF", b"BI", b"BJ", b"BK", b"BL", b"BM", b"BO", b"BP",
+    b"BQ", b"BR", b"BS", b"BT", b"BU", b"BX", b"BY", b"BZ", b"CC", b"CD", b"CF", b"CI", b"CM",
+    b"CN", b"CO", b"CP", b"CT", b"CV", b"CW", b"DB", b"DE", b"DF", b"DG", b"DN", b"DS", b"DT",
+    b"DU", b"DY", b"EG", b"FB", b"FC", b"FD", b"FE", b"FH", b"FL", b"FM", b"FN", b"FO", b"FP",
+    b"FR", b"FS", b"FT", b"FV", b"FW", b"FX", b"GB", b"GC", b"GD", b"GE", b"GF", b"GS", b"HB",
+    b"HD", b"HF", b"HG", b"HH", b"HI", b"HL", b"HM", b"HQ", b"HR", b"HS", b"HT", b"HU", b"HV",
+    b"HW", b"HY", b"HZ", b"ID", b"IL", b"IM", b"IS", b"JA", b"JB", b"JC", b"JD", b"JE", b"JF",
+    b"JG", b"JH", b"JI", b"JJ", b"JL", b"JM", b"JN", b"JO", b"JP", b"JQ", b"JR", b"JS", b"JT",
+    b"JU", b"JW", b"JX", b"JZ", b"KB", b"KC", b"KD", b"KL", b"KN", b"KP", b"KV", b"LF", b"LH",
+    b"LL", b"LR", b"LS", b"LT", b"MA", b"MC", b"MD", b"MF", b"MI", b"ML", b"MM", b"MN", b"MP",
+    b"MT", b"MU", b"MW", b"NB", b"NC", b"ND", b"NI", b"NN", b"NP", b"NR", b"NS", b"NT", b"NW",
+    b"PA", b"PF", b"PH", b"PL", b"PM", b"PN", b"PO", b"PP", b"PQ", b"PR", b"PS", b"PW", b"RB",
+    b"RF", b"RO", b"RL", b"RS", b"RU", b"RW", b"SC", b"SD", b"SE", b"SF", b"SI", b"SL", b"SN",
+    b"SO", b"SP", b"SQ", b"SR", b"SS", b"ST", b"SX", b"SZ", b"TA", b"TB", b"TO", b"WA", b"WC",
+    b"WD", b"WE", b"WL", b"WP", b"WQ", b"WR", b"WS", b"WX", b"XA", b"XB", b"XF", b"XG", b"XS",
+    b"XZ", b"ZZ",
 ];
 
 /// Streaming scanner over a ZPL II byte stream.
@@ -153,7 +149,8 @@ impl<'a> Scanner<'a> {
         } else {
             return m;
         }
-        if self.pos < self.src.len() && self.src[self.pos].is_ascii_alphabetic()
+        if self.pos < self.src.len()
+            && self.src[self.pos].is_ascii_alphabetic()
             && TWO_LETTER.contains(&&[m[0], self.src[self.pos]])
         {
             m[1] = self.src[self.pos];
@@ -183,8 +180,12 @@ mod tests {
     fn splits_commands_and_data() {
         let mut s = Scanner::new(b"abc^FO10,20^FSdef");
         assert_eq!(s.next(false), Some(Token::Data(b"abc")));
-        assert!(matches!(s.next(false), Some(Token::Cmd(c)) if c.prefix == b'^' && c.mnemonic == [b'F', b'O'] && c.params == b"10,20"));
-        assert!(matches!(s.next(false), Some(Token::Cmd(c)) if c.prefix == b'^' && c.mnemonic == [b'F', b'S'] && c.params == b"def"));
+        assert!(
+            matches!(s.next(false), Some(Token::Cmd(c)) if c.prefix == b'^' && c.mnemonic == *b"FO" && c.params == b"10,20")
+        );
+        assert!(
+            matches!(s.next(false), Some(Token::Cmd(c)) if c.prefix == b'^' && c.mnemonic == *b"FS" && c.params == b"def")
+        );
         assert_eq!(s.next(false), None);
     }
 
@@ -201,7 +202,9 @@ mod tests {
     #[test]
     fn mnemonic_pads_single_letters() {
         let mut s = Scanner::new(b"^A0");
-        assert!(matches!(s.next(false), Some(Token::Cmd(c)) if c.mnemonic == [b'A', b' '] && c.params == b"0"));
+        assert!(
+            matches!(s.next(false), Some(Token::Cmd(c)) if c.mnemonic == *b"A " && c.params == b"0")
+        );
     }
 
     #[test]
@@ -209,11 +212,17 @@ mod tests {
         // ^AA is not a command: letter-font syntax keeps the second byte in
         // the params (font A, orientation N).
         let mut s = Scanner::new(b"^AAN,30,30");
-        assert!(matches!(s.next(false), Some(Token::Cmd(c)) if c.mnemonic == [b'A', b' '] && c.params == b"AN,30,30"));
+        assert!(
+            matches!(s.next(false), Some(Token::Cmd(c)) if c.mnemonic == *b"A " && c.params == b"AN,30,30")
+        );
         // FO/FS are real 2-letter commands and are consumed whole.
         let mut s = Scanner::new(b"^FO10^FS");
-        assert!(matches!(s.next(false), Some(Token::Cmd(c)) if c.mnemonic == [b'F', b'O'] && c.params == b"10"));
-        assert!(matches!(s.next(false), Some(Token::Cmd(c)) if c.mnemonic == [b'F', b'S'] && c.params.is_empty()));
+        assert!(
+            matches!(s.next(false), Some(Token::Cmd(c)) if c.mnemonic == *b"FO" && c.params == b"10")
+        );
+        assert!(
+            matches!(s.next(false), Some(Token::Cmd(c)) if c.mnemonic == *b"FS" && c.params.is_empty())
+        );
         assert_eq!(s.next(false), None);
     }
 
@@ -224,15 +233,21 @@ mod tests {
         // must scan as its own command, not as terminator params (Task 20
         // regression: `^XZ~HS` with an unclosed field lost the query).
         let mut s = Scanner::new(b"^GB50,50,2,B^XZ~HS");
-        assert!(matches!(s.next(false), Some(Token::Cmd(c)) if c.mnemonic == [b'G', b'B']));
-        assert!(matches!(s.next(false), Some(Token::Cmd(c)) if c.mnemonic == [b'X', b'Z'] && c.params.is_empty()));
-        assert!(matches!(s.next(false), Some(Token::Cmd(c)) if c.mnemonic == [b'H', b'S'] && c.params.is_empty()));
+        assert!(matches!(s.next(false), Some(Token::Cmd(c)) if c.mnemonic == *b"GB"));
+        assert!(
+            matches!(s.next(false), Some(Token::Cmd(c)) if c.mnemonic == *b"XZ" && c.params.is_empty())
+        );
+        assert!(
+            matches!(s.next(false), Some(Token::Cmd(c)) if c.mnemonic == *b"HS" && c.params.is_empty())
+        );
         assert_eq!(s.next(false), None);
 
         let mut s = Scanner::new(b"^FDhi^FS~HS");
         assert!(matches!(s.next(true), Some(Token::Cmd(_)))); // ^FD (field open)
-        assert!(matches!(s.next(true), Some(Token::Cmd(c)) if c.mnemonic == [b'F', b'S'] && c.params.is_empty()));
-        assert!(matches!(s.next(false), Some(Token::Cmd(c)) if c.mnemonic == [b'H', b'S']));
+        assert!(
+            matches!(s.next(true), Some(Token::Cmd(c)) if c.mnemonic == *b"FS" && c.params.is_empty())
+        );
+        assert!(matches!(s.next(false), Some(Token::Cmd(c)) if c.mnemonic == *b"HS"));
     }
 
     #[test]
@@ -240,8 +255,12 @@ mod tests {
         // ^CC-style command-char change (Task 17) takes effect via set_chars.
         let mut s = Scanner::new(b"!FO10!FS");
         s.set_chars(b'!', b'~');
-        assert!(matches!(s.next(false), Some(Token::Cmd(c)) if c.prefix == b'!' && c.mnemonic == [b'F', b'O'] && c.params == b"10"));
-        assert!(matches!(s.next(false), Some(Token::Cmd(c)) if c.mnemonic == [b'F', b'S'] && c.params.is_empty()));
+        assert!(
+            matches!(s.next(false), Some(Token::Cmd(c)) if c.prefix == b'!' && c.mnemonic == *b"FO" && c.params == b"10")
+        );
+        assert!(
+            matches!(s.next(false), Some(Token::Cmd(c)) if c.mnemonic == *b"FS" && c.params.is_empty())
+        );
         assert_eq!(s.next(false), None);
     }
 }

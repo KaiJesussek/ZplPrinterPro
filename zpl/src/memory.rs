@@ -52,7 +52,7 @@ pub struct Image {
 /// partial byte up, per the guide's `~DG` `w` formula). The renderer and
 /// tests use this to stay consistent with the stored row layout.
 pub fn packed_row_bytes(width_bits: u32) -> usize {
-    ((width_bits as usize) + 7) / 8
+    (width_bits as usize).div_ceil(8)
 }
 
 /// Emulator caps for a single stored image. Real printers have a few MB of
@@ -146,7 +146,12 @@ pub(crate) fn download_graphic(ctx: &mut ParseContext, params: &[u8]) {
     }
     let (t, w) = (t as usize, w as usize);
     if t % w != 0 {
-        warn_drop(ctx, "DG", &name, "total bytes not a multiple of bytes-per-row");
+        warn_drop(
+            ctx,
+            "DG",
+            &name,
+            "total bytes not a multiple of bytes-per-row",
+        );
         return;
     }
     if t > MAX_IMAGE_BYTES || w > MAX_ROW_BYTES {
@@ -192,7 +197,10 @@ pub(crate) fn recall_graphic(ctx: &mut ParseContext, params: &[u8]) {
                 Some(v) if (1..=10).contains(&v) => {}
                 _ => ctx.diags.push(Diagnostic::warning(
                     "XG",
-                    format!("invalid magnification {label} '{}'; ignored", String::from_utf8_lossy(p)),
+                    format!(
+                        "invalid magnification {label} '{}'; ignored",
+                        String::from_utf8_lossy(p)
+                    ),
                 )),
             }
         }
@@ -259,10 +267,20 @@ pub(crate) fn delete_object(ctx: &mut ParseContext, params: &[u8]) {
     // A name-less ^ID deletes the object stored under the UNKNOWN default
     // (guide ^ID: "Default: if a name is not specified, UNKNOWN is used").
     let stripped = strip_device(params);
-    let pat: &[u8] = if stripped.is_empty() { b"UNKNOWN" } else { stripped };
-    ctx.memory.images.retain(|k, _| !glob_match(pat, k.as_bytes()));
-    ctx.memory.fonts.retain(|k, _| !glob_match(pat, k.as_bytes()));
-    ctx.memory.formats.retain(|k, _| !glob_match(pat, k.as_bytes()));
+    let pat: &[u8] = if stripped.is_empty() {
+        b"UNKNOWN"
+    } else {
+        stripped
+    };
+    ctx.memory
+        .images
+        .retain(|k, _| !glob_match(pat, k.as_bytes()));
+    ctx.memory
+        .fonts
+        .retain(|k, _| !glob_match(pat, k.as_bytes()));
+    ctx.memory
+        .formats
+        .retain(|k, _| !glob_match(pat, k.as_bytes()));
 }
 
 /// Iterative `*`-glob match: `*` matches any run (including empty); all
@@ -336,7 +354,7 @@ pub(crate) fn download_object(ctx: &mut ParseContext, params: &[u8]) {
             warn_drop(ctx, "DY", &name, "missing bytes-per-row");
             return;
         };
-        let (t, w) = (t as usize, w as usize);
+        let (t, w) = (t, w as usize);
         if t == 0 || w == 0 || t % w != 0 || t > MAX_IMAGE_BYTES || w > MAX_ROW_BYTES {
             warn_drop(ctx, "DY", &name, "graphic size invalid or over limits");
             return;
@@ -367,7 +385,10 @@ pub(crate) fn download_object(ctx: &mut ParseContext, params: &[u8]) {
                 warn_drop(ctx, "DY", &name, "object exceeds emulator size limits");
                 return;
             }
-            let Some(decoded) = decode_graphic_data(data, t, { let w = segs.get(4).and_then(|p| to_u32(p)).unwrap_or(0) as usize; w.max(1) }) else {
+            let Some(decoded) = decode_graphic_data(data, t, {
+                let w = segs.get(4).and_then(|p| to_u32(p)).unwrap_or(0) as usize;
+                w.max(1)
+            }) else {
                 warn_drop(ctx, "DY", &name, "malformed or short hex data");
                 return;
             };
@@ -382,7 +403,10 @@ pub(crate) fn download_object(ctx: &mut ParseContext, params: &[u8]) {
                 if bytes.len() != t {
                     ctx.diags.push(Diagnostic::warning(
                         "DY",
-                        format!("{name}: binary payload is {} bytes, declared {t}", bytes.len()),
+                        format!(
+                            "{name}: binary payload is {} bytes, declared {t}",
+                            bytes.len()
+                        ),
                     ));
                     return;
                 }
@@ -392,12 +416,20 @@ pub(crate) fn download_object(ctx: &mut ParseContext, params: &[u8]) {
         Some(b'C') | Some(b'P') => {
             ctx.diags.push(Diagnostic::warning(
                 "DY",
-                format!("{name}: {}-format objects are not supported; dropped", format.unwrap() as char),
+                format!(
+                    "{name}: {}-format objects are not supported; dropped",
+                    format.unwrap() as char
+                ),
             ));
             return;
         }
         _ => {
-            warn_drop(ctx, "DY", &name, "missing data format (a = ASCII hex, b = binary)");
+            warn_drop(
+                ctx,
+                "DY",
+                &name,
+                "missing data format (a = ASCII hex, b = binary)",
+            );
             return;
         }
     };
@@ -429,7 +461,11 @@ pub(crate) fn download_unbounded_font(ctx: &mut ParseContext, params: &[u8]) {
 fn font_download(ctx: &mut ParseContext, params: &[u8], default_ext: &str, cmd: &str) {
     let (segs, data) = head_segments(params, 2);
     let name = font_key(segs.first().copied().unwrap_or(&[]));
-    let name = if name.contains('.') { name } else { format!("{name}.{default_ext}") };
+    let name = if name.contains('.') {
+        name
+    } else {
+        format!("{name}.{default_ext}")
+    };
     let Some(s) = segs.get(1).and_then(|p| to_u32(p)) else {
         warn_drop(ctx, cmd, &name, "invalid or missing font size");
         return;
@@ -489,7 +525,10 @@ pub(crate) fn transfer_object(ctx: &mut ParseContext, params: &[u8]) {
     if parts.len() < 2 || parts[0].is_empty() || parts[1].is_empty() {
         ctx.diags.push(Diagnostic::warning(
             "TO",
-            format!("invalid transfer '{}'; ignored", String::from_utf8_lossy(params)),
+            format!(
+                "invalid transfer '{}'; ignored",
+                String::from_utf8_lossy(params)
+            ),
         ));
     }
 }
@@ -514,7 +553,13 @@ mod tests {
             (b"OTHER*", b"YO.GRF", false),
         ];
         for &(pat, s, want) in cases {
-            assert_eq!(glob_match(pat, s), want, "{} vs {}", String::from_utf8_lossy(pat), String::from_utf8_lossy(s));
+            assert_eq!(
+                glob_match(pat, s),
+                want,
+                "{} vs {}",
+                String::from_utf8_lossy(pat),
+                String::from_utf8_lossy(s)
+            );
         }
     }
 
@@ -538,7 +583,8 @@ mod tests {
         // fills the row to the declared size.
         let oddzero = decode_graphic_data(b"FFFF0,", 3, 1).expect("odd-zero comma decodes");
         assert_eq!(oddzero, vec![0xFF, 0xFF, 0x00]);
-        let oddzero_midrow = decode_graphic_data(b"FFFF0,", 4, 2).expect("odd-zero comma fills the row");
+        let oddzero_midrow =
+            decode_graphic_data(b"FFFF0,", 4, 2).expect("odd-zero comma fills the row");
         assert_eq!(oddzero_midrow, vec![0xFF, 0xFF, 0x00, 0x00]);
         // A dangling NON-zero nibble before the comma is malformed.
         assert!(decode_graphic_data(b"F,", 2, 1).is_none());

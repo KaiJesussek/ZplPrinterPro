@@ -48,7 +48,14 @@ fn vspan(bm: &mut Bitmap, x: i64, y: i64, len: i64, color: u8) {
 /// edge is fixed at `y` and the thickness grows downward - the "inward"
 /// side for a box's top border (even thicknesses grow one dot inward, per
 /// the plan's Zebra rule).
-pub(crate) fn draw_thick_line(bm: &mut Bitmap, x: i64, y: i64, len: i64, thickness: i64, color: u8) {
+pub(crate) fn draw_thick_line(
+    bm: &mut Bitmap,
+    x: i64,
+    y: i64,
+    len: i64,
+    thickness: i64,
+    color: u8,
+) {
     let y0 = y.max(0);
     let y1 = (y + thickness).min(bm.height as i64);
     for ry in y0..y1 {
@@ -59,7 +66,14 @@ pub(crate) fn draw_thick_line(bm: &mut Bitmap, x: i64, y: i64, len: i64, thickne
 /// A vertical line `len` dots tall and `thickness` cols wide; the left edge
 /// is fixed at `x` and the thickness grows rightward (inward for a box's
 /// left border).
-pub(crate) fn draw_thick_vline(bm: &mut Bitmap, x: i64, y: i64, len: i64, thickness: i64, color: u8) {
+pub(crate) fn draw_thick_vline(
+    bm: &mut Bitmap,
+    x: i64,
+    y: i64,
+    len: i64,
+    thickness: i64,
+    color: u8,
+) {
     let x0 = x.max(0);
     let x1 = (x + thickness).min(bm.width as i64);
     for cx in x0..x1 {
@@ -120,14 +134,7 @@ pub(crate) fn draw_rect(
 /// when `(2c-(d-1))^2 + (2r-(d-1))^2 <= d^2` - the exact circle of diameter
 /// `d` centered on the box (integer math, i128 so hostile dimensions can
 /// never overflow).
-pub(crate) fn draw_circle(
-    bm: &mut Bitmap,
-    x: i64,
-    y: i64,
-    d: u32,
-    thickness: u32,
-    color: u8,
-) {
+pub(crate) fn draw_circle(bm: &mut Bitmap, x: i64, y: i64, d: u32, thickness: u32, color: u8) {
     let d64 = d as i64;
     if d64 <= 0 {
         return;
@@ -152,10 +159,8 @@ pub(crate) fn draw_circle(
             // has the SAME center, so it reuses (dx, dy) with the inner
             // diameter - shifting the offsets by 2t would re-center it on a
             // different grid point and misplace the hole.
-            if dx * dx + dy2 <= d2 {
-                if inner == 0 || dx * dx + dy2 > inner2 {
-                    bm.paint((x + col) as u32, (y + row) as u32, color);
-                }
+            if dx * dx + dy2 <= d2 && (inner == 0 || dx * dx + dy2 > inner2) {
+                bm.paint((x + col) as u32, (y + row) as u32, color);
             }
         }
     }
@@ -196,9 +201,9 @@ pub(crate) fn draw_ellipse(
     let ihh = ih as u128;
     let inner = iww * iww * ihh * ihh;
     for row in row0..row1 {
-        let dyq: u128 = (2 * row - (h64 - 1)).abs() as u128;
+        let dyq: u128 = (2 * row - (h64 - 1)).unsigned_abs() as u128;
         for col in col0..col1 {
-            let dxn: u128 = (2 * col - (w64 - 1)).abs() as u128;
+            let dxn: u128 = (2 * col - (w64 - 1)).unsigned_abs() as u128;
             // `|dxn| <= w` and `|dyq| <= h`, so each factored square is
             // individually <= outer - compare via subtraction, never by
             // adding two near-maximum products.
@@ -226,6 +231,7 @@ pub(crate) fn draw_ellipse(
 /// thickness grows inward" reading; the guide gives no turnaround rule for
 /// ^GD, so the +x/+y side is used). Degenerate 1-pixel-wide boxes draw a
 /// thick horizontal/vertical line.
+#[allow(clippy::too_many_arguments)] // primitive signature; same convention as barcode.rs/text.rs
 pub(crate) fn draw_diagonal(
     bm: &mut Bitmap,
     x: i64,
@@ -263,7 +269,11 @@ pub(crate) fn draw_diagonal(
         for row in row0..row1 {
             let r = row as i128;
             let along = ((2 * r * slope_num + (h64 - 1) as i128) / slope_den) as i64;
-            let cx = if left { x + (w64 - 1) - along } else { x + along };
+            let cx = if left {
+                x + (w64 - 1) - along
+            } else {
+                x + along
+            };
             hspan(bm, cx - run_start, y + row, t, color);
         }
     } else {
@@ -274,7 +284,11 @@ pub(crate) fn draw_diagonal(
         for col in col0..col1 {
             let c = col as i128;
             let along = ((2 * c * slope_num + (w64 - 1) as i128) / slope_den) as i64;
-            let cy = if left { y + (h64 - 1) - along } else { y + along };
+            let cy = if left {
+                y + (h64 - 1) - along
+            } else {
+                y + along
+            };
             vspan(bm, x + col, cy - run_start, t, color);
         }
     }
@@ -303,7 +317,7 @@ pub(crate) fn blit(dst: &mut Bitmap, src_w: u32, src_h: u32, src: &[u8], x: i64,
     }
     let vw = (dst.width - x0).min(src_w.saturating_sub(xo));
     let vh = (dst.height - y0).min(src_h.saturating_sub(yo));
-    let src_stride = ((src_w as usize) + 7) / 8;
+    let src_stride = (src_w as usize).div_ceil(8);
     for sy in 0..vh {
         for sx in 0..vw {
             let b = ((sy + yo) as usize) * src_stride + ((sx + xo) as usize >> 3);

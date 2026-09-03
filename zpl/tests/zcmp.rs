@@ -1,5 +1,8 @@
-// Temporary zint cross-check harness (uncommitted).
-// Usage (env): SYM=q|d|p|a DATA=hello STRIP=n cargo test -p zpl --test zcmp -- --nocapture
+// Eyeball cross-check harness: prints one of our 2D barcode rasters
+// (QR/DataMatrix/PDF417/Aztec) as rows of 0/1 for comparing against an
+// external reference engine by eye. Prints OUR encoder's output only -
+// nothing reference-derived lives here. Usage (env):
+// SYM=q|d|p|a DATA=hello STRIP=n cargo test -p zpl --test zcmp -- --nocapture
 // Prints SYM w h + rows of 0/1, quiet zone stripped by STRIP on all sides.
 use zpl::bc2d;
 use zpl::ir::BarcodeField;
@@ -33,7 +36,7 @@ fn field() -> BarcodeField {
         pdf_cols: 0,
         pdf_rows: 0,
         pdf_truncate: false,
-        font: [b'0', b'N'],
+        font: *b"0N",
         font_height: 0,
         font_width: 0,
         font_name: None,
@@ -79,7 +82,10 @@ fn zcmp() {
     } else {
         data_raw.into_bytes()
     };
-    let strip: usize = std::env::var("STRIP").unwrap_or_else(|_| "4".into()).parse().unwrap();
+    let strip: usize = std::env::var("STRIP")
+        .unwrap_or_else(|_| "4".into())
+        .parse()
+        .unwrap();
     let f = field();
     let res = match sym.as_str() {
         "q" => bc2d::qr(&f, &data),
@@ -89,7 +95,12 @@ fn zcmp() {
         _ => panic!("bad sym"),
     };
     let m = res.unwrap_or_else(|e| panic!("encode error: {e}"));
-    if let zpl::bc::Pattern::Modules { width, height, data: d } = m {
+    if let zpl::bc::Pattern::Modules {
+        width,
+        height,
+        data: d,
+    } = m
+    {
         let w = width as usize;
         let h = height as usize;
         println!("SYM {} {}", w - 2 * strip, h - 2 * strip);
@@ -97,7 +108,11 @@ fn zcmp() {
             let mut row = String::with_capacity(w);
             for x in strip..w - strip {
                 let i = y * w + x;
-                row.push(if d[i >> 3] & (0x80 >> (i & 7)) != 0 { '1' } else { '0' });
+                row.push(if d[i >> 3] & (0x80 >> (i & 7)) != 0 {
+                    '1'
+                } else {
+                    '0'
+                });
             }
             println!("{row}");
         }

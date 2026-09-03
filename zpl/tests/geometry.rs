@@ -100,7 +100,10 @@ fn gb_corner_rounding_is_parsed_and_dropped() {
     // it is accepted silently like ^FO's z justification.
     let (label, diags) = parse_one(b"^XA^GB100,50,5,B,4^FS^XZ");
     assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
-    assert_eq!((box_field(&label, 0).width, box_field(&label, 0).height), (100, 50));
+    assert_eq!(
+        (box_field(&label, 0).width, box_field(&label, 0).height),
+        (100, 50)
+    );
 }
 
 #[test]
@@ -210,7 +213,11 @@ fn gf_missing_size_params_ignores_command() {
     let (label, diags) = parse_one(b"^XA^GFA,,,^FS^XZ");
     assert!(diags.items.iter().any(|d| d.command == "GF"));
     assert!(diags.items.iter().all(|d| d.severity == Severity::Warning));
-    assert_eq!(label.fields.len(), 0, "no field should be emitted: {label:?}");
+    assert_eq!(
+        label.fields.len(),
+        0,
+        "no field should be emitted: {label:?}"
+    );
 }
 
 #[test]
@@ -231,7 +238,11 @@ fn gf_unsupported_compression_warns_and_skips() {
             String::from_utf8_lossy(src)
         );
         assert!(diags.items.iter().all(|d| d.severity == Severity::Warning));
-        assert_eq!(label.fields.len(), 0, "no field should be emitted: {label:?}");
+        assert_eq!(
+            label.fields.len(),
+            0,
+            "no field should be emitted: {label:?}"
+        );
     }
 }
 
@@ -240,14 +251,22 @@ fn gf_malformed_data_warns_and_skips() {
     // Odd nibble count decodes short of the declared 4 bytes -> warn + skip.
     let (label, diags) = parse_one(b"^XA^GFA,4,4,2,FF^FS^XZ");
     assert!(diags.items.iter().any(|d| d.command == "GF"));
-    assert_eq!(label.fields.len(), 0, "no field should be emitted: {label:?}");
+    assert_eq!(
+        label.fields.len(),
+        0,
+        "no field should be emitted: {label:?}"
+    );
 }
 
 #[test]
 fn gf_total_not_multiple_of_row_warns_and_skips() {
     let (label, diags) = parse_one(b"^XA^GFA,5,5,2,FFFF00^FS^XZ");
     assert!(diags.items.iter().any(|d| d.command == "GF"));
-    assert_eq!(label.fields.len(), 0, "no field should be emitted: {label:?}");
+    assert_eq!(
+        label.fields.len(),
+        0,
+        "no field should be emitted: {label:?}"
+    );
 }
 
 #[test]

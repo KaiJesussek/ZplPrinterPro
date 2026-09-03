@@ -47,7 +47,12 @@ async fn send_label(addr: SocketAddr, payload: &[u8]) {
 
 async fn wait_labels(state: &AppState, n: u64) {
     let deadline = Instant::now() + Duration::from_secs(10);
-    while state.counters.labels.load(std::sync::atomic::Ordering::Relaxed) < n {
+    while state
+        .counters
+        .labels
+        .load(std::sync::atomic::Ordering::Relaxed)
+        < n
+    {
         assert!(
             Instant::now() < deadline,
             "timed out waiting for {n} archived label(s)"
@@ -168,20 +173,37 @@ async fn label_detail_raw_and_png_endpoints() {
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(v["meta"]["id"], 1);
     assert_eq!(v["meta"]["diags"], 0);
-    assert_eq!(v["ir"]["fields"].as_array().unwrap().len(), 1, "the ^FD text parsed into one field");
-    assert_eq!(v["ir"]["width_dots"], 832, "IR is served with the label's geometry");
-    assert_eq!(v["diags"], serde_json::json!([]), "no diagnostics for a clean label");
+    assert_eq!(
+        v["ir"]["fields"].as_array().unwrap().len(),
+        1,
+        "the ^FD text parsed into one field"
+    );
+    assert_eq!(
+        v["ir"]["width_dots"], 832,
+        "IR is served with the label's geometry"
+    );
+    assert_eq!(
+        v["diags"],
+        serde_json::json!([]),
+        "no diagnostics for a clean label"
+    );
 
     // Raw bytes.
     let (status, body) = body_string(get(&state, "/api/labels/1.zpl").await).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body.as_bytes(), payload, "raw .zpl is the exact archived bytes");
+    assert_eq!(
+        body.as_bytes(),
+        payload,
+        "raw .zpl is the exact archived bytes"
+    );
 
     // PNG.
     let resp = get(&state, "/api/labels/1.png").await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(resp.headers()[header::CONTENT_TYPE], "image/png");
-    let png = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let png = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     let (w, h) = png_dims(&png);
     assert!(w > 0 && h > 0);
@@ -204,7 +226,11 @@ async fn unknown_ids_are_404() {
         assert_eq!(status, StatusCode::NOT_FOUND, "{path} must 404");
     }
     let (status, _) = body_string(post(&state, "/api/labels/999/rerender?dpi=300").await).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "rerender of an unknown id must 404");
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "rerender of an unknown id must 404"
+    );
 }
 
 #[tokio::test]
@@ -221,7 +247,8 @@ async fn printer_state_put_get_and_cross_stack_tcp_hs() {
     assert_eq!(v["head_temp"], "Normal");
 
     // PUT partial patch.
-    let (status, body) = body_string(put_json(&state, "/api/printer-state", r#"{"paper_out":true}"#).await).await;
+    let (status, body) =
+        body_string(put_json(&state, "/api/printer-state", r#"{"paper_out":true}"#).await).await;
     assert_eq!(status, StatusCode::OK);
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(v["paper_out"], true, "PUT echoes the merged conditions");
@@ -267,9 +294,17 @@ async fn printer_state_put_get_and_cross_stack_tcp_hs() {
 
     // PUT validation: bad enum -> 400; malformed JSON -> 400.
     let resp = put_json(&state, "/api/printer-state", r#"{"head_temp":"Frozen"}"#).await;
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "unknown enum value must 400");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "unknown enum value must 400"
+    );
     let resp = put_json(&state, "/api/printer-state", "{not json").await;
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "malformed JSON must 400");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "malformed JSON must 400"
+    );
 }
 
 #[tokio::test]
@@ -293,13 +328,27 @@ async fn rerender_at_300_dpi_rewrites_png_larger() {
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(v["id"], 1);
     assert_eq!(v["dpi"], 300);
-    let (w300, h300) = (v["width"].as_u64().unwrap() as u32, v["height"].as_u64().unwrap() as u32);
+    let (w300, h300) = (
+        v["width"].as_u64().unwrap() as u32,
+        v["height"].as_u64().unwrap() as u32,
+    );
 
     let after = std::fs::read(dir.join("labels/1.png")).unwrap();
     let (w_after, h_after) = png_dims(&after);
-    assert_eq!((w_after, h_after), (w300, h300), "response dims match the cached file");
-    assert!(h300 > h203, "300-dpi text render must be taller: {h203} -> {h300}");
-    assert_ne!((w300, h300), (w203, h203), "the PNG file must have been rewritten");
+    assert_eq!(
+        (w_after, h_after),
+        (w300, h300),
+        "response dims match the cached file"
+    );
+    assert!(
+        h300 > h203,
+        "300-dpi text render must be taller: {h203} -> {h300}"
+    );
+    assert_ne!(
+        (w300, h300),
+        (w203, h203),
+        "the PNG file must have been rewritten"
+    );
     assert_ne!(before, after, "the PNG bytes change");
 
     // Bad dpi params -> 400.
@@ -322,12 +371,14 @@ async fn storage_and_diagnostics_endpoints_report_state() {
     wait_labels(&state, 1).await;
 
     // Deposit a stored image directly (same channel ~DG uses).
-    state
-        .memory
-        .lock()
-        .await
-        .images
-        .insert("LOGO.GRF".into(), Image { width: 8, height: 8, data: vec![0u8; 8] });
+    state.memory.lock().await.images.insert(
+        "LOGO.GRF".into(),
+        Image {
+            width: 8,
+            height: 8,
+            data: vec![0u8; 8],
+        },
+    );
 
     let (status, body) = body_string(get(&state, "/api/storage").await).await;
     assert_eq!(status, StatusCode::OK);
@@ -343,7 +394,10 @@ async fn storage_and_diagnostics_endpoints_report_state() {
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert!(v["labels"].as_u64().unwrap() >= 1);
     assert!(v["bytes"].as_u64().unwrap() > 0, "bytes counted since boot");
-    assert!(v["warnings"].as_u64().unwrap() >= 1, "the ^QX warning is counted");
+    assert!(
+        v["warnings"].as_u64().unwrap() >= 1,
+        "the ^QX warning is counted"
+    );
     assert!(
         v["unknown_commands"].as_u64().unwrap() >= 1,
         "the ^QX unknown command is counted separately"
@@ -359,9 +413,18 @@ async fn persistence_reloads_memory_and_conditions() {
     // Mutate memory and conditions, then flush through the real seam.
     state.memory.lock().await.images.insert(
         "LOGO.GRF".into(),
-        Image { width: 16, height: 8, data: vec![0xff; 16] },
+        Image {
+            width: 16,
+            height: 8,
+            data: vec![0xff; 16],
+        },
     );
-    state.memory.lock().await.fonts.insert("F.TTF".into(), vec![1, 2, 3]);
+    state
+        .memory
+        .lock()
+        .await
+        .fonts
+        .insert("F.TTF".into(), vec![1, 2, 3]);
     let resp = put_json(&state, "/api/printer-state", r#"{"paper_out":true}"#).await;
     assert_eq!(resp.status(), StatusCode::OK);
     persist_now(&state).await;
@@ -373,12 +436,15 @@ async fn persistence_reloads_memory_and_conditions() {
     // A fresh archive + AppState over the same dir must restore both.
     let state2 = Arc::new(AppState::new(Archive::open(dir.clone()).unwrap()));
     let mem = state2.memory.lock().await;
-    assert!(mem.images.contains_key("LOGO.GRF"), "stored image survives a restart");
+    assert!(
+        mem.images.contains_key("LOGO.GRF"),
+        "stored image survives a restart"
+    );
     assert_eq!(mem.images["LOGO.GRF"].width, 16);
     assert_eq!(mem.fonts["F.TTF"], vec![1, 2, 3]);
     drop(mem);
     let ps = state2.printer_state.lock().await;
-    assert_eq!(ps.conditions.paper_out, true, "conditions survive a restart");
+    assert!(ps.conditions.paper_out, "conditions survive a restart");
     drop(ps);
 
     // Defaults when the files are absent.
@@ -388,7 +454,7 @@ async fn persistence_reloads_memory_and_conditions() {
     let mem = state3.memory.lock().await;
     assert!(mem.images.is_empty());
     drop(mem);
-    assert_eq!(state3.printer_state.lock().await.conditions.paper_out, false);
+    assert!(!state3.printer_state.lock().await.conditions.paper_out);
 }
 
 #[tokio::test]
@@ -435,10 +501,17 @@ async fn retention_prunes_oldest_labels() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["id"], 4, "limit keeps the newest");
     let (status, _) = body_string(get(&state, "/api/labels?limit=abc").await).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "a non-numeric limit must 400");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a non-numeric limit must 400"
+    );
     let (_, body) = body_string(get(&state, "/api/labels?since=99999999999999").await).await;
     let rows: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
-    assert!(rows.is_empty(), "since above every ts_ms filters everything out");
+    assert!(
+        rows.is_empty(),
+        "since above every ts_ms filters everything out"
+    );
 
     // Size cap: with a tiny max_bytes, rows fall below the keep threshold.
     let dir2 = test_dir("retain-size");
@@ -451,8 +524,14 @@ async fn retention_prunes_oldest_labels() {
     wait_labels(&state2, 3).await;
     let arc = state2.archive.lock().await;
     let rows = arc.rows();
-    assert!(rows.len() < 3, "size cap prunes to fit (~20 B per label, cap 40 B)");
-    assert!(rows.iter().all(|e| e.row.id > 1), "oldest labels pruned first");
+    assert!(
+        rows.len() < 3,
+        "size cap prunes to fit (~20 B per label, cap 40 B)"
+    );
+    assert!(
+        rows.iter().all(|e| e.row.id > 1),
+        "oldest labels pruned first"
+    );
 }
 
 #[tokio::test]
@@ -473,7 +552,10 @@ async fn sse_streams_label_and_state_events() {
     // State event (what PUT emits).
     state
         .events
-        .send(Event::State(Conditions { paper_out: true, ..Conditions::default() }))
+        .send(Event::State(Conditions {
+            paper_out: true,
+            ..Conditions::default()
+        }))
         .unwrap();
     let frame = tokio::time::timeout(Duration::from_secs(2), stream.next())
         .await
@@ -485,7 +567,14 @@ async fn sse_streams_label_and_state_events() {
     assert!(text.contains("\"paper_out\":true"), "frame: {text}");
 
     // Label event (what the TCP session emits on archive).
-    let row = LabelRow { id: 7, ts_ms: 1234, bytes: 10, diags: 0, width: 100, height: 50 };
+    let row = LabelRow {
+        id: 7,
+        ts_ms: 1234,
+        bytes: 10,
+        diags: 0,
+        width: 100,
+        height: 50,
+    };
     state.events.send(Event::Label(row)).unwrap();
     let frame = tokio::time::timeout(Duration::from_secs(2), stream.next())
         .await
@@ -499,7 +588,9 @@ async fn sse_streams_label_and_state_events() {
 
 /// spawn() with a custom retention override (small KEEP / MAX bytes).
 async fn spawn_limited(dir: PathBuf, keep: usize, max_bytes: u64) -> (SocketAddr, Arc<AppState>) {
-    let state = Arc::new(AppState::new(Archive::open_with(dir, keep, max_bytes).unwrap()));
+    let state = Arc::new(AppState::new(
+        Archive::open_with(dir, keep, max_bytes).unwrap(),
+    ));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     spawn_tcp(listener, state.clone());

@@ -2,8 +2,8 @@
 #![forbid(unsafe_code)]
 
 pub mod archive;
-pub mod http;
 pub mod hs;
+pub mod http;
 pub mod proto;
 pub mod state;
 pub mod tcp;

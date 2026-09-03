@@ -91,7 +91,7 @@ impl Default for PrinterMode {
             left_shift: 0,
             mirror: false,
             copies: 1,
-            default_font: [b'A', b' '],
+            default_font: *b"A ",
             default_font_h: 9,
             default_font_w: 5,
             fw_rotation: Rotation::R0,
@@ -297,7 +297,11 @@ pub struct SerialSetting {
 }
 
 /// Where the parser is in the input stream.
+// clippy: the Field variant's draft dwarfs the other variants; boxing it
+// would touch a dozen destructure sites in cmd/textfmt for a one-time
+// stack-layout saving in ParseContext - accepted as-is.
 #[derive(Debug, Default)]
+#[allow(clippy::large_enum_variant)]
 pub enum FormatState {
     /// Not inside a format.
     #[default]
@@ -306,7 +310,10 @@ pub enum FormatState {
     InFormat { fields: Vec<FieldDraft> },
     /// A field is open (between its origin/^FD and its ^FS). `fields` carries
     /// the drafts already closed in this format.
-    Field { draft: FieldDraft, fields: Vec<FieldDraft> },
+    Field {
+        draft: FieldDraft,
+        fields: Vec<FieldDraft>,
+    },
     /// ^DF stored-format download: capture raw bytes until ^FS.
     DefFormat { name: String, buf: Vec<u8> },
 }
@@ -319,9 +326,7 @@ impl FormatState {
 
     /// ^XA: (re)start a format, discarding any partial one.
     pub(crate) fn start_format(&mut self) {
-        *self = Self::InFormat {
-            fields: Vec::new(),
-        };
+        *self = Self::InFormat { fields: Vec::new() };
     }
 
     /// ^XZ: finalize the open format into a `Label`, or `None` if no format
@@ -428,26 +433,58 @@ impl FieldDraft {
         // the field origin comes from this draft's ^FO/^FT (or 0,0).
         if let Some(shape) = self.geometry {
             return match shape {
-                Geometry::Box { width, height, thickness, color } => {
-                    Field::Box(BoxField { x: self.x, y: self.y, width, height, thickness, color })
-                }
-                Geometry::Circle { diameter, thickness, color } => {
-                    Field::Circle(CircleField { x: self.x, y: self.y, diameter, thickness, color })
-                }
-                Geometry::Diagonal { width, height, thickness, color, direction } => {
-                    Field::Diagonal(DiagonalField {
-                        x: self.x,
-                        y: self.y,
-                        width,
-                        height,
-                        thickness,
-                        color,
-                        direction,
-                    })
-                }
-                Geometry::Ellipse { width, height, thickness, color } => {
-                    Field::Ellipse(EllipseField { x: self.x, y: self.y, width, height, thickness, color })
-                }
+                Geometry::Box {
+                    width,
+                    height,
+                    thickness,
+                    color,
+                } => Field::Box(BoxField {
+                    x: self.x,
+                    y: self.y,
+                    width,
+                    height,
+                    thickness,
+                    color,
+                }),
+                Geometry::Circle {
+                    diameter,
+                    thickness,
+                    color,
+                } => Field::Circle(CircleField {
+                    x: self.x,
+                    y: self.y,
+                    diameter,
+                    thickness,
+                    color,
+                }),
+                Geometry::Diagonal {
+                    width,
+                    height,
+                    thickness,
+                    color,
+                    direction,
+                } => Field::Diagonal(DiagonalField {
+                    x: self.x,
+                    y: self.y,
+                    width,
+                    height,
+                    thickness,
+                    color,
+                    direction,
+                }),
+                Geometry::Ellipse {
+                    width,
+                    height,
+                    thickness,
+                    color,
+                } => Field::Ellipse(EllipseField {
+                    x: self.x,
+                    y: self.y,
+                    width,
+                    height,
+                    thickness,
+                    color,
+                }),
             };
         }
         // Single decode point for text and barcode fields: bytes were
@@ -460,7 +497,13 @@ impl FieldDraft {
             // resolves them from Memory.images by name (Task 10).
             Some(kind) => {
                 let (data, bytes_per_row) = self.inline_data.unwrap_or_default();
-                Field::Graphic(GraphicField { x: self.x, y: self.y, kind, data, bytes_per_row })
+                Field::Graphic(GraphicField {
+                    x: self.x,
+                    y: self.y,
+                    kind,
+                    data,
+                    bytes_per_row,
+                })
             }
             None => match self.barcode {
                 Some(b) => Field::Barcode(BarcodeField {

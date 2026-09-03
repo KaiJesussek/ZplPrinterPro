@@ -158,7 +158,11 @@ impl Archive {
             );
         }
 
-        let committed: Vec<u64> = on_disk.iter().copied().filter(|id| *id < self.next_id).collect();
+        let committed: Vec<u64> = on_disk
+            .iter()
+            .copied()
+            .filter(|id| *id < self.next_id)
+            .collect();
         let known: BTreeSet<u64> = self.rows.iter().map(|e| e.row.id).collect();
         for id in committed.iter().filter(|id| !known.contains(id)) {
             match stub_row(&labels_dir, *id) {
@@ -177,7 +181,10 @@ impl Archive {
             eprintln!("archive: re-stubbed {stubbed} committed label(s) from files");
         }
 
-        for id in on_disk.iter().filter(|id| !known.contains(id) && **id >= self.next_id) {
+        for id in on_disk
+            .iter()
+            .filter(|id| !known.contains(id) && **id >= self.next_id)
+        {
             for ext in ["zpl", "json", "png"] {
                 let _ = fs::remove_file(labels_dir.join(format!("{id}.{ext}")));
             }
@@ -286,6 +293,11 @@ impl Archive {
     /// Labels currently retained (`next_id - 1` historical; ids start at 1).
     pub fn len(&self) -> usize {
         self.next_id.saturating_sub(1) as usize
+    }
+
+    /// Whether no labels are currently retained.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// The live row index, oldest first.

@@ -13,7 +13,7 @@ use zpl::ir::{Field, GraphicKind, Rotation};
 use zpl::scanner::Scanner;
 use zpl::state::{Memory, ParseContext};
 
-fn text_field<'l>(label: &'l zpl::ir::Label, i: usize) -> &'l zpl::ir::TextField {
+fn text_field(label: &zpl::ir::Label, i: usize) -> &zpl::ir::TextField {
     match &label.fields[i] {
         Field::Text(t) => t,
         other => panic!("expected text field, got {other:?}"),
@@ -40,7 +40,12 @@ fn dg_stores_and_xg_recalls() {
         &mut diags,
         &mut memory,
     );
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
     assert_eq!(ctx.memory.images.len(), 1, "www must count stored images");
     let img = ctx
         .memory
@@ -71,7 +76,12 @@ fn dg_stores_and_xg_recalls() {
         &mut diags,
         &mut memory,
     );
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
     assert_eq!(ctx.memory.images.len(), 1);
     assert!(ctx.memory.images.contains_key("LOGO.GRF"));
     assert!(matches!(&label.fields[0],
@@ -90,13 +100,23 @@ fn id_and_eg_prune() {
             &mut diags,
             &mut memory,
         );
-        assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+        assert_eq!(
+            ctx.diags.items.len(),
+            0,
+            "unexpected diagnostics: {0:?}",
+            ctx.diags
+        );
         assert_eq!(ctx.memory.images.len(), 1, "^ID deleted one of two (www=1)");
         assert!(ctx.memory.images.contains_key("LOGO.GRF"));
         assert!(!ctx.memory.images.contains_key("OTHER.GRF"));
     }
     let (_, ctx) = parse_ctx(b"~EG^XA^XZ", &mut diags, &mut memory);
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
     assert_eq!(ctx.memory.images.len(), 0, "~EG erased the store (www=0)");
 }
 
@@ -111,7 +131,12 @@ fn dn_aborts_download_without_touching_images() {
         &mut diags,
         &mut memory,
     );
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
     assert_eq!(ctx.memory.images.len(), 1, "~DN leaves stored images alone");
     assert!(ctx.memory.images.contains_key("LOGO.GRF"));
 }
@@ -128,11 +153,20 @@ fn id_globs_across_stores() {
         &mut memory,
     );
     assert_eq!(ctx.memory.images.len(), 0, "*.GRF deleted the image");
-    assert!(ctx.memory.formats.contains_key("FMT.ZPL"), "formats survive *.GRF");
-    assert!(ctx.memory.fonts.contains_key("ARIAL.TTF"), "fonts survive *.GRF");
+    assert!(
+        ctx.memory.formats.contains_key("FMT.ZPL"),
+        "formats survive *.GRF"
+    );
+    assert!(
+        ctx.memory.fonts.contains_key("ARIAL.TTF"),
+        "fonts survive *.GRF"
+    );
 
     let (_, ctx) = parse_ctx(b"^XA^IDR:FMT.ZPL^XZ~EG", &mut diags, &mut memory);
-    assert!(!ctx.memory.formats.contains_key("FMT.ZPL"), "exact ^ID deletes the format");
+    assert!(
+        !ctx.memory.formats.contains_key("FMT.ZPL"),
+        "exact ^ID deletes the format"
+    );
     // ~EG erases graphics only (the ~HS www count), not fonts/formats.
     assert!(ctx.memory.fonts.contains_key("ARIAL.TTF"));
     assert_eq!(ctx.memory.images.len(), 0);
@@ -150,10 +184,18 @@ fn bare_id_defaults_to_unknown() {
         &mut memory,
     );
     assert_eq!(ctx.diags.items.len(), 0, "bare ^ID must not warn");
-    assert_eq!(ctx.memory.images.len(), 1, "pattern UNKNOWN does not match UNKNOWN.GRF");
+    assert_eq!(
+        ctx.memory.images.len(),
+        1,
+        "pattern UNKNOWN does not match UNKNOWN.GRF"
+    );
 
     let (_, ctx) = parse_ctx(b"^XA^IDR:UNKNOWN.*^XZ", &mut diags, &mut memory);
-    assert_eq!(ctx.memory.images.len(), 0, "UNKNOWN.* glob reaches the default image");
+    assert_eq!(
+        ctx.memory.images.len(),
+        0,
+        "UNKNOWN.* glob reaches the default image"
+    );
 }
 
 #[test]
@@ -164,12 +206,24 @@ fn df_xf_roundtrip() {
     let mut memory = Memory::default();
     // ^DF captures everything until ^FS and stores it; a definition stream
     // (guide: ^DF right after ^XA, content saved, ^FS) produces no label.
-    define(b"^DFR:FMT.ZPL^FO10,10^A0,30,30^FDHello^FS", &mut diags, &mut memory);
+    define(
+        b"^DFR:FMT.ZPL^FO10,10^A0,30,30^FDHello^FS",
+        &mut diags,
+        &mut memory,
+    );
     assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
-    let stored = memory.formats.get("FMT.ZPL").expect("^DF stored the format");
+    let stored = memory
+        .formats
+        .get("FMT.ZPL")
+        .expect("^DF stored the format");
     assert_eq!(stored, b"^FO10,10^A0,30,30^FDHello");
     let (label, ctx) = parse_ctx(b"^XA^XFR:FMT.ZPL^FS^XZ", &mut diags, &mut memory);
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
     assert_eq!(label.fields.len(), 1);
     let t = text_field(&label, 0);
     assert_eq!((t.x, t.y), (10, 10));
@@ -184,8 +238,16 @@ fn xf_depth_and_missing_format() {
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
     let (_, ctx) = parse_ctx(b"^XA^XFR:NOPE.ZPL^XZ", &mut diags, &mut memory);
-    assert!(ctx.diags.items.iter().any(|d| d.severity == Severity::Warning));
-    assert!(ctx.diags.items.iter().any(|d| d.message.contains("NOPE.ZPL")));
+    assert!(ctx
+        .diags
+        .items
+        .iter()
+        .any(|d| d.severity == Severity::Warning));
+    assert!(ctx
+        .diags
+        .items
+        .iter()
+        .any(|d| d.message.contains("NOPE.ZPL")));
 
     // A stored format that recalls itself hits the depth cap: the recall
     // chain is bounded (never infinite), the parse completes, and the
@@ -197,17 +259,22 @@ fn xf_depth_and_missing_format() {
         &mut diags,
         &mut memory,
     );
-    let (label, ctx) = parse_ctx(
-        b"^XA^XFR:F1.ZPL^XFR:F3.ZPL^FS^XZ",
-        &mut diags,
-        &mut memory,
-    );
+    let (label, ctx) = parse_ctx(b"^XA^XFR:F1.ZPL^XFR:F3.ZPL^FS^XZ", &mut diags, &mut memory);
     // F1's text field is kept even though the self-referencing F3 chain was
     // cut at the depth cap.
     assert_eq!(label.fields.len(), 1);
     assert_eq!(text_field(&label, 0).data, "one");
-    let warns = ctx.diags.items.iter().filter(|d| d.severity == Severity::Warning).count();
-    assert!(warns >= 2, "expected depth-cap + missing-recursion warnings, got {0:?}", ctx.diags.items);
+    let warns = ctx
+        .diags
+        .items
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .count();
+    assert!(
+        warns >= 2,
+        "expected depth-cap + missing-recursion warnings, got {0:?}",
+        ctx.diags.items
+    );
 }
 
 #[test]
@@ -221,8 +288,17 @@ fn aa_selects_downloaded_font() {
         &mut diags,
         &mut memory,
     );
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
-    let font = ctx.memory.fonts.get("FONTFILE.TTF").expect("~DY stored the font");
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
+    let font = ctx
+        .memory
+        .fonts
+        .get("FONTFILE.TTF")
+        .expect("~DY stored the font");
     assert_eq!(font, &vec![0x00, 0xFF, 0x00, 0xFF]);
     let t = text_field(&label, 0);
     assert_eq!(t.font_name.as_deref(), Some("FONTFILE.TTF"));
@@ -236,16 +312,30 @@ fn aa_selects_downloaded_font() {
         &mut diags,
         &mut memory,
     );
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
     assert_eq!(label.fields.len(), 2);
     let carried = text_field(&label, 1);
-    assert_eq!(carried.font_name.as_deref(), Some("FONTFILE.TTF"), "^A@ carries the named font");
+    assert_eq!(
+        carried.font_name.as_deref(),
+        Some("FONTFILE.TTF"),
+        "^A@ carries the named font"
+    );
     assert_eq!(carried.rotation, Rotation::R90);
     assert_eq!((carried.font_height, carried.font_width), (40, 40));
 
     // Before any name is given, a name-less ^A@ keeps the ^CF default.
     let (label, ctx) = parse_ctx(b"^XA^FO10,10^A@R,40,40^FDx^FS^XZ", &mut diags, &mut memory);
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
     let t = text_field(&label, 0);
     assert_eq!(t.rotation, Rotation::R90);
     assert_eq!((t.font_height, t.font_width), (40, 40));
@@ -263,11 +353,25 @@ fn eg_erases_graphics_ds_downloads_font() {
         &mut diags,
         &mut memory,
     );
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
     assert_eq!(ctx.memory.images.len(), 0, "~EG erased all graphics");
 
-    let (_, ctx) = parse_ctx(b"~DSB:CGTIMES.FNT,4,00FF00FF^XA^XZ", &mut diags, &mut memory);
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    let (_, ctx) = parse_ctx(
+        b"~DSB:CGTIMES.FNT,4,00FF00FF^XA^XZ",
+        &mut diags,
+        &mut memory,
+    );
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
     assert_eq!(
         ctx.memory.fonts.get("CGTIMES.FNT"),
         Some(&vec![0x00, 0xFF, 0x00, 0xFF])
@@ -286,7 +390,12 @@ fn il_im_recall_is_not_supported() {
         &mut diags,
         &mut memory,
     );
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
     assert_eq!(label.fields.len(), 2);
     assert!(matches!(&label.fields[0],
         Field::Graphic(g) if g.x == 0 && g.y == 0
@@ -296,7 +405,11 @@ fn il_im_recall_is_not_supported() {
             && matches!(&g.kind, GraphicKind::Stored(n) if n == "LOGO.GRF")));
 
     let (label, ctx) = parse_ctx(b"^XA^ISR:SNAP.GRF^FS^XZ", &mut diags, &mut memory);
-    assert!(ctx.diags.items.iter().any(|d| d.severity == Severity::NotSupported));
+    assert!(ctx
+        .diags
+        .items
+        .iter()
+        .any(|d| d.severity == Severity::NotSupported));
     assert_eq!(label.fields.len(), 0);
 }
 
@@ -311,7 +424,12 @@ fn dy_graphic_download_counts_as_image() {
         &mut diags,
         &mut memory,
     );
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
     let img = ctx
         .memory
         .images
@@ -329,7 +447,12 @@ fn gs_symbol_field() {
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
     let (label, ctx) = parse_ctx(b"^XA^FO10,10^GSN,20,20^FD A^FS^XZ", &mut diags, &mut memory);
-    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "unexpected diagnostics: {0:?}",
+        ctx.diags
+    );
     let t = text_field(&label, 0);
     assert!(t.symbol);
     assert_eq!((t.font_height, t.font_width), (20, 20));
@@ -347,9 +470,20 @@ fn malformed_storage_payloads_warn_and_drop() {
     let mut memory = Memory::default();
     let (label, ctx) = parse_ctx(src, &mut diags, &mut memory);
     // Every malformed payload produced a warning; none panicked.
-    assert!(ctx.diags.items.len() >= 6, "expected >= 6 warnings, got {0:?}", ctx.diags);
-    assert!(ctx.diags.items.iter().all(|d| d.severity == Severity::Warning));
-    assert!(ctx.memory.images.is_empty(), "malformed images were dropped");
+    assert!(
+        ctx.diags.items.len() >= 6,
+        "expected >= 6 warnings, got {0:?}",
+        ctx.diags
+    );
+    assert!(ctx
+        .diags
+        .items
+        .iter()
+        .all(|d| d.severity == Severity::Warning));
+    assert!(
+        ctx.memory.images.is_empty(),
+        "malformed images were dropped"
+    );
     assert!(ctx.memory.fonts.is_empty(), "malformed font was dropped");
     assert_eq!(label.fields.len(), 0);
 }

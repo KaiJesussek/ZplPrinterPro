@@ -4,11 +4,11 @@
 //! compile-checked here.
 
 #[allow(dead_code)]
-pub(crate) mod dm_table;
+pub(crate) mod aztec_sizes_table;
 #[allow(dead_code)]
 pub(crate) mod aztec_table;
 #[allow(dead_code)]
-pub(crate) mod aztec_sizes_table;
+pub(crate) mod dm_table;
 #[allow(dead_code)]
 pub(crate) mod pdf_table;
 

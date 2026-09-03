@@ -335,15 +335,15 @@ fn digit_run(items: &[Item], from: usize) -> usize {
 fn emit_char(vals: &mut Vec<u8>, subset: &mut Subset, c: u8) {
     let (switch, value) = match *subset {
         Subset::A => match c {
-            0..=31 => (None, c + 64),      // controls NUL..US
-            32..=95 => (None, c - 32),     // SP.._
+            0..=31 => (None, c + 64),           // controls NUL..US
+            32..=95 => (None, c - 32),          // SP.._
             96..=127 => (Some(CODE_B), c - 32), // '`'..DEL live in B
-            _ => (None, 31),               // '?'
+            _ => (None, 31),                    // '?'
         },
         Subset::B => match c {
             32..=127 => (None, c - 32),
             0..=31 => (Some(CODE_A), c + 64),
-            _ => (None, 31),               // '?'
+            _ => (None, 31), // '?'
         },
         Subset::C => {
             // C cannot carry a single character; leave for A (controls) or
@@ -353,7 +353,7 @@ fn emit_char(vals: &mut Vec<u8>, subset: &mut Subset, c: u8) {
             } else if c <= 127 {
                 (CODE_B, Subset::B, c - 32)
             } else {
-                (CODE_B, Subset::B, 31)    // '?'
+                (CODE_B, Subset::B, 31) // '?'
             };
             *subset = target;
             (Some(code), value)
@@ -415,13 +415,12 @@ fn plan(items: &[Item]) -> Vec<u8> {
                             subset = Subset::B;
                         }
                     }
-                    CODE_A => {
+                    CODE_A
                         // Value 101 is Code A outside Subset A; inside A it
                         // is FNC4.
-                        if subset != Subset::A {
+                        if subset != Subset::A => {
                             subset = Subset::A;
                         }
-                    }
                     _ => {}
                 }
                 i += 1;
@@ -509,7 +508,7 @@ fn bars(vals: &[u8], module: u32) -> Pattern {
         };
         for (k, &w) in widths.iter().enumerate() {
             bars.push(Bar {
-                width: (w as u32).checked_mul(module).unwrap_or(u32::MAX),
+                width: (w as u32).saturating_mul(module),
                 black: k % 2 == 0,
             });
         }

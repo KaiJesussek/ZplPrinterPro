@@ -191,7 +191,9 @@ fn end_field(ctx: &mut ParseContext, _params: &[u8]) {
     check_barcode_data(ctx);
     check_malformed_utf16(ctx);
     if let Some((name, bytes)) = ctx.state.end_field() {
-        ctx.memory.formats.insert(memory::format_name(name.as_bytes()), bytes);
+        ctx.memory
+            .formats
+            .insert(memory::format_name(name.as_bytes()), bytes);
     }
 }
 
@@ -240,7 +242,13 @@ fn check_barcode_data(ctx: &mut ParseContext) {
         }
         // 2D symbologies: flag data that can never fit at parse close.
         if matches!(bc.symbology, b'Q' | b'X' | b'7' | b'0') {
-            if let Some(msg) = crate::bc2d::size_error(bc.symbology, bc.qr_ec, bc.qr_mask, bc.pdf_security, draft.data.len()) {
+            if let Some(msg) = crate::bc2d::size_error(
+                bc.symbology,
+                bc.qr_ec,
+                bc.qr_mask,
+                bc.pdf_security,
+                draft.data.len(),
+            ) {
                 ctx.diags.push(Diagnostic::warning("B*", msg));
             }
             return;
@@ -344,142 +352,657 @@ fn query_model_id(ctx: &mut ParseContext, _params: &[u8]) {
 
 /// Static command table; rows are added by later tasks as handlers land.
 const TABLE: &[CommandSpec] = &[
-    CommandSpec { mnemonic: *b"XA", prefix: Prefix::Caret, kind: CmdKind::Format, handler: start_format },
-    CommandSpec { mnemonic: *b"XZ", prefix: Prefix::Caret, kind: CmdKind::Format, handler: end_format },
-    CommandSpec { mnemonic: *b"FS", prefix: Prefix::Caret, kind: CmdKind::Format, handler: end_field },
-    CommandSpec { mnemonic: *b"DF", prefix: Prefix::Caret, kind: CmdKind::Format, handler: start_download },
+    CommandSpec {
+        mnemonic: *b"XA",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: start_format,
+    },
+    CommandSpec {
+        mnemonic: *b"XZ",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: end_format,
+    },
+    CommandSpec {
+        mnemonic: *b"FS",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: end_field,
+    },
+    CommandSpec {
+        mnemonic: *b"DF",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: start_download,
+    },
     // Task 7: printer storage. ^DF is the download half of this family (its
     // ^FS ends the capture and stores the bytes); the tilde operations run
     // any time; ^ID/^XG/^XF/^IL/^IM/^IS/^GS act on or inside a format.
-    CommandSpec { mnemonic: *b"XF", prefix: Prefix::Caret, kind: CmdKind::Format, handler: memory::recall_format },
-    CommandSpec { mnemonic: *b"XG", prefix: Prefix::Caret, kind: CmdKind::Format, handler: memory::recall_graphic },
-    CommandSpec { mnemonic: *b"ID", prefix: Prefix::Caret, kind: CmdKind::Format, handler: memory::delete_object },
-    CommandSpec { mnemonic: *b"IL", prefix: Prefix::Caret, kind: CmdKind::Format, handler: memory::image_load },
-    CommandSpec { mnemonic: *b"IM", prefix: Prefix::Caret, kind: CmdKind::Format, handler: memory::image_move },
-    CommandSpec { mnemonic: *b"IS", prefix: Prefix::Caret, kind: CmdKind::Format, handler: memory::image_save },
+    CommandSpec {
+        mnemonic: *b"XF",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: memory::recall_format,
+    },
+    CommandSpec {
+        mnemonic: *b"XG",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: memory::recall_graphic,
+    },
+    CommandSpec {
+        mnemonic: *b"ID",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: memory::delete_object,
+    },
+    CommandSpec {
+        mnemonic: *b"IL",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: memory::image_load,
+    },
+    CommandSpec {
+        mnemonic: *b"IM",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: memory::image_move,
+    },
+    CommandSpec {
+        mnemonic: *b"IS",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: memory::image_save,
+    },
     // Task 8: drawing-field command set. ^GS was registered by Task 7 (it
     // is the graphic-symbol *font style*, not a shape); ^GB ^GC ^GD ^GE
     // draw shapes, ^GF carries an inline graphic field.
-    CommandSpec { mnemonic: *b"GB", prefix: Prefix::Caret, kind: CmdKind::Format, handler: geom::graphic_box },
-    CommandSpec { mnemonic: *b"GC", prefix: Prefix::Caret, kind: CmdKind::Format, handler: geom::graphic_circle },
-    CommandSpec { mnemonic: *b"GD", prefix: Prefix::Caret, kind: CmdKind::Format, handler: geom::graphic_diagonal },
-    CommandSpec { mnemonic: *b"GE", prefix: Prefix::Caret, kind: CmdKind::Format, handler: geom::graphic_ellipse },
-    CommandSpec { mnemonic: *b"GF", prefix: Prefix::Caret, kind: CmdKind::Format, handler: geom::graphic_field },
-    CommandSpec { mnemonic: *b"GS", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::graphic_symbol },
+    CommandSpec {
+        mnemonic: *b"GB",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: geom::graphic_box,
+    },
+    CommandSpec {
+        mnemonic: *b"GC",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: geom::graphic_circle,
+    },
+    CommandSpec {
+        mnemonic: *b"GD",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: geom::graphic_diagonal,
+    },
+    CommandSpec {
+        mnemonic: *b"GE",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: geom::graphic_ellipse,
+    },
+    CommandSpec {
+        mnemonic: *b"GF",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: geom::graphic_field,
+    },
+    CommandSpec {
+        mnemonic: *b"GS",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: textfmt::graphic_symbol,
+    },
     // Task 9: barcode field framework. ^BY sets the ^B* defaults (module
     // width, ratio, height); ^BC (Code 128) is the first symbology and the
     // pattern for Task 15's ^B1..^BE.
-    CommandSpec { mnemonic: *b"BY", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::bar_code_defaults },
-    CommandSpec { mnemonic: *b"BC", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::code_128 },
+    CommandSpec {
+        mnemonic: *b"BY",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: bc::bar_code_defaults,
+    },
+    CommandSpec {
+        mnemonic: *b"BC",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: bc::code_128,
+    },
     // Task 15: the remaining 1D symbologies. ^B1..^B9 scan as the
     // one-letter mnemonic `B ` with the symbology digit as the first
     // parameter segment; the two-letter mnemonics dispatch directly.
     // (^B0 Aztec, ^B4 Code 49, ^B5 Planet, ^B7 PDF417 and ^BB CODABLOCK
     // are 2D/stacked - Task 16 territory; their commands warn and skip.)
-    CommandSpec { mnemonic: *b"B ", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::barcode_digit },
-    CommandSpec { mnemonic: *b"BA", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::code93_field },
+    CommandSpec {
+        mnemonic: *b"B ",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: bc::barcode_digit,
+    },
+    CommandSpec {
+        mnemonic: *b"BA",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: bc::code93_field,
+    },
     // Task 16: 2D symbologies. ^B0 (Aztec) and ^B7 (PDF417) scan through
     // the digit route; ^BQ (QR) and ^BX (DataMatrix) are two-letter.
-    CommandSpec { mnemonic: *b"BQ", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::qr_field },
-    CommandSpec { mnemonic: *b"BX", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::datamatrix_field },
-    CommandSpec { mnemonic: *b"BK", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::codabar_field },
-    CommandSpec { mnemonic: *b"BE", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::ean13_field },
-    CommandSpec { mnemonic: *b"BU", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::upca_field },
-    CommandSpec { mnemonic: *b"BM", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::msi_field },
-    CommandSpec { mnemonic: *b"DG", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: memory::download_graphic },
-    CommandSpec { mnemonic: *b"DY", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: memory::download_object },
-    CommandSpec { mnemonic: *b"DS", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: memory::download_scalable_font },
-    CommandSpec { mnemonic: *b"DT", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: memory::download_bounded_font },
-    CommandSpec { mnemonic: *b"DU", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: memory::download_unbounded_font },
-    CommandSpec { mnemonic: *b"EG", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: memory::erase_graphics },
-    CommandSpec { mnemonic: *b"DN", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: memory::abort_download },
+    CommandSpec {
+        mnemonic: *b"BQ",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: bc::qr_field,
+    },
+    CommandSpec {
+        mnemonic: *b"BX",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: bc::datamatrix_field,
+    },
+    CommandSpec {
+        mnemonic: *b"BK",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: bc::codabar_field,
+    },
+    CommandSpec {
+        mnemonic: *b"BE",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: bc::ean13_field,
+    },
+    CommandSpec {
+        mnemonic: *b"BU",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: bc::upca_field,
+    },
+    CommandSpec {
+        mnemonic: *b"BM",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: bc::msi_field,
+    },
+    CommandSpec {
+        mnemonic: *b"DG",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: memory::download_graphic,
+    },
+    CommandSpec {
+        mnemonic: *b"DY",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: memory::download_object,
+    },
+    CommandSpec {
+        mnemonic: *b"DS",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: memory::download_scalable_font,
+    },
+    CommandSpec {
+        mnemonic: *b"DT",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: memory::download_bounded_font,
+    },
+    CommandSpec {
+        mnemonic: *b"DU",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: memory::download_unbounded_font,
+    },
+    CommandSpec {
+        mnemonic: *b"EG",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: memory::erase_graphics,
+    },
+    CommandSpec {
+        mnemonic: *b"DN",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: memory::abort_download,
+    },
     // Task 5: text-field command set. The ^A mnemonic is single-letter, so
     // the scanner pads it to [A, space].
-    CommandSpec { mnemonic: *b"FO", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::field_origin },
-    CommandSpec { mnemonic: *b"FT", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::field_typeset },
-    CommandSpec { mnemonic: *b"FD", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::field_data },
-    CommandSpec { mnemonic: *b"FV", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::field_variable },
-    CommandSpec { mnemonic: *b"FH", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::field_hex },
-    CommandSpec { mnemonic: *b"FR", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::field_reverse },
-    CommandSpec { mnemonic: *b"FB", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::field_block },
-    CommandSpec { mnemonic: *b"FW", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::field_orientation },
-    CommandSpec { mnemonic: *b"A ", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::select_font },
-    CommandSpec { mnemonic: *b"CF", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::change_default_font },
-    CommandSpec { mnemonic: *b"CW", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::assign_font },
-    CommandSpec { mnemonic: *b"CI", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::change_international },
-    CommandSpec { mnemonic: *b"FC", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::set_clock_indicators },
+    CommandSpec {
+        mnemonic: *b"FO",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: textfmt::field_origin,
+    },
+    CommandSpec {
+        mnemonic: *b"FT",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: textfmt::field_typeset,
+    },
+    CommandSpec {
+        mnemonic: *b"FD",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: textfmt::field_data,
+    },
+    CommandSpec {
+        mnemonic: *b"FV",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: textfmt::field_variable,
+    },
+    CommandSpec {
+        mnemonic: *b"FH",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: textfmt::field_hex,
+    },
+    CommandSpec {
+        mnemonic: *b"FR",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: textfmt::field_reverse,
+    },
+    CommandSpec {
+        mnemonic: *b"FB",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: textfmt::field_block,
+    },
+    CommandSpec {
+        mnemonic: *b"FW",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: textfmt::field_orientation,
+    },
+    CommandSpec {
+        mnemonic: *b"A ",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: textfmt::select_font,
+    },
+    CommandSpec {
+        mnemonic: *b"CF",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: textfmt::change_default_font,
+    },
+    CommandSpec {
+        mnemonic: *b"CW",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: textfmt::assign_font,
+    },
+    CommandSpec {
+        mnemonic: *b"CI",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: textfmt::change_international,
+    },
+    CommandSpec {
+        mnemonic: *b"FC",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: textfmt::set_clock_indicators,
+    },
     // Task 6: label configuration commands. Geometry config is stored in
     // PrinterMode; darkness/media/units/ZPL-mode in PrinterConfig; the rest
     // are parse-and-validate (see config.rs).
-    CommandSpec { mnemonic: *b"LH", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::label_home },
-    CommandSpec { mnemonic: *b"LL", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::label_length },
-    CommandSpec { mnemonic: *b"PW", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::print_width },
-    CommandSpec { mnemonic: *b"PO", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::print_orientation },
-    CommandSpec { mnemonic: *b"PM", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::mirror_image },
-    CommandSpec { mnemonic: *b"LS", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::label_shift },
-    CommandSpec { mnemonic: *b"LT", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::label_top },
-    CommandSpec { mnemonic: *b"MD", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::media_darkness },
-    CommandSpec { mnemonic: *b"PQ", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::print_quantity },
-    CommandSpec { mnemonic: *b"PR", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::print_rate },
-    CommandSpec { mnemonic: *b"PH", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::slew_to_home },
-    CommandSpec { mnemonic: *b"MN", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::media_tracking },
-    CommandSpec { mnemonic: *b"MT", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::media_type },
-    CommandSpec { mnemonic: *b"MM", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::print_mode },
-    CommandSpec { mnemonic: *b"MU", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::units },
-    CommandSpec { mnemonic: *b"MF", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::media_feed },
-    CommandSpec { mnemonic: *b"MI", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::maintenance_message },
-    CommandSpec { mnemonic: *b"ML", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::max_label_length },
-    CommandSpec { mnemonic: *b"MP", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::mode_protection },
-    CommandSpec { mnemonic: *b"MW", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::head_cold_warning },
-    CommandSpec { mnemonic: *b"PA", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::advanced_text },
-    CommandSpec { mnemonic: *b"PF", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::slew_rows },
-    CommandSpec { mnemonic: *b"SC", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::serial_comms },
-    CommandSpec { mnemonic: *b"SZ", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::zpl_mode },
-    CommandSpec { mnemonic: *b"ZZ", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::printer_sleep },
-    CommandSpec { mnemonic: *b"XB", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::suppress_backfeed },
-    CommandSpec { mnemonic: *b"XS", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::dynamic_calibration },
-    CommandSpec { mnemonic: *b"PN", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::present_now },
+    CommandSpec {
+        mnemonic: *b"LH",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::label_home,
+    },
+    CommandSpec {
+        mnemonic: *b"LL",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::label_length,
+    },
+    CommandSpec {
+        mnemonic: *b"PW",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::print_width,
+    },
+    CommandSpec {
+        mnemonic: *b"PO",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::print_orientation,
+    },
+    CommandSpec {
+        mnemonic: *b"PM",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::mirror_image,
+    },
+    CommandSpec {
+        mnemonic: *b"LS",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::label_shift,
+    },
+    CommandSpec {
+        mnemonic: *b"LT",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::label_top,
+    },
+    CommandSpec {
+        mnemonic: *b"MD",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::media_darkness,
+    },
+    CommandSpec {
+        mnemonic: *b"PQ",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::print_quantity,
+    },
+    CommandSpec {
+        mnemonic: *b"PR",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::print_rate,
+    },
+    CommandSpec {
+        mnemonic: *b"PH",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::slew_to_home,
+    },
+    CommandSpec {
+        mnemonic: *b"MN",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::media_tracking,
+    },
+    CommandSpec {
+        mnemonic: *b"MT",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::media_type,
+    },
+    CommandSpec {
+        mnemonic: *b"MM",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::print_mode,
+    },
+    CommandSpec {
+        mnemonic: *b"MU",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::units,
+    },
+    CommandSpec {
+        mnemonic: *b"MF",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::media_feed,
+    },
+    CommandSpec {
+        mnemonic: *b"MI",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::maintenance_message,
+    },
+    CommandSpec {
+        mnemonic: *b"ML",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::max_label_length,
+    },
+    CommandSpec {
+        mnemonic: *b"MP",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::mode_protection,
+    },
+    CommandSpec {
+        mnemonic: *b"MW",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::head_cold_warning,
+    },
+    CommandSpec {
+        mnemonic: *b"PA",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::advanced_text,
+    },
+    CommandSpec {
+        mnemonic: *b"PF",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::slew_rows,
+    },
+    CommandSpec {
+        mnemonic: *b"SC",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::serial_comms,
+    },
+    CommandSpec {
+        mnemonic: *b"SZ",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::zpl_mode,
+    },
+    CommandSpec {
+        mnemonic: *b"ZZ",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::printer_sleep,
+    },
+    CommandSpec {
+        mnemonic: *b"XB",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::suppress_backfeed,
+    },
+    CommandSpec {
+        mnemonic: *b"XS",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::dynamic_calibration,
+    },
+    CommandSpec {
+        mnemonic: *b"PN",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::present_now,
+    },
     // Tilde printer operations from the same config family: darkness and
     // slew-to-home have ^- and ~-forms in the guide (^PH ~PH p.317; ~SD p.333
     // is the only darkness form).
-    CommandSpec { mnemonic: *b"SD", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: config::set_darkness },
-    CommandSpec { mnemonic: *b"PH", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: config::slew_to_home },
+    CommandSpec {
+        mnemonic: *b"SD",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: config::set_darkness,
+    },
+    CommandSpec {
+        mnemonic: *b"PH",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: config::slew_to_home,
+    },
     // Task 17: command-character switches (^CC/^CT), serial numbers (^SN),
     // and the accept-only remainder (^SQ ^SR ^SS ^ST ^SX ^TB ^TO ^FX ^HY ^HZ
     // ^HU ^JZ, plus the tilde ops ~WC ~TA ~JR). ^SN/^TB modify the open
     // field; the rest are parsed and validated but have no label-image
     // effect (see config.rs / cmd.rs handler docs).
-    CommandSpec { mnemonic: *b"CC", prefix: Prefix::Caret, kind: CmdKind::Format, handler: change_command_char },
-    CommandSpec { mnemonic: *b"CC", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: change_command_char },
-    CommandSpec { mnemonic: *b"CT", prefix: Prefix::Caret, kind: CmdKind::Format, handler: change_tilde_char },
-    CommandSpec { mnemonic: *b"CT", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: change_tilde_char },
-    CommandSpec { mnemonic: *b"SN", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::serial_number },
-    CommandSpec { mnemonic: *b"TB", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::text_block },
-    CommandSpec { mnemonic: *b"SQ", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::halt_zebranet_alert },
-    CommandSpec { mnemonic: *b"SR", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::set_head_resistance },
-    CommandSpec { mnemonic: *b"SS", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::set_media_sensors },
-    CommandSpec { mnemonic: *b"ST", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::set_clock },
-    CommandSpec { mnemonic: *b"SX", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::set_zebranet_alert },
-    CommandSpec { mnemonic: *b"TO", prefix: Prefix::Caret, kind: CmdKind::Format, handler: memory::transfer_object },
-    CommandSpec { mnemonic: *b"FX", prefix: Prefix::Caret, kind: CmdKind::Format, handler: comment },
-    CommandSpec { mnemonic: *b"HY", prefix: Prefix::Caret, kind: CmdKind::Format, handler: host_upload_graphic },
-    CommandSpec { mnemonic: *b"HZ", prefix: Prefix::Caret, kind: CmdKind::Format, handler: host_description },
-    CommandSpec { mnemonic: *b"HU", prefix: Prefix::Caret, kind: CmdKind::Format, handler: host_get_alerts },
-    CommandSpec { mnemonic: *b"HU", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: host_get_alerts },
-    CommandSpec { mnemonic: *b"JZ", prefix: Prefix::Caret, kind: CmdKind::Format, handler: config::reprint_after_error },
-    CommandSpec { mnemonic: *b"WC", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: print_config_label },
-    CommandSpec { mnemonic: *b"TA", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: config::tear_off_adjust },
-    CommandSpec { mnemonic: *b"JR", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: power_on_reset },
+    CommandSpec {
+        mnemonic: *b"CC",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: change_command_char,
+    },
+    CommandSpec {
+        mnemonic: *b"CC",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: change_command_char,
+    },
+    CommandSpec {
+        mnemonic: *b"CT",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: change_tilde_char,
+    },
+    CommandSpec {
+        mnemonic: *b"CT",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: change_tilde_char,
+    },
+    CommandSpec {
+        mnemonic: *b"SN",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: textfmt::serial_number,
+    },
+    CommandSpec {
+        mnemonic: *b"TB",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: textfmt::text_block,
+    },
+    CommandSpec {
+        mnemonic: *b"SQ",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::halt_zebranet_alert,
+    },
+    CommandSpec {
+        mnemonic: *b"SR",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::set_head_resistance,
+    },
+    CommandSpec {
+        mnemonic: *b"SS",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::set_media_sensors,
+    },
+    CommandSpec {
+        mnemonic: *b"ST",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::set_clock,
+    },
+    CommandSpec {
+        mnemonic: *b"SX",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::set_zebranet_alert,
+    },
+    CommandSpec {
+        mnemonic: *b"TO",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: memory::transfer_object,
+    },
+    CommandSpec {
+        mnemonic: *b"FX",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: comment,
+    },
+    CommandSpec {
+        mnemonic: *b"HY",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: host_upload_graphic,
+    },
+    CommandSpec {
+        mnemonic: *b"HZ",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: host_description,
+    },
+    CommandSpec {
+        mnemonic: *b"HU",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: host_get_alerts,
+    },
+    CommandSpec {
+        mnemonic: *b"HU",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: host_get_alerts,
+    },
+    CommandSpec {
+        mnemonic: *b"JZ",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::reprint_after_error,
+    },
+    CommandSpec {
+        mnemonic: *b"WC",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: print_config_label,
+    },
+    CommandSpec {
+        mnemonic: *b"TA",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: config::tear_off_adjust,
+    },
+    CommandSpec {
+        mnemonic: *b"JR",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: power_on_reset,
+    },
     // Task 20: host queries (~HS ~HQ ~WD ~HI) and numbered fields
     // (^FN / ^HV). ~HS is the byte-exact status centerpiece; the rest are
     // the protocol responders. ^FN/^HV work inside formats (^HV may be
     // answered any time - the guide pages 200/239).
-    CommandSpec { mnemonic: *b"HS", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: query_host_status },
-    CommandSpec { mnemonic: *b"HQ", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: query_head_status },
-    CommandSpec { mnemonic: *b"WD", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: query_config_dump },
-    CommandSpec { mnemonic: *b"HI", prefix: Prefix::Tilde, kind: CmdKind::PrinterOp, handler: query_model_id },
-    CommandSpec { mnemonic: *b"FN", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::field_number },
-    CommandSpec { mnemonic: *b"HV", prefix: Prefix::Caret, kind: CmdKind::Format, handler: textfmt::host_value },
+    CommandSpec {
+        mnemonic: *b"HS",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: query_host_status,
+    },
+    CommandSpec {
+        mnemonic: *b"HQ",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: query_head_status,
+    },
+    CommandSpec {
+        mnemonic: *b"WD",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: query_config_dump,
+    },
+    CommandSpec {
+        mnemonic: *b"HI",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: query_model_id,
+    },
+    CommandSpec {
+        mnemonic: *b"FN",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: textfmt::field_number,
+    },
+    CommandSpec {
+        mnemonic: *b"HV",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: textfmt::host_value,
+    },
 ];
 
 /// The command table: prefix+mnemonic -> handler. Rows accumulate across tasks.
@@ -506,8 +1029,11 @@ pub fn dispatch(ctx: &mut ParseContext, cmd: Cmd) {
     }
     // The command token carries no input offset; diagnostics report 0 until
     // the driver threads scanner positions through.
-    ctx.diags
-        .push(Diagnostic::unknown_command(cmd.prefix, &cmd.mnemonic[..], 0));
+    ctx.diags.push(Diagnostic::unknown_command(
+        cmd.prefix,
+        &cmd.mnemonic[..],
+        0,
+    ));
 }
 
 /// Drive `scanner` through `dispatch` until the input is exhausted.
@@ -627,7 +1153,10 @@ mod tests {
         // ^QZ is not a real command; ^ZZ is registered (Task 6: printer sleep).
         parse_stream(&mut Scanner::new(b"^XA^QZ^FS^XZ"), &mut ctx);
         assert_eq!(ctx.diags.items.len(), 1); // ^QZ unknown
-        assert!(matches!(ctx.diags.items[0].severity, Severity::UnknownCommand));
+        assert!(matches!(
+            ctx.diags.items[0].severity,
+            Severity::UnknownCommand
+        ));
         assert!(ctx.pending_label.is_some()); // ^XA..^XZ framed
     }
 
@@ -800,8 +1329,8 @@ mod tests {
         parse_stream_collect(&mut Scanner::new(b"^XA^FO10,10"), &mut ctx, &mut labels);
         assert!(labels.is_empty());
         assert!(ctx.state.is_partial()); // 11 bytes in; no ^XZ yet
-        // Second chunk: ^XZ completes the format opened in chunk 1. The
-        // span must start at chunk 1's ^XA (offset 0), not the chunk base.
+                                         // Second chunk: ^XZ completes the format opened in chunk 1. The
+                                         // span must start at chunk 1's ^XA (offset 0), not the chunk base.
         ctx.stream_base = 11;
         parse_stream_collect(&mut Scanner::new(b"^XZ"), &mut ctx, &mut labels);
         assert_eq!(labels.len(), 1);

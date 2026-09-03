@@ -92,7 +92,15 @@ impl Rs {
                 // (x +/- root) * old: c*x^(k+1) +/- c*root*x^k
                 next[k + 1] = add(field, next[k + 1], c);
                 let t = mul_alog(field, &alog, &log, c, root);
-                next[k] = add(field, next[k], if field_is_binary(field) { t } else { neg(field, t) });
+                next[k] = add(
+                    field,
+                    next[k],
+                    if field_is_binary(field) {
+                        t
+                    } else {
+                        neg(field, t)
+                    },
+                );
             }
             gen = next;
         }
@@ -103,7 +111,13 @@ impl Rs {
         for (k, &c) in gen.iter().take(nsym).enumerate() {
             gen_log[k] = if c == 0 { 0 } else { log[c as usize] };
         }
-        Ok(Rs { field, nsym, log, alog, gen: gen_log })
+        Ok(Rs {
+            field,
+            nsym,
+            log,
+            alog,
+            gen: gen_log,
+        })
     }
 
     /// Error-correction codewords for `data`, in transmission order.
@@ -190,7 +204,7 @@ fn make_alog(field: Field, order: usize) -> Vec<u16> {
         for i in 0..order {
             alog[i] = x as u16;
             alog[order + i] = x as u16;
-            x = (x * 3) % p as u32;
+            x = (x * 3) % p;
         }
         return alog;
     }
@@ -226,10 +240,7 @@ mod tests {
     fn dm_rs_known_vector() {
         let rs = Rs::new(Field::Binary(0x12d), 7, 1).unwrap();
         let ec = rs.encode(&[105, 102, 109, 109, 112]).unwrap();
-        assert_eq!(
-            ec,
-            vec![0x7F, 0x65, 0xA3, 0x16, 0x45, 0x7B, 0x54]
-        );
+        assert_eq!(ec, vec![0x7F, 0x65, 0xA3, 0x16, 0x45, 0x7B, 0x54]);
     }
 
     /// QR: GF(256) 0x11d, generator index 0 (ISO/IEC 18004). Version 1-M
@@ -239,8 +250,8 @@ mod tests {
     fn qr_rs_known_vector() {
         let rs = Rs::new(Field::Binary(0x11d), 10, 0).unwrap();
         let data = [
-            0x40, 0x05, b'h', b'e', b'l', b'l', b'o', 0xEC, 0x11, 0xEC,
-            0x11, 0xEC, 0x11, 0xEC, 0x11, 0xEC,
+            0x40, 0x05, b'h', b'e', b'l', b'l', b'o', 0xEC, 0x11, 0xEC, 0x11, 0xEC, 0x11, 0xEC,
+            0x11, 0xEC,
         ];
         let ec = rs.encode(&data.map(|b| b as u16)).unwrap();
         assert_eq!(
@@ -310,4 +321,3 @@ mod oracle_tests {
         assert_eq!(got, vec![522, 568, 723, 809]);
     }
 }
-

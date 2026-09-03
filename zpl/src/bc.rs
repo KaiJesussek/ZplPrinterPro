@@ -30,7 +30,11 @@ pub struct Bar {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pattern {
     Bars(Vec<Bar>),
-    Modules { width: u32, height: u32, data: Vec<u8> },
+    Modules {
+        width: u32,
+        height: u32,
+        data: Vec<u8>,
+    },
 }
 
 /// Encode a barcode from raw field data (^FH already applied; for ^BC the
@@ -60,10 +64,7 @@ pub fn encode(
         b'K' => bc1d::codabar(data, module, ratio),
         b'M' => bc1d::msi(data, module, ratio),
         b'U' => bc1d::upca(data, module),
-        _ => Err(format!(
-            "unsupported symbology '{}'",
-            symbology as char
-        )),
+        _ => Err(format!("unsupported symbology '{}'", symbology as char)),
     }
 }
 
@@ -206,7 +207,12 @@ pub(crate) fn bar_code_defaults(ctx: &mut ParseContext, params: &[u8]) {
     ctx.mode.by_ratio = match parts.get(1).and_then(|p| to_tenths(p)) {
         Some(v) if (20..=30).contains(&v) => v as u32,
         Some(_) => {
-            warn_invalid("BY", "ratio", parts.get(1).copied().unwrap_or(&[]), ctx.diags);
+            warn_invalid(
+                "BY",
+                "ratio",
+                parts.get(1).copied().unwrap_or(&[]),
+                ctx.diags,
+            );
             prev.1
         }
         None => prev.1, // empty segment: keep current
@@ -239,7 +245,10 @@ fn yn(seg: Option<&[u8]>, cmd: &str, name: &str, diags: &mut Diagnostics, fallba
 fn warn_invalid(cmd: &str, name: &str, raw: &[u8], diags: &mut Diagnostics) {
     diags.push(Diagnostic::warning(
         cmd,
-        format!("invalid {name} '{}'; using default", String::from_utf8_lossy(raw)),
+        format!(
+            "invalid {name} '{}'; using default",
+            String::from_utf8_lossy(raw)
+        ),
     ));
 }
 
@@ -251,9 +260,10 @@ fn warn_invalid(cmd: &str, name: &str, raw: &[u8], diags: &mut Diagnostics) {
 pub(crate) fn code_128(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
     // Snapshot the ^BY defaults before borrowing the draft.
-    let (by_module, by_ratio, by_height) = (ctx.mode.by_module, ctx.mode.by_ratio, ctx.mode.by_height);
+    let (by_module, by_ratio, by_height) =
+        (ctx.mode.by_module, ctx.mode.by_ratio, ctx.mode.by_height);
     let rotation = match parts.first().copied() {
-        Some(o) if o.is_empty() => None, // default: current ^FW
+        Some([]) => None, // default: current ^FW
         Some(o) => match parse_rotation(o) {
             Some(r) => Some(r),
             None => {
@@ -272,16 +282,39 @@ pub(crate) fn code_128(ctx: &mut ParseContext, params: &[u8]) {
         32000,
         by_height,
     );
-    let line = yn(parts.get(2).copied(), "BC", "interpretation line", ctx.diags, b'Y');
-    let interpret = yn(parts.get(3).copied(), "BC", "line above code", ctx.diags, b'N') == b'Y';
-    let ucc = yn(parts.get(4).copied(), "BC", "UCC check digit", ctx.diags, b'N') == b'Y';
+    let line = yn(
+        parts.get(2).copied(),
+        "BC",
+        "interpretation line",
+        ctx.diags,
+        b'Y',
+    );
+    let interpret = yn(
+        parts.get(3).copied(),
+        "BC",
+        "line above code",
+        ctx.diags,
+        b'N',
+    ) == b'Y';
+    let ucc = yn(
+        parts.get(4).copied(),
+        "BC",
+        "UCC check digit",
+        ctx.diags,
+        b'N',
+    ) == b'Y';
     let model = match parts.get(5).and_then(|p| p.first()).copied() {
         Some(b'N') | Some(b'n') => b'N',
         Some(b'U') | Some(b'u') => b'U',
         Some(b'A') | Some(b'a') => b'A',
         Some(b'D') | Some(b'd') => b'D',
         Some(_) => {
-            warn_invalid("BC", "mode", parts.get(5).copied().unwrap_or(&[]), ctx.diags);
+            warn_invalid(
+                "BC",
+                "mode",
+                parts.get(5).copied().unwrap_or(&[]),
+                ctx.diags,
+            );
             b'N'
         }
         None => b'N',
@@ -318,7 +351,6 @@ pub(crate) fn code_128(ctx: &mut ParseContext, params: &[u8]) {
         d.rotation = r;
     }
 }
-
 
 // --- Task 15 1D barcode handlers (^B1..^B9, ^BA, ^BK, ^BE, ^BU, ^BM) ----
 //
@@ -367,29 +399,110 @@ enum Check {
     PrintDigit(u8),
 }
 
-const SPEC_B1: Spec = Spec { check: Some((Check::DigitCount, 1)), height: (2, 32000), line: (3, b'Y'), above: 4, start: None, stop: None };
-const SPEC_B2: Spec = Spec { check: Some((Check::Ucc, 4)), height: (1, 32000), line: (2, b'Y'), above: 3, start: None, stop: None };
-const SPEC_B3: Spec = Spec { check: Some((Check::Mod43, 1)), height: (2, 32000), line: (3, b'Y'), above: 4, start: None, stop: None };
-const SPEC_B5: Spec = Spec { check: None, height: (1, 9999), line: (2, b'N'), above: 3, start: None, stop: None };
-const SPEC_B8: Spec = Spec { check: None, height: (1, 32000), line: (2, b'Y'), above: 3, start: None, stop: None };
-const SPEC_B9: Spec = Spec { check: Some((Check::PrintDigit(b'Y'), 4)), height: (1, 32000), line: (2, b'Y'), above: 3, start: None, stop: None };
-const SPEC_BA: Spec = Spec { check: Some((Check::PrintDigit(b'N'), 4)), height: (1, 32000), line: (2, b'Y'), above: 3, start: None, stop: None };
-const SPEC_BK: Spec = Spec { check: Some((Check::FixedN, 1)), height: (2, 32000), line: (3, b'Y'), above: 4, start: Some(5), stop: Some(6) };
-const SPEC_BE: Spec = Spec { check: None, height: (1, 32000), line: (2, b'Y'), above: 3, start: None, stop: None };
-const SPEC_BU: Spec = Spec { check: Some((Check::PrintDigit(b'Y'), 4)), height: (1, 9999), line: (2, b'Y'), above: 3, start: None, stop: None };
-const SPEC_BM: Spec = Spec { check: Some((Check::Mode, 1)), height: (2, 32000), line: (3, b'Y'), above: 4, start: None, stop: None };
+const SPEC_B1: Spec = Spec {
+    check: Some((Check::DigitCount, 1)),
+    height: (2, 32000),
+    line: (3, b'Y'),
+    above: 4,
+    start: None,
+    stop: None,
+};
+const SPEC_B2: Spec = Spec {
+    check: Some((Check::Ucc, 4)),
+    height: (1, 32000),
+    line: (2, b'Y'),
+    above: 3,
+    start: None,
+    stop: None,
+};
+const SPEC_B3: Spec = Spec {
+    check: Some((Check::Mod43, 1)),
+    height: (2, 32000),
+    line: (3, b'Y'),
+    above: 4,
+    start: None,
+    stop: None,
+};
+const SPEC_B5: Spec = Spec {
+    check: None,
+    height: (1, 9999),
+    line: (2, b'N'),
+    above: 3,
+    start: None,
+    stop: None,
+};
+const SPEC_B8: Spec = Spec {
+    check: None,
+    height: (1, 32000),
+    line: (2, b'Y'),
+    above: 3,
+    start: None,
+    stop: None,
+};
+const SPEC_B9: Spec = Spec {
+    check: Some((Check::PrintDigit(b'Y'), 4)),
+    height: (1, 32000),
+    line: (2, b'Y'),
+    above: 3,
+    start: None,
+    stop: None,
+};
+const SPEC_BA: Spec = Spec {
+    check: Some((Check::PrintDigit(b'N'), 4)),
+    height: (1, 32000),
+    line: (2, b'Y'),
+    above: 3,
+    start: None,
+    stop: None,
+};
+const SPEC_BK: Spec = Spec {
+    check: Some((Check::FixedN, 1)),
+    height: (2, 32000),
+    line: (3, b'Y'),
+    above: 4,
+    start: Some(5),
+    stop: Some(6),
+};
+const SPEC_BE: Spec = Spec {
+    check: None,
+    height: (1, 32000),
+    line: (2, b'Y'),
+    above: 3,
+    start: None,
+    stop: None,
+};
+const SPEC_BU: Spec = Spec {
+    check: Some((Check::PrintDigit(b'Y'), 4)),
+    height: (1, 9999),
+    line: (2, b'Y'),
+    above: 3,
+    start: None,
+    stop: None,
+};
+const SPEC_BM: Spec = Spec {
+    check: Some((Check::Mode, 1)),
+    height: (2, 32000),
+    line: (3, b'Y'),
+    above: 4,
+    start: None,
+    stop: None,
+};
 
 /// ^B1..^B9: the symbology digit is the first parameter segment.
 pub(crate) fn barcode_digit(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
     let Some(first) = parts.first() else {
-        ctx.diags
-            .push(Diagnostic::warning("B*", "barcode command is missing the symbology digit"));
+        ctx.diags.push(Diagnostic::warning(
+            "B*",
+            "barcode command is missing the symbology digit",
+        ));
         return;
     };
     let Some(sym) = first.first().copied() else {
-        ctx.diags
-            .push(Diagnostic::warning("B*", "barcode command is missing the symbology digit"));
+        ctx.diags.push(Diagnostic::warning(
+            "B*",
+            "barcode command is missing the symbology digit",
+        ));
         return;
     };
     // The symbology's own parameters start after the digit. The digit is
@@ -483,7 +596,7 @@ fn finish_2d(ctx: &mut ParseContext, symbology: u8, rotation: Option<Rotation>, 
 pub(crate) fn qr_field(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
     let rotation = match parts.first().copied() {
-        Some(o) if o.is_empty() => None,
+        Some([]) => None,
         Some(o) => match parse_rotation(o) {
             Some(r) => Some(r),
             None => {
@@ -500,12 +613,25 @@ pub(crate) fn qr_field(ctx: &mut ParseContext, params: &[u8]) {
             "QR model 1 is not supported by this build; encoding as model 2",
         ));
     }
-    let mag = u32_in(parts.get(2).copied(), "BQ", "magnification", ctx.diags, 1, 100, ctx.mode.by_module);
+    let mag = u32_in(
+        parts.get(2).copied(),
+        "BQ",
+        "magnification",
+        ctx.diags,
+        1,
+        100,
+        ctx.mode.by_module,
+    );
     let ec = match parts.get(3).and_then(|p| p.first()).copied() {
         Some(c @ (b'H' | b'Q' | b'M' | b'L')) => c,
         _ => {
             if parts.get(3).is_some_and(|p| !p.is_empty()) {
-                warn_invalid("BQ", "error correction", parts.get(3).copied().unwrap_or(&[]), ctx.diags);
+                warn_invalid(
+                    "BQ",
+                    "error correction",
+                    parts.get(3).copied().unwrap_or(&[]),
+                    ctx.diags,
+                );
             }
             b'Q'
         }
@@ -536,7 +662,7 @@ pub(crate) fn qr_field(ctx: &mut ParseContext, params: &[u8]) {
 pub(crate) fn datamatrix_field(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
     let rotation = match parts.first().copied() {
-        Some(o) if o.is_empty() => None,
+        Some([]) => None,
         Some(o) => match parse_rotation(o) {
             Some(r) => Some(r),
             None => {
@@ -546,12 +672,22 @@ pub(crate) fn datamatrix_field(ctx: &mut ParseContext, params: &[u8]) {
         },
         None => None,
     };
-    let element = u32_in(parts.get(1).copied(), "BX", "element height", ctx.diags, 1, 32000, 0);
+    let element = u32_in(
+        parts.get(1).copied(),
+        "BX",
+        "element height",
+        ctx.diags,
+        1,
+        32000,
+        0,
+    );
     let quality = u32_in(parts.get(2).copied(), "BX", "quality", ctx.diags, 0, 200, 0);
     if matches!(quality, 50 | 80 | 100 | 140) {
         ctx.diags.push(Diagnostic::warning(
             "BX",
-            format!("DataMatrix quality {quality} is a legacy convolution-ECC level; encoding ECC 200"),
+            format!(
+                "DataMatrix quality {quality} is a legacy convolution-ECC level; encoding ECC 200"
+            ),
         ));
     }
     for (pos, name) in [(3usize, "columns"), (4, "rows")] {
@@ -566,13 +702,25 @@ pub(crate) fn datamatrix_field(ctx: &mut ParseContext, params: &[u8]) {
     let _rows = u32_in(parts.get(4).copied(), "BX", "rows", ctx.diags, 9, 49, 0);
     let format = u32_in(parts.get(5).copied(), "BX", "format ID", ctx.diags, 1, 6, 6) as u8;
     let _esc = parts.get(6); // accepted, unused (documented)
-    let aspect = u32_in(parts.get(7).copied(), "BX", "aspect ratio", ctx.diags, 1, 2, 1) as u8;
+    let aspect = u32_in(
+        parts.get(7).copied(),
+        "BX",
+        "aspect ratio",
+        ctx.diags,
+        1,
+        2,
+        1,
+    ) as u8;
     finish_2d(
         ctx,
         b'X',
         rotation,
         Opt2d {
-            module: if element == 0 { ctx.mode.by_module } else { element },
+            module: if element == 0 {
+                ctx.mode.by_module
+            } else {
+                element
+            },
             dm_quality: quality,
             dm_format: format,
             dm_aspect: aspect,
@@ -589,7 +737,7 @@ pub(crate) fn datamatrix_field(ctx: &mut ParseContext, params: &[u8]) {
 pub(crate) fn pdf417_field(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
     let rotation = match parts.first().copied() {
-        Some(o) if o.is_empty() => None,
+        Some([]) => None,
         Some(o) => match parse_rotation(o) {
             Some(r) => Some(r),
             None => {
@@ -599,18 +747,36 @@ pub(crate) fn pdf417_field(ctx: &mut ParseContext, params: &[u8]) {
         },
         None => None,
     };
-    let height = u32_in(parts.get(1).copied(), "B7", "row height", ctx.diags, 1, 32000, ctx.mode.by_height);
-    let security = u32_in(parts.get(2).copied(), "B7", "security level", ctx.diags, 0, 8, 0) as u8;
+    let height = u32_in(
+        parts.get(1).copied(),
+        "B7",
+        "row height",
+        ctx.diags,
+        1,
+        32000,
+        ctx.mode.by_height,
+    );
+    let security = u32_in(
+        parts.get(2).copied(),
+        "B7",
+        "security level",
+        ctx.diags,
+        0,
+        8,
+        0,
+    ) as u8;
     let cols = u32_in(parts.get(3).copied(), "B7", "columns", ctx.diags, 1, 30, 0);
     let rows = u32_in(parts.get(4).copied(), "B7", "rows", ctx.diags, 3, 90, 0);
     let truncate = yn(parts.get(5).copied(), "B7", "truncation", ctx.diags, b'N') == b'Y';
     let (by_module, by_ratio) = (ctx.mode.by_module, ctx.mode.by_ratio);
-    let mut opt = Opt2d::default();
-    opt.module = by_module;
-    opt.pdf_security = security;
-    opt.pdf_cols = cols;
-    opt.pdf_rows = rows;
-    opt.pdf_truncate = truncate;
+    let opt = Opt2d {
+        module: by_module,
+        pdf_security: security,
+        pdf_cols: cols,
+        pdf_rows: rows,
+        pdf_truncate: truncate,
+        ..Default::default()
+    };
     let Some(d) = draft_mut(ctx) else {
         return;
     };
@@ -653,7 +819,7 @@ pub(crate) fn pdf417_field(ctx: &mut ParseContext, params: &[u8]) {
 pub(crate) fn aztec_field(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
     let rotation = match parts.first().copied() {
-        Some(o) if o.is_empty() => None,
+        Some([]) => None,
         Some(o) => match parse_rotation(o) {
             Some(r) => Some(r),
             None => {
@@ -663,16 +829,47 @@ pub(crate) fn aztec_field(ctx: &mut ParseContext, params: &[u8]) {
         },
         None => None,
     };
-    let mag = u32_in(parts.get(1).copied(), "B0", "magnification", ctx.diags, 1, 10, ctx.mode.by_module);
-    if yn(parts.get(2).copied(), "B0", "extended channel interpretation", ctx.diags, b'N') == b'Y' {
+    let mag = u32_in(
+        parts.get(1).copied(),
+        "B0",
+        "magnification",
+        ctx.diags,
+        1,
+        10,
+        ctx.mode.by_module,
+    );
+    if yn(
+        parts.get(2).copied(),
+        "B0",
+        "extended channel interpretation",
+        ctx.diags,
+        b'N',
+    ) == b'Y'
+    {
         ctx.diags.push(Diagnostic::warning(
             "B0",
             "Aztec ECI is not supported by this build; encoding without it",
         ));
     }
-    let level = u32_in(parts.get(3).copied(), "B0", "error control", ctx.diags, 0, 300, 0);
+    let level = u32_in(
+        parts.get(3).copied(),
+        "B0",
+        "error control",
+        ctx.diags,
+        0,
+        300,
+        0,
+    );
     let menu = yn(parts.get(4).copied(), "B0", "menu symbol", ctx.diags, b'N') == b'Y';
-    let append = u32_in(parts.get(5).copied(), "B0", "structured append", ctx.diags, 1, 26, 1) as u8;
+    let append = u32_in(
+        parts.get(5).copied(),
+        "B0",
+        "structured append",
+        ctx.diags,
+        1,
+        26,
+        1,
+    ) as u8;
     let _id = parts.get(6); // structured-append ID, accepted (unused)
     if level == 300 {
         ctx.diags.push(Diagnostic::warning(
@@ -709,9 +906,10 @@ pub(crate) fn aztec_field(ctx: &mut ParseContext, params: &[u8]) {
 /// Shared parameter parsing for the Task 15 1D symbologies.
 fn barcode_1d(ctx: &mut ParseContext, params: &[u8], cmd: &str, symbology: u8, spec: Spec) {
     let parts = split_commas(params);
-    let (by_module, by_ratio, by_height) = (ctx.mode.by_module, ctx.mode.by_ratio, ctx.mode.by_height);
+    let (by_module, by_ratio, by_height) =
+        (ctx.mode.by_module, ctx.mode.by_ratio, ctx.mode.by_height);
     let rotation = match parts.first().copied() {
-        Some(o) if o.is_empty() => None, // default: current ^FW
+        Some([]) => None, // default: current ^FW
         Some(o) => match parse_rotation(o) {
             Some(r) => Some(r),
             None => {
@@ -730,8 +928,20 @@ fn barcode_1d(ctx: &mut ParseContext, params: &[u8], cmd: &str, symbology: u8, s
         spec.height.1,
         by_height,
     );
-    let line = yn(parts.get(spec.line.0).copied(), cmd, "interpretation line", ctx.diags, spec.line.1);
-    let interpret = yn(parts.get(spec.above).copied(), cmd, "line above code", ctx.diags, b'N') == b'Y';
+    let line = yn(
+        parts.get(spec.line.0).copied(),
+        cmd,
+        "interpretation line",
+        ctx.diags,
+        spec.line.1,
+    );
+    let interpret = yn(
+        parts.get(spec.above).copied(),
+        cmd,
+        "line above code",
+        ctx.diags,
+        b'N',
+    ) == b'Y';
     let mut check = b'N';
     let mut ucc = false;
     let mut start = b'A';
@@ -739,11 +949,32 @@ fn barcode_1d(ctx: &mut ParseContext, params: &[u8], cmd: &str, symbology: u8, s
     if let Some((kind, pos)) = spec.check {
         match kind {
             Check::Ucc => {
-                ucc = yn(parts.get(pos).copied(), cmd, "Mod-10 check digit", ctx.diags, b'N') == b'Y'
+                ucc = yn(
+                    parts.get(pos).copied(),
+                    cmd,
+                    "Mod-10 check digit",
+                    ctx.diags,
+                    b'N',
+                ) == b'Y'
             }
-            Check::Mod43 => check = yn(parts.get(pos).copied(), cmd, "Mod-43 check digit", ctx.diags, b'N'),
+            Check::Mod43 => {
+                check = yn(
+                    parts.get(pos).copied(),
+                    cmd,
+                    "Mod-43 check digit",
+                    ctx.diags,
+                    b'N',
+                )
+            }
             Check::DigitCount => {
-                check = if yn(parts.get(pos).copied(), cmd, "check digit count", ctx.diags, b'N') == b'Y' {
+                check = if yn(
+                    parts.get(pos).copied(),
+                    cmd,
+                    "check digit count",
+                    ctx.diags,
+                    b'N',
+                ) == b'Y'
+                {
                     1
                 } else {
                     2
@@ -754,7 +985,12 @@ fn barcode_1d(ctx: &mut ParseContext, params: &[u8], cmd: &str, symbology: u8, s
                     Some(m @ (b'A' | b'B' | b'C' | b'D')) => m,
                     _ => {
                         if parts.get(pos).is_some_and(|p| !p.is_empty()) {
-                            warn_invalid(cmd, "check digit mode", parts.get(pos).copied().unwrap_or(&[]), ctx.diags);
+                            warn_invalid(
+                                cmd,
+                                "check digit mode",
+                                parts.get(pos).copied().unwrap_or(&[]),
+                                ctx.diags,
+                            );
                         }
                         b'B'
                     }
@@ -764,7 +1000,13 @@ fn barcode_1d(ctx: &mut ParseContext, params: &[u8], cmd: &str, symbology: u8, s
                 let _ = yn(parts.get(pos).copied(), cmd, "check digit", ctx.diags, b'N');
             }
             Check::PrintDigit(dflt) => {
-                let _ = yn(parts.get(pos).copied(), cmd, "print check digit", ctx.diags, dflt);
+                let _ = yn(
+                    parts.get(pos).copied(),
+                    cmd,
+                    "print check digit",
+                    ctx.diags,
+                    dflt,
+                );
             }
         }
     }
@@ -835,4 +1077,3 @@ pub(crate) fn upca_field(ctx: &mut ParseContext, params: &[u8]) {
 pub(crate) fn msi_field(ctx: &mut ParseContext, params: &[u8]) {
     barcode_1d(ctx, params, "BM", b'M', SPEC_BM);
 }
-

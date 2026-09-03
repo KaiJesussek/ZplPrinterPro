@@ -23,11 +23,13 @@
 use crate::bc::Pattern;
 use crate::ir::BarcodeField;
 use crate::reed_solomon::{Field, Rs};
-use crate::tables::aztec_table::{COMPACT_MAP, CORE_MAP};
 use crate::tables::aztec_sizes_table::{
     AZTEC_COMPACT_DATA_SIZES, AZTEC_COMPACT_SIZES, AZTEC_DATA_SIZES, AZTEC_SIZES,
 };
-use crate::tables::dm_table::{SIZE_BYTES, SIZE_DATABLOCK, SIZE_FH, SIZE_FW, SIZE_H, SIZE_RSBLOCK, SIZE_W};
+use crate::tables::aztec_table::{COMPACT_MAP, CORE_MAP};
+use crate::tables::dm_table::{
+    SIZE_BYTES, SIZE_DATABLOCK, SIZE_FH, SIZE_FW, SIZE_H, SIZE_RSBLOCK, SIZE_W,
+};
 use crate::tables::pdf_table::PDF_BITPATTERN;
 
 // ---------------------------------------------------------------------
@@ -43,7 +45,11 @@ struct Grid {
 
 impl Grid {
     fn new(w: usize, h: usize) -> Grid {
-        Grid { w, h, data: vec![0u8; w * h] }
+        Grid {
+            w,
+            h,
+            data: vec![0u8; w * h],
+        }
     }
     fn set(&mut self, x: usize, y: usize, black: bool) {
         if x >= self.w || y >= self.h {
@@ -66,7 +72,7 @@ impl Grid {
     fn pattern(self, qleft: usize, qtop: usize, qright: usize, qbottom: usize) -> Pattern {
         let w = self.w + qleft + qright;
         let h = self.h + qtop + qbottom;
-        let mut out = vec![0u8; (w * h + 7) / 8];
+        let mut out = vec![0u8; (w * h).div_ceil(8)];
         for y in 0..self.h {
             for x in 0..self.w {
                 if self.get(x, y) {
@@ -75,12 +81,16 @@ impl Grid {
                 }
             }
         }
-        Pattern::Modules { width: w as u32, height: h as u32, data: out }
+        Pattern::Modules {
+            width: w as u32,
+            height: h as u32,
+            data: out,
+        }
     }
 }
 
 fn is_digit(b: u8) -> bool {
-    (b'0'..=b'9').contains(&b)
+    b.is_ascii_digit()
 }
 
 /// Absorb the ^B7 row height (h) and derive rows/cols for PDF417.
@@ -104,9 +114,9 @@ fn pdf_row_height(f: &BarcodeField) -> usize {
 /// v10-M: 4 x 43 + 1 x 44) and Nayuki's qrcodegen tables.
 const QR_DATA: [[u16; 10]; 4] = [
     [19, 34, 55, 80, 108, 136, 156, 194, 232, 274], // L
-    [16, 28, 44, 64, 86, 108, 124, 154, 182, 216], // M
-    [13, 22, 34, 48, 62, 76, 88, 110, 132, 154],   // Q
-    [9, 16, 26, 36, 46, 60, 66, 86, 100, 122],     // H
+    [16, 28, 44, 64, 86, 108, 124, 154, 182, 216],  // M
+    [13, 22, 34, 48, 62, 76, 88, 110, 132, 154],    // Q
+    [9, 16, 26, 36, 46, 60, 66, 86, 100, 122],      // H
 ];
 
 /// EC blocks per level/version.
@@ -164,27 +174,27 @@ fn qr_data_codewords(capacity: usize, data: &[u8], version: usize) -> Vec<u8> {
     }
     for &b in data {
         for i in (0..8).rev() {
-            bits.push(((b >> i) & 1) as u8);
+            bits.push((b >> i) & 1);
         }
     }
     // Terminator: up to 4 zero bits, to the byte boundary, but never
     // past the capacity.
     let remain = total_bits - bits.len();
     let term = remain.min((8 - bits.len() % 8) % 8).min(4);
-    for _ in 0..term {
-        bits.push(0);
-    }
-    while bits.len() % 8 != 0 && bits.len() < total_bits {
+    bits.extend(std::iter::repeat_n(0, term));
+    while !bits.len().is_multiple_of(8) && bits.len() < total_bits {
         bits.push(0);
     }
     let mut pad = 0xECu8;
     while bits.len() < total_bits {
         for i in (0..8).rev() {
-            bits.push(((pad >> i) & 1) as u8);
+            bits.push((pad >> i) & 1);
         }
         pad = if pad == 0xEC { 0x11 } else { 0xEC };
     }
-    bits.chunks(8).map(|c| c.iter().fold(0u8, |a, &b| (a << 1) | b)).collect()
+    bits.chunks(8)
+        .map(|c| c.iter().fold(0u8, |a, &b| (a << 1) | b))
+        .collect()
 }
 
 /// Per-block RS + interleaving (ISO/IEC 18004 8.6).
@@ -215,18 +225,12 @@ fn qr_interleave(level: usize, version: usize, data: &[u8]) -> Result<Vec<u8>, S
     }
     let mut out = Vec::with_capacity(data_cw + ecc_cw);
     for col in 0..short_len {
-        for b in 0..blocks {
-            out.push(block_data[b][col]);
-        }
+        out.extend(block_data.iter().map(|block| block[col]));
     }
     // The long blocks' extra data codewords (they are not EC).
-    for b in qty_short..blocks {
-        out.push(block_data[b][short_len]);
-    }
+    out.extend(block_data[qty_short..].iter().map(|block| block[short_len]));
     for col in 0..ecc_len {
-        for b in 0..blocks {
-            out.push(block_ecc[b][col] as u8);
-        }
+        out.extend(block_ecc.iter().map(|block| block[col] as u8));
     }
     Ok(out)
 }
@@ -238,7 +242,7 @@ fn qr_format_seq(ec2: u8, mask: u8) -> u16 {
     let data = (ec2 << 3) | mask;
     let mut rem = data as u32;
     for _ in 0..10 {
-        rem = (rem << 1) ^ ((rem >> 9) & 1) * 0x537;
+        rem = (rem << 1) ^ (((rem >> 9) & 1) * 0x537);
     }
     (((data as u32) << 10) | rem) as u16 ^ 0x5412
 }
@@ -249,7 +253,7 @@ fn qr_format_seq(ec2: u8, mask: u8) -> u16 {
 fn qr_version_info(v: u8) -> u32 {
     let mut rem = v as u32;
     for _ in 0..12 {
-        rem = (rem << 1) ^ ((rem >> 11) & 1) * 0x1F25;
+        rem = (rem << 1) ^ (((rem >> 11) & 1) * 0x1F25);
     }
     ((v as u32) << 12) | rem
 }
@@ -257,14 +261,14 @@ fn qr_version_info(v: u8) -> u32 {
 /// Which of the eight QR masks flips cell (x, y) (ISO/IEC 18004 Table 21).
 fn qr_mask_flip(x: usize, y: usize, pattern: usize) -> bool {
     match pattern {
-        0 => (x + y) % 2 == 0,
-        1 => y % 2 == 0,
-        2 => x % 3 == 0,
-        3 => (x + y) % 3 == 0,
-        4 => (x / 3 + y / 2) % 2 == 0,
+        0 => (x + y).is_multiple_of(2),
+        1 => y.is_multiple_of(2),
+        2 => x.is_multiple_of(3),
+        3 => (x + y).is_multiple_of(3),
+        4 => (x / 3 + y / 2).is_multiple_of(2),
         5 => (x * y) % 2 + (x * y) % 3 == 0,
-        6 => ((x * y) % 2 + (x * y) % 3) % 2 == 0,
-        _ => ((x + y) % 2 + (x * y) % 3) % 2 == 0,
+        6 => ((x * y) % 2 + (x * y) % 3).is_multiple_of(2),
+        _ => ((x + y) % 2 + (x * y) % 3).is_multiple_of(2),
     }
 }
 
@@ -290,8 +294,8 @@ pub fn qr(f: &BarcodeField, data: &[u8]) -> Result<Pattern, String> {
     #[derive(Clone, Copy, PartialEq)]
     enum Cell {
         Data(u8),
-        Func(bool),          // finder/separator/alignment/timing: fixed value
-        Reserved,            // format/version info areas (value written later)
+        Func(bool), // finder/separator/alignment/timing: fixed value
+        Reserved,   // format/version info areas (value written later)
         Timing(bool),
     }
     let mut g = vec![Cell::Data(0); size * size];
@@ -307,7 +311,11 @@ pub fn qr(f: &BarcodeField, data: &[u8]) -> Result<Pattern, String> {
     for (fx, fy) in [(0usize, 0usize), (0, size - 7), (size - 7, 0)] {
         for y in 0..7 {
             for x in 0..7 {
-                let dark = x == 0 || x == 6 || y == 0 || y == 6 || (2..=4).contains(&x) && (2..=4).contains(&y);
+                let dark = x == 0
+                    || x == 6
+                    || y == 0
+                    || y == 6
+                    || (2..=4).contains(&x) && (2..=4).contains(&y);
                 g[ix(fx + x, fy + y)] = Cell::Func(dark);
             }
         }
@@ -331,9 +339,8 @@ pub fn qr(f: &BarcodeField, data: &[u8]) -> Result<Pattern, String> {
         for &cy in centers {
             for &cx in centers {
                 let (cx, cy) = (cx as usize, cy as usize);
-                let in_finder = (cx < 8 && cy < 8)
-                    || (cx >= size - 8 && cy < 8)
-                    || (cx < 8 && cy >= size - 8);
+                let in_finder =
+                    (cx < 8 && cy < 8) || (cx >= size - 8 && cy < 8) || (cx < 8 && cy >= size - 8);
                 if !in_finder {
                     for y in 0..5usize {
                         for x in 0..5usize {
@@ -357,7 +364,7 @@ pub fn qr(f: &BarcodeField, data: &[u8]) -> Result<Pattern, String> {
     }
     g[ix(8, 8)] = Cell::Reserved;
     g[ix(8, size - 8)] = Cell::Func(true); // dark module
-    // Version info reserves.
+                                           // Version info reserves.
     if version >= 7 {
         for i in 0..6 {
             g[ix(i, size - 11)] = Cell::Reserved;
@@ -382,12 +389,12 @@ pub fn qr(f: &BarcodeField, data: &[u8]) -> Result<Pattern, String> {
         }
         let x = x as usize;
         if let Cell::Data(_) = g[ix(x + 1, y)] {
-            g[ix(x + 1, y)] = Cell::Data(((stream[i >> 3] >> (7 - (i & 7))) & 1) as u8);
+            g[ix(x + 1, y)] = Cell::Data((stream[i >> 3] >> (7 - (i & 7))) & 1);
             i += 1;
         }
         if i < n {
             if let Cell::Data(_) = g[ix(x, y)] {
-                g[ix(x, y)] = Cell::Data(((stream[i >> 3] >> (7 - (i & 7))) & 1) as u8);
+                g[ix(x, y)] = Cell::Data((stream[i >> 3] >> (7 - (i & 7))) & 1);
                 i += 1;
             }
         }
@@ -430,7 +437,11 @@ pub fn qr(f: &BarcodeField, data: &[u8]) -> Result<Pattern, String> {
         _ => 0b10, // H
     };
     let seq = qr_format_seq(ec2, pattern as u8);
-    let vi_seq = if version >= 7 { qr_version_info(version as u8) } else { 0 };
+    let vi_seq = if version >= 7 {
+        qr_version_info(version as u8)
+    } else {
+        0
+    };
     let bit_at = |g: &mut Vec<Cell>, x: usize, y: usize, bit: bool| {
         g[ix(x, y)] = Cell::Data(u8::from(bit));
     };
@@ -507,7 +518,10 @@ fn dm_pick(count: usize, rect: bool) -> Result<usize, String> {
     let prefer: &[usize] = if rect {
         &[2, 4, 6, 10, 13, 20]
     } else {
-        &[0, 1, 3, 5, 7, 9, 12, 15, 18, 23, 31, 34, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47]
+        &[
+            0, 1, 3, 5, 7, 9, 12, 15, 18, 23, 31, 34, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46,
+            47,
+        ]
     };
     for &i in prefer {
         if (SIZE_BYTES[i] as usize) >= count {
@@ -521,12 +535,10 @@ fn dm_pick(count: usize, rect: bool) -> Result<usize, String> {
 /// algorithm (ISO/IEC 16022 5.2.7.3).
 fn dm_pad(target: &mut Vec<u8>, tail: usize) {
     target.push(129);
-    let mut tp = target.len();
-    for _ in 1..tail {
+    for tp in target.len()..(target.len() + tail).saturating_sub(1) {
         let prn = (149 * (tp + 1)) % 253 + 1;
         let v = if prn <= 125 { 129 + prn } else { prn - 125 };
         target.push(v as u8);
-        tp += 1;
     }
 }
 
@@ -608,7 +620,7 @@ fn dm_placement(nr: usize, nc: usize) -> Vec<u16> {
             corner_a(&mut array, p);
             p += 1;
         }
-        if r == nr as isize - 2 && c == 0 && nc % 4 != 0 {
+        if r == nr as isize - 2 && c == 0 && !nc.is_multiple_of(4) {
             corner_b(&mut array, p);
             p += 1;
         }
@@ -616,7 +628,7 @@ fn dm_placement(nr: usize, nc: usize) -> Vec<u16> {
             corner_c(&mut array, p);
             p += 1;
         }
-        if r == nr as isize + 4 && c == 2 && nc % 8 == 0 {
+        if r == nr as isize + 4 && c == 2 && nc.is_multiple_of(8) {
             corner_d(&mut array, p);
             p += 1;
         }
@@ -661,7 +673,13 @@ fn dm_placement(nr: usize, nc: usize) -> Vec<u16> {
 }
 
 /// EC codewords with block interleave (144x144 skew per the reference).
-fn dm_ecc(binary: &mut Vec<u8>, bytes: usize, datablock: usize, rsblock: usize, skew: bool) -> Result<(), String> {
+fn dm_ecc(
+    binary: &mut Vec<u8>,
+    bytes: usize,
+    datablock: usize,
+    rsblock: usize,
+    skew: bool,
+) -> Result<(), String> {
     let blocks = (bytes + 2) / datablock;
     let rs = Rs::new(Field::Binary(0x12d), rsblock, 1)?;
     let total_ec = rsblock * blocks;
@@ -778,7 +796,11 @@ fn pdf_byte_compaction(data: &[u8]) -> Vec<u16> {
         out.push(data[0] as u16);
         return out;
     }
-    out.push(if data.len() % 6 == 0 { 924 } else { 901 });
+    out.push(if data.len().is_multiple_of(6) {
+        924
+    } else {
+        901
+    });
     let mut i = 0;
     while data.len() - i >= 6 {
         let mut v: u64 = 0;
@@ -812,18 +834,18 @@ pub fn pdf417(f: &BarcodeField, data: &[u8]) -> Result<Pattern, String> {
     } else if cols_given {
         let c = f.pdf_cols as usize;
         let total = payload.len() + 1 + ecc_cws;
-        let r = total / c + usize::from(total % c != 0);
+        let r = total / c + usize::from(!total.is_multiple_of(c));
         (c, r.max(3))
     } else if rows_given {
         let r = f.pdf_rows as usize;
-        let c = (payload.len() + 1 + ecc_cws + r - 1) / r;
+        let c = (payload.len() + 1 + ecc_cws).div_ceil(r);
         if c > 30 {
             // Too many codewords for the requested rows: grow rows like
             // the reference until columns fit.
             let max_r = r.max(3);
             let mut rr = max_r;
             while rr <= 90 {
-                let cc = (payload.len() + 1 + ecc_cws + rr - 1) / rr;
+                let cc = (payload.len() + 1 + ecc_cws).div_ceil(rr);
                 if cc <= 30 {
                     return pdf417_assemble(f, data, payload, ecc_cws, cc, rr);
                 }
@@ -842,10 +864,10 @@ pub fn pdf417(f: &BarcodeField, data: &[u8]) -> Result<Pattern, String> {
         if c < 1 {
             c = 1;
         }
-        let mut r = (total + c - 1) / c;
+        let mut r = total.div_ceil(c);
         while (r > 90 || r * c > 928) && c < 30 {
             c += 1;
-            r = (total + c - 1) / c;
+            r = total.div_ceil(c);
         }
         (c, r)
     };
@@ -854,7 +876,7 @@ pub fn pdf417(f: &BarcodeField, data: &[u8]) -> Result<Pattern, String> {
     if total > 928 {
         return Err("PDF417: data too large (exceeds 928 codewords)".into());
     }
-    if cols < 1 || cols > 30 || rows < 3 || rows > 90 || rows * cols < total {
+    if !(1..=30).contains(&cols) || !(3..=90).contains(&rows) || rows * cols < total {
         return Err("PDF417: invalid columns/rows for the data".into());
     }
     pdf417_assemble(f, data, payload, ecc_cws, cols, rows)
@@ -878,7 +900,7 @@ fn pdf417_assemble(
     let mut cws = Vec::with_capacity(length);
     cws.push(0u16); // SD, fixed after padding
     cws.extend_from_slice(&payload);
-    cws.extend(std::iter::repeat(900u16).take(pads));
+    cws.extend(std::iter::repeat_n(900u16, pads));
     cws[0] = cws.len() as u16; // Symbol Length Descriptor = total data cws
     let rs = Rs::new(Field::Prime(929), ecc_cws, 1)?;
     let data_part = cws.clone();
@@ -890,7 +912,11 @@ fn pdf417_assemble(
     let c2 = sec * 3 + (rows - 1) % 3;
     let c3 = cols - 1;
     let row_h = pdf_row_height(f);
-    let row_w = if truncated { 17 * (cols + 2) + 1 } else { 17 * (cols + 3) + 18 };
+    let row_w = if truncated {
+        17 * (cols + 2) + 1
+    } else {
+        17 * (cols + 3) + 18
+    };
     let mut grid = Grid::new(row_w, rows * row_h);
     for i in 0..rows {
         let k = (i / 3) * 30;
@@ -906,7 +932,10 @@ fn pdf417_assemble(
         // is placed sequentially row-major, the SD occupying row 0 col 0
         // (ISO/IEC 15438 5.4.2; matches the reference encoder).
         for j in 0..cols {
-            push17(&mut bits, PDF_BITPATTERN[cluster * 929 + cws[i * cols + j] as usize]);
+            push17(
+                &mut bits,
+                PDF_BITPATTERN[cluster * 929 + cws[i * cols + j] as usize],
+            );
         }
         if truncated {
             bits.push(true); // single-module right bar
@@ -920,7 +949,14 @@ fn pdf417_assemble(
                 grid.set(bit, i * row_h + r, dark);
             }
         }
-        debug_assert_eq!(w, if truncated { 17 * (cols + 2) + 1 } else { 17 * (cols + 3) + 18 });
+        debug_assert_eq!(
+            w,
+            if truncated {
+                17 * (cols + 2) + 1
+            } else {
+                17 * (cols + 3) + 18
+            }
+        );
     }
     // Quiet zone: 2 modules left/right (ISO 15438 5.6.3).
     Ok(grid.pattern(2, 0, 2, 0))
@@ -1097,20 +1133,30 @@ pub fn encode_2d(f: &BarcodeField, data: &[u8]) -> Result<Pattern, String> {
 
 /// Parse-time capacity guard for ^FS validation: flags data that can
 /// never fit, so the printer warns instead of silently skipping.
-pub fn size_error(symbology: u8, qr_ec: u8, _qr_mask: u8, pdf_security: u8, len: usize) -> Option<String> {
+pub fn size_error(
+    symbology: u8,
+    qr_ec: u8,
+    _qr_mask: u8,
+    pdf_security: u8,
+    len: usize,
+) -> Option<String> {
     match symbology {
         b'Q' => {
             let level = qr_level(qr_ec);
             let cap = qr_capacity(level, 10);
             if len > cap {
-                Some(format!("QR: {len} bytes exceed the version 10 capacity ({cap})"))
+                Some(format!(
+                    "QR: {len} bytes exceed the version 10 capacity ({cap})"
+                ))
             } else {
                 None
             }
         }
         b'X' => {
             if len > 1558 {
-                Some(format!("DataMatrix: {len} bytes exceed the 144x144 capacity (1558)"))
+                Some(format!(
+                    "DataMatrix: {len} bytes exceed the 144x144 capacity (1558)"
+                ))
             } else {
                 None
             }
@@ -1128,7 +1174,9 @@ pub fn size_error(symbology: u8, qr_ec: u8, _qr_mask: u8, pdf_security: u8, len:
             };
             let total = 1 + payload_cws + (2usize << pdf_security as usize);
             if total > 928 {
-                Some(format!("PDF417: {len} bytes exceed the 928 codeword capacity"))
+                Some(format!(
+                    "PDF417: {len} bytes exceed the 928 codeword capacity"
+                ))
             } else {
                 None
             }
@@ -1164,9 +1212,19 @@ pub fn aztec(f: &BarcodeField, data: &[u8]) -> Result<Pattern, String> {
 
     // Layer selection.
     let (compact, layers, data_maxsize) = if (101..=104).contains(&f.az_level) {
-        (true, (f.az_level - 100) as usize, (AZTEC_COMPACT_SIZES[(f.az_level - 101) as usize] as usize - 3) * az_codeword_size((f.az_level - 100) as usize))
+        (
+            true,
+            (f.az_level - 100) as usize,
+            (AZTEC_COMPACT_SIZES[(f.az_level - 101) as usize] as usize - 3)
+                * az_codeword_size((f.az_level - 100) as usize),
+        )
     } else if (201..=232).contains(&f.az_level) {
-        (false, (f.az_level - 200) as usize, (AZTEC_SIZES[(f.az_level - 201) as usize] as usize - 3) * az_codeword_size((f.az_level - 200) as usize))
+        (
+            false,
+            (f.az_level - 200) as usize,
+            (AZTEC_SIZES[(f.az_level - 201) as usize] as usize - 3)
+                * az_codeword_size((f.az_level - 200) as usize),
+        )
     } else {
         az_auto_layer(az_level_index(f.az_level), &bits)?
     };
@@ -1220,17 +1278,17 @@ pub fn aztec(f: &BarcodeField, data: &[u8]) -> Result<Pattern, String> {
     }
 
     // Mode message descriptor.
-    let mut descriptor = vec![0u16; 40];
+    let mut descriptor = [0u16; 40];
     if compact {
-        for i in 0..2 {
-            descriptor[i] = (((layers - 1) >> (1 - i)) & 1) as u16;
+        for (i, d) in descriptor.iter_mut().take(2).enumerate() {
+            *d = (((layers - 1) >> (1 - i)) & 1) as u16;
         }
         for i in 0..6 {
             descriptor[2 + i] = (((num_data_cws - 1) >> (5 - i)) & 1) as u16;
         }
     } else {
-        for i in 0..5 {
-            descriptor[i] = (((layers - 1) >> (4 - i)) & 1) as u16;
+        for (i, d) in descriptor.iter_mut().take(5).enumerate() {
+            *d = (((layers - 1) >> (4 - i)) & 1) as u16;
         }
         for i in 0..11 {
             descriptor[5 + i] = (((num_data_cws - 1) >> (10 - i)) & 1) as u16;
@@ -1241,17 +1299,17 @@ pub fn aztec(f: &BarcodeField, data: &[u8]) -> Result<Pattern, String> {
     for i in 0..desc_words / 4 {
         let mut v = 0u16;
         for p in 0..4 {
-            v = (v << 1) | descriptor[i * 4 + p] as u16;
+            v = (v << 1) | descriptor[i * 4 + p];
         }
         desc_data[i] = v;
     }
     let desc_ecc_n = if compact { 5 } else { 6 };
     let rs16 = Rs::new(Field::Binary(0x13), desc_ecc_n, 1)?;
-    let desc_ecc = rs16.encode(&desc_data[..desc_words / 4].to_vec())?;
+    let desc_ecc = rs16.encode(&desc_data[..desc_words / 4])?;
     let desc_total = desc_words / 4 + desc_ecc_n; // 7 (compact) or 10 (full)
     for i in 0..desc_ecc_n {
         for p in 0..4 {
-            descriptor[desc_words + i * 4 + p] = ((desc_ecc[i] >> (3 - p)) & 1) as u16;
+            descriptor[desc_words + i * 4 + p] = (desc_ecc[i] >> (3 - p)) & 1;
         }
     }
     let desc_base = if compact { 1998 } else { 19998 };
@@ -1276,7 +1334,7 @@ pub fn aztec(f: &BarcodeField, data: &[u8]) -> Result<Pattern, String> {
                 MapSrc::Compact => COMPACT_MAP[row * 27 + col] as isize,
                 MapSrc::Full(m) => m[row * 151 + col] as isize,
             };
-                        if v == 1 || (v >= 2 && bit_pattern[(v - 2) as usize] == 1) {
+            if v == 1 || (v >= 2 && bit_pattern[(v - 2) as usize] == 1) {
                 grid.set(col - offset, row - offset, true);
             }
         }
@@ -1385,7 +1443,11 @@ fn az_populate_map(layers: usize, offset: usize) -> Vec<i16> {
         }
     }
     // Reference guide bars.
-    let mut y = if offset <= 11 { 11usize } else { AZTEC_GRID_Y[(offset - 11) / 16] };
+    let mut y = if offset <= 11 {
+        11usize
+    } else {
+        AZTEC_GRID_Y[(offset - 11) / 16]
+    };
     while y < endoffset {
         for x in offset..endoffset {
             map[x * 151 + y] = (x & 1) as i16;
