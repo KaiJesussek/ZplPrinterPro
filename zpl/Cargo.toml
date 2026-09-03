@@ -11,6 +11,8 @@ encoding_rs = "0.8"
 
 [dev-dependencies]
 serde_json = "1"
+# Task 18: fuzz invariants over parser + renderer (dev-only).
+proptest = "1"
 # Task 16 verification: rqrr decodes QR module maps (dark = 0 luma) back
 # to text; `image` supplies the GrayImage type.
 rqrr = "0.11"

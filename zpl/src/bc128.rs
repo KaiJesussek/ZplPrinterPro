@@ -486,11 +486,14 @@ fn emit_shifted(vals: &mut Vec<u8>, subset: Subset, c: u8) {
 
 /// Mod-103 check digit: (start value + sum of value_i x position) mod 103, the
 /// first data symbol at position 1. The start value contributes once, as
-/// its own symbol.
+/// its own symbol. The accumulation is u64: a barcode body at the field
+/// input ceiling (55 KB of data, positions up to ~55 K) sums to ~10^1^1 -
+/// far past u32 - and only the residue matters, so widen, never wrap
+/// (fuzz finding: `u32` overflow panicked in debug builds on large data).
 fn checksum(vals: &[u8]) -> u8 {
-    let mut sum = vals[0] as u32;
+    let mut sum = vals[0] as u64;
     for (i, &v) in vals.iter().enumerate().skip(1) {
-        sum += (v as u32) * (i as u32);
+        sum += (v as u64) * (i as u64);
     }
     (sum % 103) as u8
 }
