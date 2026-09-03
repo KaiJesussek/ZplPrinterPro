@@ -556,9 +556,9 @@ fn accept_only_malformed_params_warn_only() {
     // Malformed accept-only params warn and are ignored; parsing continues
     // and never panics.
     let (label, diags) = parse_one(
-        b"^XA^SQ1,2^SR9999^SSxxx^ST13,99,999,25,99,99,Z^SX1^JZx^XZ~TA999",
+        b"^XA^SQ1,2^SR9999^SSxxx^ST13,99,999,25,99,99,Z^SX1^JZx^TOx^XZ~TA999",
     );
-    assert!(diags.items.len() >= 8, "expected warnings, got {diags:?}");
+    assert!(diags.items.len() >= 9, "expected warnings, got {diags:?}");
     assert!(diags.items.iter().all(|d| d.severity == Severity::Warning));
     assert_eq!(label.fields.len(), 0);
 }
@@ -566,20 +566,38 @@ fn accept_only_malformed_params_warn_only() {
 #[test]
 fn sn_malformed_params_warn_not_panic() {
     // Garbage increment/leading-zeros fall back to the guide defaults with a
-    // warning; oversized 20-digit values warn (the 12-digit cap) and saturate
-    // instead of overflowing; the format still completes.
+    // warning; the format still completes, never panics.
     let (label, diags) = parse_one(b"^XA^FO10,10^SN001,x,Z^FS^XZ");
     assert!(diags.items.len() >= 2, "expected warnings, got {diags:?}");
     assert!(diags.items.iter().all(|d| d.severity == Severity::Warning));
     // step falls back to 1, zeros to N: the run's value prints unpadded.
     assert_eq!(text_field(&label, 0).data, "1");
 
-    let (label, diags) = parse_one(b"^XA^FO10,10^SN99999999999999999999,99999999999999,Y^FS^XZ");
+    // An increment longer than the guide's 12 digits warns and falls back to
+    // 1. An overlength digit RUN is not an error: "a maximum of 12 of the
+    // right-most integers are subject to indexing", so the first copy prints
+    // its run byte-for-byte unchanged (never a saturated substitution).
+    let (label, diags) = parse_one(b"^XA^FO10,10^SN12345678901234567890,99999999999999^FS^XZ");
     assert!(diags.items.len() >= 1, "expected warnings, got {diags:?}");
     assert!(diags.items.iter().all(|d| d.severity == Severity::Warning));
-    // The 20-digit run warns (12-digit cap) then saturates into the i64
-    // counter and renders at the original width - no panic, no overflow.
-    assert_eq!(text_field(&label, 0).data.len(), 20);
+    assert_eq!(text_field(&label, 0).data, "12345678901234567890");
+}
+
+#[test]
+fn sn_indexes_only_the_rightmost_12_digits() {
+    // Guide: "a maximum of 12 of the right-most integers are subject to
+    // indexing". The rightmost 12 digits step; the leading digits stay
+    // literal.
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (label, mut ctx) = common::parse_ctx(b"^XA^FO10,10^SN12345678901234567890,1^FS^XZ", &mut diags, &mut memory);
+    assert_eq!(ctx.diags.items.len(), 0, "unexpected diagnostics: {0:?}", ctx.diags);
+    assert_eq!(text_field(&label, 0).data, "12345678901234567890");
+    let mut scanner = zpl::scanner::Scanner::new(b"^XA^FO10,10^SN12345678901234567890,1^FS^XZ");
+    zpl::cmd::parse_stream(&mut scanner, &mut ctx);
+    let label2 = ctx.pending_label.take().expect("second format never closed by ^XZ");
+    // 901234567890 + 1 only: the leading 8 digits are literal.
+    assert_eq!(text_field(&label2, 0).data, "12345678901234567891");
 }
 
 #[test]

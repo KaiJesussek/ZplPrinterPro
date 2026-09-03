@@ -472,10 +472,23 @@ pub(crate) fn recall_format(ctx: &mut ParseContext, params: &[u8]) {
 }
 
 /// `^TOs:o.x,d:o.x`: transfer a stored object between storage devices.
-/// Accept-only: the guide ignores the command when the parameters are
-/// invalid ("If only ^TO is entered, the command is ignored"), and object
-/// transfer has no label-image effect.
-pub(crate) fn transfer_object(_ctx: &mut ParseContext, _params: &[u8]) {}
+/// Accept-only: transfer has no label-image effect, but the accept-only
+/// contract still separates the guide's documented silent ignore (bare `^TO`
+/// with no parameters - "If only ^TO is entered, the command is ignored")
+/// from a malformed payload, which warns. The guide's structural rule: at
+/// least one source parameter and one destination parameter must be given.
+pub(crate) fn transfer_object(ctx: &mut ParseContext, params: &[u8]) {
+    if params.is_empty() {
+        return; // guide: bare ^TO is ignored
+    }
+    let parts = split_commas(params);
+    if parts.len() < 2 || parts[0].is_empty() || parts[1].is_empty() {
+        ctx.diags.push(Diagnostic::warning(
+            "TO",
+            format!("invalid transfer '{}'; ignored", String::from_utf8_lossy(params)),
+        ));
+    }
+}
 
 #[cfg(test)]
 mod tests {

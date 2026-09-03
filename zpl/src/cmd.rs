@@ -69,8 +69,9 @@ fn end_format(ctx: &mut ParseContext, _params: &[u8]) {
 /// Expand `^SN` serialized fields at `^XZ` (plan Task 17 ruling: expansion
 /// at parse time; counters live on [`ParseContext`] so the server can
 /// persist them, Task 21). Each serialized draft's data gets its counter's
-/// current value substituted for the rightmost integer run, then the
-/// counter advances by step x `copies` - v1 renders the first copy's value
+/// current value substituted for its indexed portion (the rightmost <=12
+/// integers), then the counter advances by step x `copies` - v1 renders
+/// the first copy's value
 /// on every copy (`Label.copies` carries multiplicity) while keeping the
 /// counter trajectory of a real printer, which increments once per printed
 /// label. Counters are keyed by the field's ordinal among serialized
@@ -91,17 +92,10 @@ fn expand_serials(ctx: &mut ParseContext) {
             Some(serial) => (serial.step, serial.zeros),
             None => continue,
         };
-        // Guide: "12-digits maximum for the portion to be indexed".
-        if let Some((start, end)) = rightmost_run(&draft.data) {
-            if end - start > 12 {
-                ctx.diags.push(Diagnostic::warning(
-                    "SN",
-                    "data longer than 12 digits cannot be fully indexed; using as-is",
-                ));
-            }
-        }
+        // The guide caps indexing at the rightmost 12 integers; an
+        // overlength run is not an error - its leading digits stay literal.
         let counter = ctx.serial_counters.entry(ordinal).or_insert_with(|| {
-            rightmost_run(&draft.data)
+            indexed_run(&draft.data)
                 .and_then(|(start, end)| parse_digits(&draft.data[start..end]))
                 .unwrap_or(0)
         });
@@ -132,6 +126,16 @@ fn rightmost_run(data: &[u8]) -> Option<(usize, usize)> {
     Some((start, end))
 }
 
+/// The byte range of the ^SN *indexed* portion: the rightmost digit run,
+/// capped to the guide's 12 rightmost integers ("A maximum of 12 of the
+/// right-most integers are subject to indexing"). The leading digits of an
+/// overlength run stay literal - they are never replaced or dropped.
+fn indexed_run(data: &[u8]) -> Option<(usize, usize)> {
+    let (start, end) = rightmost_run(data)?;
+    let index_start = end.saturating_sub(12).max(start);
+    Some((index_start, end))
+}
+
 /// Parse an ASCII-digit slice as i64 with checked accumulation (runs up to
 /// 12 digits saturate safely; oversized input clamps rather than panics).
 fn parse_digits(p: &[u8]) -> Option<i64> {
@@ -145,12 +149,16 @@ fn parse_digits(p: &[u8]) -> Option<i64> {
     Some(v)
 }
 
-/// Substitute `value` for the rightmost integer run of `data`, printing the
+/// Substitute `value` for the indexed portion of `data` (the rightmost 12
+/// digits of its rightmost integer run - see [`indexed_run`]), printing the
 /// value's sign when a decrement carries it below zero. `zeros` pads with
-/// leading zeros to the run's original width; the width grows if the value
-/// outgrows it (real printers do not truncate the counter).
+/// leading zeros to the indexed portion's width; the width grows if the
+/// value outgrows it (real printers do not truncate the counter). Leading
+/// digits of an overlength run are preserved verbatim, so the first copy of
+/// a >12-digit serial prints its run unchanged (the review finding: the
+/// saturated-counter substitution had silently corrupted it).
 fn substitute_run(data: &[u8], value: i64, zeros: bool) -> Vec<u8> {
-    let Some((start, end)) = rightmost_run(data) else {
+    let Some((start, end)) = indexed_run(data) else {
         return data.to_vec();
     };
     let width = end - start;
