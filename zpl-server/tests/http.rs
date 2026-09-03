@@ -111,6 +111,19 @@ async fn post(state: &Arc<AppState>, path: &str) -> axum::response::Response {
     .await
 }
 
+async fn post_bytes(state: &Arc<AppState>, path: &str, body: &[u8]) -> axum::response::Response {
+    request(
+        state,
+        Request::builder()
+            .method("POST")
+            .uri(path)
+            .header(header::CONTENT_TYPE, "text/plain")
+            .body(Body::from(body.to_vec()))
+            .unwrap(),
+    )
+    .await
+}
+
 /// PNG pixel dims from the IHDR (bytes 16..24, both big-endian).
 fn png_dims(png: &[u8]) -> (u32, u32) {
     assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n", "PNG signature");
@@ -128,6 +141,44 @@ async fn body_string(resp: axum::response::Response) -> (StatusCode, String) {
 }
 
 // ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn render_direct_returns_png_without_archiving() {
+    let dir = test_dir("render");
+    let _keep = Cleanup(dir.clone());
+    let (addr, state) = spawn(dir.clone()).await;
+
+    // A valid format renders inline as a PNG.
+    let resp = post_bytes(&state, "/api/render", b"^XA^FO10,10^A0N,20,20^FDhi^FS^XZ").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers().get(header::CONTENT_TYPE).unwrap(),
+        "image/png",
+        "inline PNG, not JSON"
+    );
+    let png = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .expect("reading the body must not fail");
+    let (w, h) = png_dims(&png);
+    assert!(w > 0 && h > 0, "sane label dims {w}x{h}");
+
+    // The playground must not archive: the label list stays empty.
+    let (status, body) = body_string(get(&state, "/api/labels").await).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, "[]", "direct render has no storage side effect");
+
+    // Garbage / no complete format -> 400 with the parse diagnostics.
+    let resp = post_bytes(&state, "/api/render", b"no format here").await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let (_, body) = body_string(resp).await;
+    assert!(body.contains("^XA..^XZ"), "error explains the format requirement: {body}");
+
+    // A malformed format warns but still renders (parse -> fallback).
+    let resp = post_bytes(&state, "/api/render", b"^XA^BY0^FS^XZ").await;
+    assert_eq!(resp.status(), StatusCode::OK, "warn-only inputs still render");
+
+    let _ = addr; // spawn binds an ephemeral port; the handle keeps it alive
+}
 
 #[tokio::test]
 async fn labels_list_empty_then_shows_archived_rows() {

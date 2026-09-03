@@ -130,3 +130,25 @@ pre {
   word-break: break-all;
 }
 [hidden] { display: none !important; }
+#play-pane {
+  max-width: 46rem;
+}
+#play-zpl {
+  width: 100%;
+  font-family: monospace;
+  font-size: 13px;
+  padding: 6px;
+  box-sizing: border-box;
+  border: 1px solid #888;
+}
+.play-bar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: 6px 0;
+}
+#play-img-wrap img {
+  max-width: 100%;
+  border: 1px solid #888;
+  image-rendering: pixelated;
+}

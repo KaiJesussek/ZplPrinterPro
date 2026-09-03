@@ -11,6 +11,8 @@
 //! - `POST /api/labels/{id}/rerender?dpi=` -> re-parse the stored raw
 //!   (obtains the PrinterMode per the T10 ruling), re-render at `dpi`,
 //!   rewrite `{id}.png`
+//! - `POST /api/render?dpi=` -> direct ZPL entry (web UI playground):
+//!   parse+render arbitrary ZPL text, PNG inline, nothing archived
 //! - `GET|PUT /api/printer-state` -> `Conditions` JSON; PUT is a partial
 //!   patch, unknown enum strings 400
 //! - `GET /api/storage` -> images/fonts/formats with sizes (the honest
@@ -31,6 +33,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::body::Bytes;
 use axum::extract::{FromRequest, Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
@@ -70,6 +73,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/labels", get(list_labels))
         .route("/api/labels/{id}", get(label_get))
         .route("/api/labels/{id}/rerender", post(rerender))
+        .route("/api/render", post(render_direct))
         .route(
             "/api/printer-state",
             get(get_printer_state).put(put_printer_state),
@@ -301,6 +305,84 @@ async fn rerender(
         "width": width,
         "height": height,
     })))
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/render?dpi= - direct ZPL entry (web UI playground)
+
+#[derive(Deserialize)]
+struct RenderParams {
+    #[serde(default = "default_dpi")]
+    dpi: u32,
+}
+
+fn default_dpi() -> u32 {
+    203
+}
+
+/// Parse arbitrary ZPL text with a fresh `ParseContext` and return the
+/// rendered PNG inline (`image/png`). The label is NOT archived -
+/// playground semantics, no storage side effects other than the shared
+/// memory lock (stored-image `^XG`/`^IS` targets resolve like they did at
+/// print time, matching [`rerender`]). Input without a complete
+/// `^XA..^XZ` format -> 400 with the parse diagnostics.
+async fn render_direct(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<RenderParams>,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    if params.dpi == 0 {
+        return Err(AppError::bad_request("dpi must be >= 1"));
+    }
+    let (png, width, height) = {
+        let mut guard = state.memory.lock().await;
+        let (label, mode, diags) = {
+            let mut diags = Diagnostics::default();
+            let mut ctx = zpl::state::ParseContext::new(&mut diags, &mut guard);
+            let mut labels = Vec::new();
+            parse_stream_collect(&mut Scanner::new(&body), &mut ctx, &mut labels);
+            (labels.pop().map(|pl| pl.label), ctx.mode.clone(), diags)
+        };
+        // `diags` is owned here - `ctx` (its mutable borrower) has dropped.
+        let label = label.ok_or_else(|| {
+            let detail = diags
+                .items
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
+                .join("; ");
+            AppError::bad_request(format!(
+                "input contains no complete ^XA..^XZ format{}",
+                if detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({detail})")
+                }
+            ))
+        })?;
+        let fonts = DefaultFontProvider::new();
+        let opts = RenderOptions {
+            dpi: params.dpi,
+            fonts: &fonts,
+            memory: &guard,
+            mode: &mode,
+        };
+        let outcome = render(&label, &opts)
+            .map_err(|e| AppError::internal(format!("render failed: {e:?}")))?;
+        (
+            outcome.bitmap.to_png(),
+            outcome.bitmap.width,
+            outcome.bitmap.height,
+        )
+    };
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "image/png")
+        .header("x-label-width", width.to_string())
+        .header("x-label-height", height.to_string())
+        .body(axum::body::Body::from(png))
+        .map_err(|e| AppError::internal(format!("building PNG response: {e}")))
 }
 
 // ---------------------------------------------------------------------------

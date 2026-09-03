@@ -20,6 +20,18 @@
   </details>
 </header>
 <main>
+  <section id="play-pane">
+    <h2>Direct ZPL</h2>
+    <textarea id="play-zpl" rows="6" spellcheck="false"
+      placeholder="^XA^FO20,20^A0N,32,32^FDHello Zebra^FS^XZ"></textarea>
+    <div class="play-bar">
+      <button id="play-go" type="button">Render</button>
+      <span id="play-status" class="hint"></span>
+    </div>
+    <div id="play-img-wrap" hidden>
+      <img id="play-img" alt="direct render">
+    </div>
+  </section>
   <section id="list-pane">
     <h2>Labels</h2>
     <div id="label-list"><p class="hint">No labels yet &mdash; send one to the TCP port.</p></div>

@@ -321,6 +321,54 @@ es.addEventListener('open', () => {
 es.addEventListener('label', (e) => {
   try { prependRow(JSON.parse(e.data)); } catch (err) { console.error('bad label event', err); }
 });
+
+// ---------- direct ZPL playground ----------
+// POST /api/render: parse + render arbitrary ZPL text, PNG inline. The
+// label is NOT archived (playground semantics), so repeated edits don't
+// pollute the label list.
+const playZpl = $('#play-zpl');
+const playGo = $('#play-go');
+const playStatus = $('#play-status');
+const playImgWrap = $('#play-img-wrap');
+const playImg = $('#play-img');
+
+async function playRender() {
+  const text = playZpl.value;
+  if (!text.trim()) {
+    playStatus.textContent = 'Enter ZPL first.';
+    return;
+  }
+  playGo.disabled = true;
+  playStatus.textContent = 'rendering...';
+  try {
+    const r = await fetch('/api/render', {
+      method: 'POST',
+      headers: { 'content-type': 'text/plain' },
+      body: new TextEncoder().encode(text), // binary-unsafe textarea: bytes survive
+    });
+    if (!r.ok) {
+      const err = await r.text().catch(() => '');
+      let msg = `HTTP ${r.status}`;
+      try { msg += ` - ${JSON.parse(err).error ?? ''}`; } catch { /* non-JSON body */ }
+      playStatus.textContent = msg;
+      return;
+    }
+    const blob = await r.blob();
+    playImg.src = URL.createObjectURL(blob);
+    playImgWrap.hidden = false;
+    playStatus.textContent =
+      `${r.headers.get('x-label-width')} \u00d7 ${r.headers.get('x-label-height')} dots`;
+  } catch (e) {
+    playStatus.textContent = `render failed: ${e.message}`;
+  } finally {
+    playGo.disabled = false;
+  }
+}
+
+playGo.addEventListener('click', playRender);
+playZpl.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') playRender();
+});
 es.addEventListener('state', (e) => {
   try { setStateValues(JSON.parse(e.data)); } catch (err) { console.error('bad state event', err); }
 });
