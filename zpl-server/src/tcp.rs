@@ -42,6 +42,13 @@ struct Persist {
     /// by ^XZ in a later one would otherwise archive from offset 0 - which
     /// includes any retained preamble before the ^XA.
     format_start: usize,
+    /// Diagnostic-buffer index of the open format's ^XA (a diags.items
+    /// index, NOT an input offset). Same cross-chunk hazard as
+    /// format_start: `ParseContext::new` re-inits `diag_start` to 0, so a
+    /// label whose ^XA was in an earlier chunk would otherwise close its
+    /// window from buffer start and slurp diagnostics raised before its
+    /// ^XA (stray warnings, earlier formats' leftovers).
+    diag_start: usize,
 }
 
 impl Persist {
@@ -51,6 +58,7 @@ impl Persist {
         mem::swap(&mut ctx.config, &mut self.config);
         ctx.serial_counters = mem::take(&mut self.serials);
         ctx.format_start = self.format_start;
+        ctx.diag_start = self.diag_start;
     }
 
     fn hand_out(&mut self, ctx: &mut ParseContext) {
@@ -59,6 +67,7 @@ impl Persist {
         mem::swap(&mut self.config, &mut ctx.config);
         self.serials = mem::take(&mut ctx.serial_counters);
         self.format_start = ctx.format_start;
+        self.diag_start = ctx.diag_start;
     }
 }
 
@@ -311,6 +320,11 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
         if let Some(last) = labels.last() {
             input.drain(..last.end);
             persist.format_start = persist.format_start.saturating_sub(last.end);
+            // No re-base for diag_start, unlike format_start: the drain
+            // shifts input offsets, not diags.items indices (the session
+            // diag buffer is never drained per label - only cleared
+            // wholesale once a chunk yields labels, and a re-based window
+            // start would then point at the wrong diagnostic).
         }
     }
 

@@ -76,19 +76,22 @@ async fn wait_labels(state: &AppState, n: u64) {
     }
 }
 
-/// Read until the response holds at least `n` STX-framed strings (or EOF).
+/// Read until `n` complete ~HS responses have arrived (or EOF). One ~HS
+/// response is the ~HS contract's three STX...ETX-CRLF strings, so the loop
+/// counts ETX (0x03) terminators: a caller asking for one ~HS gets all
+/// three frames, not just the first STX frame that happens to land first.
 async fn read_until_frames(sock: &mut TcpStream, n: usize) -> Vec<u8> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 512];
     let deadline = Instant::now() + Duration::from_secs(3);
-    while buf.iter().filter(|&&b| b == 0x02).count() < n {
+    while buf.iter().filter(|&&b| b == 0x03).count() < n * 3 {
         assert!(
             Instant::now() < deadline,
-            "timed out waiting for {n} frame(s); got: {:?}",
+            "timed out waiting for {n} ~HS response(s); got: {:?}",
             String::from_utf8_lossy(&buf)
         );
         match tokio::time::timeout(Duration::from_millis(100), sock.read(&mut chunk)).await {
-            Ok(Ok(0)) => break,
+            Ok(Ok(0)) => break, // EOF: caller-side frame assertions catch a short read
             Ok(Ok(k)) => buf.extend_from_slice(&chunk[..k]),
             _ => continue,
         }
@@ -96,14 +99,32 @@ async fn read_until_frames(sock: &mut TcpStream, n: usize) -> Vec<u8> {
     buf
 }
 
-/// Read whatever arrives within `quiet` - asserting NOTHING is heard.
+/// Read whatever arrives within `quiet`, asserting NOTHING is heard AND
+/// the connection stays open. Silence on a suppressed response must not
+/// be confounded with a read error or an early close: EOF here means the
+/// server killed the socket, which a suppression must never do (the same
+/// session answers once the condition clears).
 async fn assert_no_burst(sock: &mut TcpStream, quiet: Duration, what: &str) {
     let mut chunk = [0u8; 256];
-    let got = match tokio::time::timeout(quiet, sock.read(&mut chunk)).await {
-        Ok(Ok(k)) => k,
-        _ => 0, // timed out or errored: nothing arrived
-    };
-    assert_eq!(got, 0, "{what} must produce no bytes on the socket");
+    match tokio::time::timeout(quiet, sock.read(&mut chunk)).await {
+        Ok(Ok(0)) => panic!("{what}: connection closed; expected a live, silent socket"),
+        Ok(Ok(k)) => panic!("{what} must produce no bytes, got {k}: {:?}", &chunk[..k]),
+        Ok(Err(e)) => panic!("{what}: read error {e}; expected a quiet timeout"),
+        Err(_) => {} // quiet window elapsed, nothing heard: the assertion target
+    }
+}
+
+/// Read until the peer closes, asserting EOF arrives (with a generous
+/// bound). The server drops the socket only after its post-loop work
+/// (e.g. the partial-format diagnostic) has run, so a returned EOF here is
+/// the deterministic close notification - no short-sleep race.
+async fn assert_closed(sock: &mut TcpStream, what: &str) {
+    let mut probe = [0u8; 1];
+    let n = tokio::time::timeout(Duration::from_secs(3), sock.read(&mut probe))
+        .await
+        .unwrap_or_else(|_| panic!("{what}: peer never closed the connection"))
+        .unwrap_or_else(|e| panic!("{what}: read error {e}; expected EOF"));
+    assert_eq!(n, 0, "{what}: peer must close the connection");
 }
 
 fn frames(resp: &[u8]) -> usize {
@@ -455,7 +476,10 @@ async fn empty_format_canaries_are_valid_rows_blank_renders_quiet_status() {
     assert_eq!(state.counters.warnings.load(Ordering::Relaxed), 0);
     assert_eq!(state.counters.unknown_commands.load(Ordering::Relaxed), 0);
     sock.shutdown().await.unwrap(); // clean EOF: labels already closed
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Deterministic close wait: the server pushes its (would-be)
+    // partial-format diagnostic before dropping the socket, so EOF on our
+    // read confirms that check already ran - no tight EOF-poll race.
+    assert_closed(&mut sock, "session after a clean shutdown").await;
     assert_eq!(
         state.counters.warnings.load(Ordering::Relaxed),
         0,

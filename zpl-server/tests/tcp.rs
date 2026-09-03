@@ -170,6 +170,62 @@ async fn two_labels_in_one_chunk_attribute_diagnostics_per_label() {
 }
 
 #[tokio::test]
+async fn labels_across_read_chunks_attribute_diagnostics_to_their_own_label() {
+    let dir = test_dir("diag-attr-split");
+    let _keep = Cleanup(dir.clone());
+    let (addr, state) = spawn(dir.clone()).await;
+
+    // Chunk 1: a stray unknown command (legit warning OUTSIDE any
+    // format), then `^XA` + a ^FO with a non-numeric y (the same warning
+    // construct as the one-chunk per-label test above) + a partial field,
+    // NO ^XZ - label 1 stays open across the read boundary. The stray
+    // warning lands in the diag buffer BEFORE label 1's ^XA, so label 1's
+    // window must start at that ^XA (diag_start = 1), not at buffer start.
+    // Chunk 2: close label 1 (`^FS^XZ`) and send a clean second label.
+    //
+    // Without the diag_start carry-over, label 1's ^XZ re-enters the
+    // parse with a fresh diag_start = 0 and its window slurps BOTH
+    // diagnostics; the clean label's own ^XA refresh protects it, so the
+    // assertions below pin label 1 to exactly its own warning. (A label
+    // whose only diagnostics sit after its ^XA is indifferent to the
+    // carry-over - the ^XA handler re-inits diag_start - which is why the
+    // stray is needed to observe the cross-chunk bug.)
+    let mut sock = TcpStream::connect(addr).await.unwrap();
+    sock.write_all(b"^QX stray\r\n^XA^FO10,abc^FDpartial")
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await; // separate reads
+    sock.write_all(b"^FS^XZ^XA^FO0,0^A0N,20,20^FDclean^FS^XZ")
+        .await
+        .unwrap();
+    sock.shutdown().await.unwrap();
+
+    wait_labels(&state, 2).await;
+    {
+        let arc = state.archive.lock().await;
+        let rows = arc.rows();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].row.diags, 1,
+            "label 1's row carries only the ^FO warning it raised ({}), not the stray: {:?}",
+            rows[0].messages.first().unwrap_or(&"<none>".into()),
+            rows[0].messages
+        );
+        assert_eq!(rows[0].messages.len(), 1);
+        assert!(
+            rows[0].messages[0].contains("abc"),
+            "label 1's warning names the bad y: {}",
+            rows[0].messages[0]
+        );
+        assert_eq!(
+            rows[1].row.diags, 0,
+            "the clean label must not inherit label 1's warning"
+        );
+        assert_eq!(rows[1].messages.len(), 0);
+    }
+}
+
+#[tokio::test]
 async fn labels_across_read_chunks_keep_exact_spans_after_a_drain() {
     let dir = test_dir("drain");
     let _keep = Cleanup(dir.clone());
