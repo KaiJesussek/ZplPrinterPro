@@ -984,6 +984,78 @@ fn reverse_field_ft_box_rotated() {
     }
 }
 
+/// Assert the ^FR render's black region against an expected dot-mode box
+/// rect (`x0..x1` x `y0..y1` in label coordinates): every pixel inside the
+/// box flips vs the normal render (black box, white glyph), every pixel
+/// outside is unchanged AND still white (nothing black escapes the box),
+/// the box paints black somewhere, and the glyph erases to white inside.
+fn assert_reverse_box_bounds(nb: &Bitmap, rb: &Bitmap, x0: i64, y0: i64, x1: i64, y1: i64) {
+    let in_box = |x: u32, y: u32| {
+        (x as i64) >= x0 && (x as i64) < x1 && (y as i64) >= y0 && (y as i64) < y1
+    };
+    let (mut box_black, mut glyph_white) = (false, false);
+    for y in 0..rb.height {
+        for x in 0..rb.width {
+            if in_box(x, y) {
+                assert_ne!(nb.get(x, y), rb.get(x, y), "box pixel {x},{y} flips");
+                box_black |= rb.get(x, y);
+                glyph_white |= nb.get(x, y) && !rb.get(x, y);
+            } else {
+                assert_eq!(
+                    nb.get(x, y),
+                    rb.get(x, y),
+                    "outside pixel {x},{y} unchanged"
+                );
+                assert!(!rb.get(x, y), "no black outside the box at {x},{y}");
+            }
+        }
+    }
+    assert!(box_black, "reverse paints a black box");
+    assert!(glyph_white, "the glyph erases to white inside the box");
+}
+
+#[test]
+fn reverse_field_ft_box_r180() {
+    // ^FW180 + ^FR + ^FT (Dot): "inverted 180" re-anchors the box so the
+    // field's baseline point sits on the origin. Ledger formula: box
+    // x = -(box_right-1), y = baseline-cell+1, width box_w, height block_h,
+    // offset from (o.x, o.y). Fixed ^A0,20,20 gives box_right = 20 and
+    // box_left = 0 (single char); font 0 at a 20-dot cell has baseline 15.
+    // With o = (40, 40) the box is exactly x [21, 41), y [36, 56) - and
+    // every glyph dot (rotated x = -gx, y = baseline-gy) lands inside it.
+    let (cell, baseline) = font0_hv(20);
+    assert_eq!((cell, baseline), (20, 15), "fixed 20-dot cell geometry");
+    let normal = render_text(b"^XA^PW80^LL80^FW180^FT40,40^A0,20,20^FDX^FS^XZ");
+    let rev = render_text(b"^XA^PW80^LL80^FW180^FT40,40^FR^A0,20,20^FDX^FS^XZ");
+    let (nb, rb) = (&normal.bitmap, &rev.bitmap);
+    // R180 ^FT box: x = o.x - (box_right-1), y = o.y + baseline - cell + 1;
+    // size box_w x block_h = 20 x cell.
+    let x0 = 40i64 - (20 - 1);
+    let y0 = 40i64 + baseline as i64 - cell as i64 + 1;
+    assert_reverse_box_bounds(nb, rb, x0, y0, x0 + 20, y0 + cell as i64);
+}
+
+#[test]
+fn reverse_field_ft_box_r270() {
+    // ^FW270 + ^FR + ^FT (Dot): "read from the bottom up" with the same
+    // baseline re-anchor. Ledger formula: box x = -(baseline+last_pitch),
+    // y = box_left - first_adv_total (the last line's first char advance
+    // minus one - the ^FT shrink), width block_w, height box_w. One
+    // 20-dot-advance line: x = 40-(15+0) = 25, y = 40+0-(20-1) = 21,
+    // x [25, 45), y [21, 41) - the glyph's rotated dots
+    // (x = gy-baseline, y = -gx) all fall inside.
+    let (cell, baseline) = font0_hv(20);
+    assert_eq!((cell, baseline), (20, 15), "fixed 20-dot cell geometry");
+    let normal = render_text(b"^XA^PW80^LL80^FW270^FT40,40^A0,20,20^FDX^FS^XZ");
+    let rev = render_text(b"^XA^PW80^LL80^FW270^FT40,40^FR^A0,20,20^FDX^FS^XZ");
+    let (nb, rb) = (&normal.bitmap, &rev.bitmap);
+    // R270 ^FT box: x = o.x - (baseline + last_pitch), y = o.y + box_left
+    // - (first_adv - 1); size (last_pitch + cell) x box_w = cell x 20.
+    let x0 = 40i64 - baseline as i64;
+    let y0 = 40i64 - (20 - 1);
+    assert_reverse_box_bounds(nb, rb, x0, y0, x0 + cell as i64, y0 + 20);
+}
+
 #[test]
 fn fb_overwide_word_breaks_without_empty_line() {
     // "AAAAAAAAAA" at a 40-dot block: no leading empty line - max_lines 2
