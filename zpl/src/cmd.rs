@@ -49,8 +49,11 @@ fn start_format(ctx: &mut ParseContext, _params: &[u8]) {
     }
     // Record where this ^XA sits in the global input stream (driver-set
     // token offsets + stream_base); the archive (Task 19) slices the raw
-    // .zpl span [format_start, ^XZ end) for the completed label.
+    // .zpl span [format_start, ^XZ end) for the completed label. The
+    // diag-index window opens here too: a chunk holding several formats
+    // must not charge every diagnostic to the first label.
     ctx.format_start = ctx.token_start;
+    ctx.diag_start = ctx.diags.items.len();
     ctx.state.start_format();
 }
 
@@ -191,9 +194,15 @@ fn end_field(ctx: &mut ParseContext, _params: &[u8]) {
     check_barcode_data(ctx);
     check_malformed_utf16(ctx);
     if let Some((name, bytes)) = ctx.state.end_field() {
-        ctx.memory
-            .formats
-            .insert(memory::format_name(name.as_bytes()), bytes);
+        let key = memory::format_name(name.as_bytes());
+        if !memory::fits_total(ctx.memory, &key, bytes.len()) {
+            ctx.diags.push(Diagnostic::warning(
+                "DF",
+                format!("{key}: printer memory full; object dropped"),
+            ));
+            return;
+        }
+        ctx.memory.formats.insert(key, bytes);
     }
 }
 
@@ -1068,12 +1077,19 @@ pub fn parse_stream(scanner: &mut Scanner, ctx: &mut ParseContext) {
 
 /// A completed label plus its raw input span: global byte offsets of the
 /// `^XA` ... `^XZ` token range (`stream_base` + chunk-local scanner
-/// positions), for the server archive's `.zpl` file.
+/// positions), for the server archive's `.zpl` file - and its diagnostic
+/// window `[diag_start, diag_end)` into the session's `Diagnostics`
+/// buffer, so a chunk containing several labels can attribute each
+/// diagnostic to the format that raised it.
 #[derive(Debug)]
 pub struct ParsedLabel {
     pub label: Label,
     pub start: usize,
     pub end: usize,
+    /// Index of the first diagnostic raised after this label's `^XA`.
+    pub diag_start: usize,
+    /// Index just past the last diagnostic raised before this label's `^XZ`.
+    pub diag_end: usize,
 }
 
 /// Like [`parse_stream`], but yields every label closed by a `^XZ` in this
@@ -1109,11 +1125,17 @@ pub fn parse_stream_collect(
                     scanner.set_chars(ctx.mode.cmd_char, ctx.mode.tilde_char);
                     if let Some(label) = ctx.pending_label.take() {
                         // token_end is just past this ^XZ token; format_start
-                        // was set by the matching ^XA.
+                        // and diag_start were set by the matching ^XA. The
+                        // window closes after the ^XZ dispatch so anything
+                        // raised at ^XZ (barcode/UTF-16/serial checks) stays
+                        // attributed to this label.
+                        let diag_end = ctx.diags.items.len();
                         labels.push(ParsedLabel {
                             label,
                             start: ctx.format_start,
                             end: ctx.token_end,
+                            diag_start: ctx.diag_start,
+                            diag_end,
                         });
                     }
                 }

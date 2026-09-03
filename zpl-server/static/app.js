@@ -264,6 +264,14 @@ overlayOn.addEventListener('change', drawOverlay);
 
 // ---------- live updates (SSE) ----------
 const es = new EventSource('/api/events');
+// The server ends the stream when a subscriber lags (the browser then
+// reconnects automatically); repaint the list and panels from GETs on
+// every (re)connect so nothing is lost while the stream was stale.
+es.addEventListener('open', () => {
+  loadList().catch((e) => console.error(e));
+  loadDiagnostics().catch((e) => console.error(e));
+  loadStorage().catch((e) => console.error(e));
+});
 es.addEventListener('label', (e) => {
   try { prependRow(JSON.parse(e.data)); } catch (err) { console.error('bad label event', err); }
 });

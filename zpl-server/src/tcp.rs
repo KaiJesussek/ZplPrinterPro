@@ -157,17 +157,13 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
             }
             for pl in &labels {
                 let raw = &input[pl.start..pl.end];
-                for d in &diags.items {
-                    if matches!(d.severity, Severity::UnknownCommand) {
-                        state
-                            .counters
-                            .unknown_commands
-                            .fetch_add(1, Ordering::Relaxed);
-                    }
-                    eprintln!("tcp: {}", d.message);
-                }
-                let diag_count = diags.items.len();
-                let messages: Vec<String> = diags.items.iter().map(|d| d.message.clone()).collect();
+                // Per-label attribution: each row's diagnostics are the
+                // window closed by ITS ^XZ, not everything in the chunk
+                // (a multi-label chunk previously charged every diagnostic
+                // to the first label).
+                let window = &diags.items[pl.diag_start..pl.diag_end];
+                let diag_count = window.len();
+                let messages: Vec<String> = window.iter().map(|d| d.message.clone()).collect();
                 // Render inside its own scope: RenderOptions borrows a
                 // `&dyn FontProvider`, which is not Sync, so `opts` must
                 // not live across the archive await below.
@@ -185,9 +181,10 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
                             // Only reachable from hand-built IR; parsed
                             // labels always render. Skip rather than
                             // archive a broken row (the archive's 3-file
-                            // layout stays intact).
+                            // layout stays intact). The window indices are
+                            // NOT invalidated here (no clear) - later
+                            // labels in the chunk slice valid windows.
                             eprintln!("tcp: render failed: {e:?}; label not archived");
-                            diags.items.clear();
                             continue;
                         }
                     }
@@ -204,10 +201,6 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
                 match archive.push(&mut row, raw, &pl.label, &png, &messages) {
                     Ok(_id) => {
                         state.counters.labels.fetch_add(1, Ordering::Relaxed);
-                        state
-                            .counters
-                            .warnings
-                            .fetch_add(diag_count as u64, Ordering::Relaxed);
                         // Label completion -> printer state. `labels_remaining`
                         // adds this format's ^PQ copies and consumes the
                         // first printed copy (v1 renders each format once, so
@@ -233,7 +226,31 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
                 if row.id != 0 {
                     let _ = state.events.send(crate::state::Event::Label(row.clone()));
                 }
-                diags.items.clear(); // diags are attributed to this label
+            }
+            if !labels.is_empty() {
+                // The chunk's boot totals are buffer-wide, unchanged from
+                // the pre-window accounting (which counted every diagnostic
+                // exactly once, on the first label's iteration): a
+                // diagnostic raised outside any ^XA..^XZ - e.g. a stray
+                // ^ZZ between formats - still counts toward the totals; it
+                // just attaches to no archive row.
+                state
+                    .counters
+                    .warnings
+                    .fetch_add(diags.items.len() as u64, Ordering::Relaxed);
+                for d in &diags.items {
+                    if matches!(d.severity, Severity::UnknownCommand) {
+                        state
+                            .counters
+                            .unknown_commands
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    eprintln!("tcp: {}", d.message);
+                }
+                // Drop the buffer for the next chunk; a label-less chunk
+                // (partial format still open) keeps its diagnostics so the
+                // closing chunk's window can still slice them.
+                diags.items.clear();
             }
             // Query responses are built after the chunk's labels complete,
             // so ~HS/~HV read the post-print state (labels first, then the

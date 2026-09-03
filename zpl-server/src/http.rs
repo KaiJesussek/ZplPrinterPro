@@ -39,7 +39,6 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
-use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 use tower_http::services::ServeDir;
@@ -47,6 +46,7 @@ use tower_http::services::ServeDir;
 use zpl::cmd::parse_stream_collect;
 use zpl::diag::Diagnostics;
 use zpl::fonts::DefaultFontProvider;
+use zpl::memory::Memory;
 use zpl::render::{render, RenderOptions};
 use zpl::scanner::Scanner;
 
@@ -486,7 +486,7 @@ async fn events_sse(
     State(state): State<Arc<AppState>>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<SseEvent, Infallible>>> {
     let rx = state.events.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(|item| match item {
+    let stream = BroadcastStream::new(rx).map_while(|item| match item {
         Ok(Event::Label(row)) => Some(Ok(SseEvent::default()
             .event("label")
             .json_data(row)
@@ -495,10 +495,12 @@ async fn events_sse(
             .event("state")
             .json_data(conditions)
             .expect("Conditions serializes"))),
-        // A subscriber that lagged behind is dropped from the stream (the
-        // browser reconnects and the UI repaints from GETs); a closed
-        // sender ends the stream naturally.
-        Err(BroadcastStreamRecvError::Lagged(_)) => None,
+        // A subscriber that lagged behind (or the sender closing) ENDS the
+        // stream - `map_while` returning None terminates it, so EventSource
+        // sees the connection close and reconnects, and the UI repaints
+        // from GETs on the 'open' event. (Skipping the lagged read would
+        // keep a stale, permanently missynchronized stream alive.)
+        Err(_) => None,
     });
     // 15 s comment pings keep intermediaries from killing the idle stream.
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
@@ -507,57 +509,114 @@ async fn events_sse(
 // ---------------------------------------------------------------------------
 // Persistence: debounced writes of memory.json / state.json / index.json
 
+/// Which of the three persisted files a write pass targets.
+#[derive(Clone, Copy)]
+enum Slot {
+    Memory,
+    Conditions,
+    Rows,
+}
+
+impl Slot {
+    fn path(self, state: &AppState) -> std::path::PathBuf {
+        match self {
+            Slot::Memory => state.persist_dir.join("memory.json"),
+            Slot::Conditions => state.persist_dir.join("state.json"),
+            Slot::Rows => state.persist_dir.join("index.json"),
+        }
+    }
+}
+
+/// Per-file write results of a `persist_now` pass: only files that actually
+/// hit disk advance the debounce fingerprint, so a transient failure is
+/// retried on the next tick instead of being forgotten because `last`
+/// advanced unconditionally.
+#[derive(Default, Clone, Copy)]
+pub struct PersistOutcome {
+    pub memory: bool,
+    pub conditions: bool,
+    pub rows: bool,
+}
+
 /// Serialize the live state to `dir/memory.json`, `dir/state.json`
 /// (`Conditions`) and `dir/index.json` (archive rows) - the shared seam
 /// the debounce calls and the persistence tests call directly. Writes are
-/// atomic (temp + rename); failures log and are retried on the next tick.
-pub async fn persist_now(state: &AppState) {
+/// atomic (temp + rename); failures log and are retried on the next tick
+/// via [`PersistOutcome`].
+pub async fn persist_now(state: &AppState) -> PersistOutcome {
     let memory = {
         let m = state.memory.lock().await;
-        serde_json::to_vec(&*m)
-            .ok()
-            .map(|b| (state.persist_dir.join("memory.json"), b))
+        serde_json::to_vec(&*m).ok()
     };
     let conditions = {
         let ps = state.printer_state.lock().await;
-        serde_json::to_vec(&ps.conditions)
-            .ok()
-            .map(|b| (state.persist_dir.join("state.json"), b))
+        serde_json::to_vec(&ps.conditions).ok()
     };
     let rows = {
         let archive = state.archive.lock().await;
-        serde_json::to_vec(archive.rows())
-            .ok()
-            .map(|b| (state.persist_dir.join("index.json"), b))
+        serde_json::to_vec(archive.rows()).ok()
     };
-    for (path, bytes) in [memory, conditions, rows].into_iter().flatten() {
-        if let Err(e) = write_atomic(&path, &bytes) {
-            eprintln!("persist: writing {} failed: {e}", path.display());
+    let mut out = PersistOutcome::default();
+    for (slot, bytes) in [
+        (Slot::Memory, memory),
+        (Slot::Conditions, conditions),
+        (Slot::Rows, rows),
+    ] {
+        if let Some(bytes) = bytes {
+            match write_atomic(&slot.path(state), &bytes) {
+                Ok(()) => match slot {
+                    Slot::Memory => out.memory = true,
+                    Slot::Conditions => out.conditions = true,
+                    Slot::Rows => out.rows = true,
+                },
+                Err(e) => eprintln!(
+                    "persist: writing {} failed: {e}",
+                    slot.path(state).display()
+                ),
+            }
         }
     }
+    out
+}
+
+/// FNV-1a fold of the stored bytes - the content-sensitive memory
+/// fingerprint. Map lengths / byte totals were content-blind: a same-length
+/// re-download (~DG overwriting an image by name) changed nothing, so the
+/// new bytes never hit disk. The hash walks the maps deterministically
+/// (BTreeMap key order), so identical state always folds identically.
+fn fnv1a(mut h: u64, bytes: &[u8]) -> u64 {
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+fn memory_fingerprint(m: &Memory) -> u64 {
+    let mut h = fnv1a(0xcbf29ce484222325, b"memory\x00");
+    for (name, img) in &m.images {
+        h = fnv1a(fnv1a(h, name.as_bytes()), &img.data);
+    }
+    for (name, font) in &m.fonts {
+        h = fnv1a(fnv1a(h, name.as_bytes()), font);
+    }
+    for (name, fmt) in &m.formats {
+        h = fnv1a(fnv1a(h, name.as_bytes()), fmt);
+    }
+    h
 }
 
 /// Cheap change fingerprint of the mutable state, so the 500 ms tick only
 /// writes when something actually changed (memory.json ships image bytes -
 /// a full write every tick under load would be wasteful).
 struct Fingerprint {
-    memory: (usize, usize, usize, usize, usize, usize),
+    memory: u64,
     conditions: Option<Vec<u8>>,
     rows: (usize, Option<u64>, Option<u64>),
 }
 
 async fn fingerprint(state: &AppState) -> Fingerprint {
-    let memory = {
-        let m = state.memory.lock().await;
-        (
-            m.images.len(),
-            m.fonts.len(),
-            m.formats.len(),
-            m.images.values().map(|i| i.data.len()).sum(),
-            m.fonts.values().map(|v| v.len()).sum(),
-            m.formats.values().map(|v| v.len()).sum(),
-        )
-    };
+    let memory = memory_fingerprint(&*state.memory.lock().await);
     let conditions = {
         let ps = state.printer_state.lock().await;
         serde_json::to_vec(&ps.conditions).ok()
@@ -593,8 +652,19 @@ pub fn spawn_persistence(state: Arc<AppState>) -> JoinHandle<()> {
                 || now.conditions != last.conditions
                 || now.rows != last.rows
             {
-                persist_now(&state).await;
-                last = now;
+                let out = persist_now(&state).await;
+                // Only files actually written advance their fingerprint: a
+                // failed write keeps the old value and retries every tick
+                // until it succeeds or the state changes again.
+                if out.memory {
+                    last.memory = now.memory;
+                }
+                if out.conditions {
+                    last.conditions = now.conditions;
+                }
+                if out.rows {
+                    last.rows = now.rows;
+                }
             }
         }
     })

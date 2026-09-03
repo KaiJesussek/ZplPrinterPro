@@ -61,6 +61,43 @@ pub fn packed_row_bytes(width_bits: u32) -> usize {
 /// 4000 bytes; 16 MiB covers a continuous label multiple times over).
 const MAX_IMAGE_BYTES: usize = 1 << 24;
 const MAX_ROW_BYTES: usize = 4096; // 32000 dots per row (^PW/^LL max)
+/// Emulator cap on the SUM of all stored objects (images + fonts +
+/// formats), mirroring the TCP stream cap: a hostile multi-connection
+/// ~DG/~DY/~DF accumulation must not grow RAM / memory.json unboundedly,
+/// and the printer finally signals memory-full instead of silently
+/// accepting everything.
+const MAX_TOTAL_MEMORY_BYTES: usize = 64 << 20;
+
+/// Total stored bytes across all three stores (the ~HS-visible memory
+/// footprint the total cap bounds).
+fn total_bytes(mem: &Memory) -> usize {
+    mem.images.values().map(|i| i.data.len()).sum::<usize>()
+        + mem.fonts.values().map(|v| v.len()).sum::<usize>()
+        + mem.formats.values().map(|v| v.len()).sum::<usize>()
+}
+
+/// True when storing `add` bytes at `key` in any store stays within
+/// [`MAX_TOTAL_MEMORY_BYTES`]. A same-key overwrite frees the old bytes
+/// first, so re-downloading an existing object never fails.
+/// ponytail: O(n) per store (full sum each call); a 64 MiB cap spread over
+/// tiny objects could reach ~10^5 entries - a running total per Memory is
+/// the upgrade if byte throughput ever matters on a hostile connection.
+pub(crate) fn fits_total(mem: &Memory, key: &str, add: usize) -> bool {
+    let old = mem.images.get(key).map_or(0, |i| i.data.len())
+        + mem.fonts.get(key).map_or(0, |v| v.len())
+        + mem.formats.get(key).map_or(0, |v| v.len());
+    total_bytes(mem) - old + add <= MAX_TOTAL_MEMORY_BYTES
+}
+
+/// Memory-full diagnostic at a store site: the object is dropped and the
+/// caller keeps its maps unchanged (the printer's "out of memory",
+/// non-fatal).
+fn warn_memory_full(ctx: &mut ParseContext, cmd: &str, name: &str) {
+    ctx.diags.push(Diagnostic::warning(
+        cmd,
+        format!("{name}: printer memory full; object dropped"),
+    ));
+}
 
 /// Object-name normalization shared by every store/recall command:
 /// `[device:]name[.ext]` - the device (`R: E: B: A:`) is a lookup hint, our
@@ -162,6 +199,10 @@ pub(crate) fn download_graphic(ctx: &mut ParseContext, params: &[u8]) {
         warn_drop(ctx, "DG", &name, "malformed graphic data");
         return;
     };
+    if !fits_total(ctx.memory, &name, bytes.len()) {
+        warn_memory_full(ctx, "DG", &name);
+        return;
+    }
     let height = (t / w) as u32;
     ctx.memory.images.insert(
         name,
@@ -268,7 +309,11 @@ pub(crate) fn delete_object(ctx: &mut ParseContext, params: &[u8]) {
     // (guide ^ID: "Default: if a name is not specified, UNKNOWN is used").
     let stripped = strip_device(params);
     let pat: &[u8] = if stripped.is_empty() {
-        b"UNKNOWN"
+        // Stored names normalize to `UNKNOWN.<ext>` (and the bare name
+        // `UNKNOWN` for fonts), so the bare ^ID default must glob, not
+        // match the literal name - otherwise it misses every default-stored
+        // object (the T7 deferred finding).
+        b"UNKNOWN*"
     } else {
         stripped
     };
@@ -364,6 +409,10 @@ pub(crate) fn download_object(ctx: &mut ParseContext, params: &[u8]) {
             return;
         };
         let key = image_name(raw_name);
+        if !fits_total(ctx.memory, &key, bytes.len()) {
+            warn_memory_full(ctx, "DY", &name);
+            return;
+        }
         ctx.memory.images.insert(
             key,
             Image {
@@ -437,6 +486,10 @@ pub(crate) fn download_object(ctx: &mut ParseContext, params: &[u8]) {
         warn_drop(ctx, "DY", &name, "empty object");
         return;
     }
+    if !fits_total(ctx.memory, &name, bytes.len()) {
+        warn_memory_full(ctx, "DY", &name);
+        return;
+    }
     ctx.memory.fonts.insert(name, bytes);
 }
 
@@ -479,6 +532,10 @@ fn font_download(ctx: &mut ParseContext, params: &[u8], default_ext: &str, cmd: 
         warn_drop(ctx, cmd, &name, "malformed or short hex data");
         return;
     };
+    if !fits_total(ctx.memory, &name, decoded.len()) {
+        warn_memory_full(ctx, cmd, &name);
+        return;
+    }
     ctx.memory.fonts.insert(name, decoded);
 }
 

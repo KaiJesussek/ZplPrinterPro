@@ -126,6 +126,50 @@ async fn two_labels_in_one_connection_each_archived_with_own_raw() {
 }
 
 #[tokio::test]
+async fn two_labels_in_one_chunk_attribute_diagnostics_per_label() {
+    let dir = test_dir("diag-attr");
+    let _keep = Cleanup(dir.clone());
+    let (addr, state) = spawn(dir.clone()).await;
+
+    // One chunk, two formats; only label 2 has a malformed param (a ^FO
+    // with a non-numeric y). Rows must carry their own diagnostics: label
+    // 1's row 0, label 2's row the ^FO warning. (Before the diag-window
+    // fix, every diagnostic in the chunk was charged to the first label.)
+    let mut sock = TcpStream::connect(addr).await.unwrap();
+    sock.write_all(b"^XA^GB50,50,2,B^XZ^XA^FO10,abc^FDx^FS^XZ")
+        .await
+        .unwrap();
+    sock.shutdown().await.unwrap();
+
+    wait_labels(&state, 2).await;
+    {
+        let arc = state.archive.lock().await;
+        let rows = arc.rows();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].row.diags, 0,
+            "label 1 must not inherit label 2's diagnostics"
+        );
+        assert_eq!(
+            rows[1].row.diags, 1,
+            "label 2's row carries its own warning"
+        );
+        assert_eq!(rows[1].messages.len(), 1);
+        assert!(
+            rows[1].messages[0].contains("abc"),
+            "the ^FO warning names the bad y: {}",
+            rows[1].messages[0]
+        );
+    }
+    // The warning still counts toward the boot totals (buffer-wide).
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while state.counters.warnings.load(Ordering::Relaxed) < 1 {
+        assert!(Instant::now() < deadline, "warning counter never bumped");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test]
 async fn labels_across_read_chunks_keep_exact_spans_after_a_drain() {
     let dir = test_dir("drain");
     let _keep = Cleanup(dir.clone());

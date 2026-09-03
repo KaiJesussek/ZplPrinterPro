@@ -635,6 +635,11 @@ pub struct ParseContext<'a> {
     /// the ^XA handler); the start of the raw `.zpl` span archived with the
     /// label closed by `^XZ`.
     pub format_start: usize,
+    /// `ctx.diags.items.len()` at the open format's `^XA` (set by the ^XA
+    /// handler); the start of the label's diagnostic-index window, which
+    /// the ^XZ push completes so the server can attribute diagnostics to
+    /// the right label when one chunk contains several formats.
+    pub diag_start: usize,
 }
 
 impl<'a> ParseContext<'a> {
@@ -653,6 +658,7 @@ impl<'a> ParseContext<'a> {
             token_end: 0,
             stream_base: 0,
             format_start: 0,
+            diag_start: 0,
         }
     }
 }

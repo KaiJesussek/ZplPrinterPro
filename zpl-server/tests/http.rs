@@ -586,6 +586,38 @@ async fn sse_streams_label_and_state_events() {
     assert!(text.contains("\"id\":7"), "frame: {text}");
 }
 
+#[tokio::test]
+async fn sse_stream_ends_when_a_subscriber_lags() {
+    let dir = test_dir("sse-lag");
+    let _keep = Cleanup(dir.clone());
+    let (_addr, state) = spawn(dir.clone()).await;
+
+    let resp = get(&state, "/api/events").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let mut stream = Box::pin(resp.into_body().into_data_stream());
+
+    // Overrun the 128-event ring buffer before the stream reads anything:
+    // the subscriber falls behind, and the handler must END the stream so
+    // EventSource reconnects (previously the lagged read was skipped and
+    // the stale, missynchronized stream stayed open forever).
+    let row = LabelRow {
+        id: 7,
+        ts_ms: 1234,
+        bytes: 10,
+        diags: 0,
+        width: 100,
+        height: 50,
+    };
+    for _ in 0..130 {
+        state.events.send(Event::Label(row.clone())).unwrap();
+    }
+    let frame = tokio::time::timeout(Duration::from_secs(2), stream.next()).await;
+    assert!(
+        matches!(frame, Ok(None)),
+        "a lagged subscriber must see the stream end (EventSource reconnect), got {frame:?}"
+    );
+}
+
 /// spawn() with a custom retention override (small KEEP / MAX bytes).
 async fn spawn_limited(dir: PathBuf, keep: usize, max_bytes: u64) -> (SocketAddr, Arc<AppState>) {
     let state = Arc::new(AppState::new(

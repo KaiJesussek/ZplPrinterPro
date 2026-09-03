@@ -174,8 +174,12 @@ fn id_globs_across_stores() {
 
 #[test]
 fn bare_id_defaults_to_unknown() {
-    // A name-less ^ID targets the UNKNOWN default object (guide p.245) and
-    // is accepted silently; an explicit UNKNOWN.* glob deletes it.
+    // A name-less ^ID targets the UNKNOWN default object (guide p.245):
+    // stored names normalize to UNKNOWN.GRF / UNKNOWN.ZPL (and fonts keep
+    // the bare UNKNOWN), so the default ^ID pattern must glob `UNKNOWN*`
+    // rather than match the literal name - otherwise the deletion misses
+    // every default-stored object (the T7 deferred finding). Accepted
+    // silently.
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
     let (_, ctx) = parse_ctx(
@@ -186,11 +190,28 @@ fn bare_id_defaults_to_unknown() {
     assert_eq!(ctx.diags.items.len(), 0, "bare ^ID must not warn");
     assert_eq!(
         ctx.memory.images.len(),
-        1,
-        "pattern UNKNOWN does not match UNKNOWN.GRF"
+        0,
+        "bare ^ID (defaulting to UNKNOWN*) deletes the stored UNKNOWN.GRF"
     );
 
-    let (_, ctx) = parse_ctx(b"^XA^IDR:UNKNOWN.*^XZ", &mut diags, &mut memory);
+    // All stores are swept: a format and a font stored under the UNKNOWN
+    // defaults go too.
+    let (_, ctx) = parse_ctx(
+        b"^DF^FO10,10^FS~DS,2,0000^XA^ID^XZ",
+        &mut diags,
+        &mut memory,
+    );
+    assert_eq!(ctx.diags.items.len(), 0, "bare ^ID must not warn");
+    assert!(memory.formats.is_empty(), "UNKNOWN.ZPL deleted");
+    assert!(memory.fonts.is_empty(), "UNKNOWN.FNT deleted");
+
+    // An explicit UNKNOWN.* glob still reaches whatever survived.
+    let mut memory = Memory::default();
+    let (_, ctx) = parse_ctx(
+        b"~DGR:UNKNOWN.GRF,8,1,FF00000000000000^XA^IDR:UNKNOWN.*^XZ",
+        &mut diags,
+        &mut memory,
+    );
     assert_eq!(
         ctx.memory.images.len(),
         0,
@@ -486,4 +507,60 @@ fn malformed_storage_payloads_warn_and_drop() {
     );
     assert!(ctx.memory.fonts.is_empty(), "malformed font was dropped");
     assert_eq!(label.fields.len(), 0);
+}
+
+#[test]
+fn total_memory_cap_warns_and_drops() {
+    // The 64 MiB SUM cap (not just per-object limits): hostile accumulation
+    // must eventually warn+drop instead of growing RAM / memory.json
+    // unboundedly, and `www` (images.len()) stays bounded.
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    // 8 MiB images via ~DG (the '!' row op fills each 4096-byte row with
+    // 0xFF, so the payload is a few KB); 8 of them fill the cap exactly.
+    let rows = 8 * 1024 * 1024 / 4096;
+    let fill = "!".repeat(rows);
+    for i in 0..8 {
+        define(
+            format!("~DGR:IMG{i}.GRF,{},{},{}", 8 * 1024 * 1024, 4096, fill).as_bytes(),
+            &mut diags,
+            &mut memory,
+        );
+        assert!(
+            diags.items.is_empty(),
+            "store {i} is within the cap: {:?}",
+            diags.items
+        );
+    }
+    let stored: usize = memory.images.values().map(|i| i.data.len()).sum();
+    assert_eq!(stored, 64 * 1024 * 1024, "the cap is exactly full");
+    assert_eq!(memory.images.len(), 8, "www reflects the 8 stored images");
+
+    // The 9th image must warn and drop; www stays at 8.
+    define(b"~DGR:IMG8.GRF,1,1,00", &mut diags, &mut memory);
+    assert_eq!(diags.items.len(), 1, "memory-full warns once");
+    assert!(
+        diags.items[0].message.contains("memory full"),
+        "warning text: {}",
+        diags.items[0].message
+    );
+    assert_eq!(memory.images.len(), 8, "www stays limited");
+
+    // Other store sites are capped the same way: a ~DS font and a ~DY
+    // binary object over the total limit are dropped; fonts stays empty.
+    define(b"~DS,2,0000", &mut diags, &mut memory);
+    define(b"~DYR:OBJ.BIN,B,BIN,,X", &mut diags, &mut memory);
+    assert_eq!(diags.items.len(), 3, "each over-cap store warns");
+    assert!(memory.fonts.is_empty(), "over-cap fonts dropped");
+
+    // A same-key overwrite frees the old bytes, so re-downloading IMG0
+    // small still fits.
+    define(b"~DGR:IMG0.GRF,1,1,00", &mut diags, &mut memory);
+    assert_eq!(
+        memory.images["IMG0.GRF"].data,
+        vec![0x00],
+        "overwrite landed"
+    );
+    assert_eq!(diags.items.len(), 3, "the shrink fit, no new warning");
+    assert_eq!(memory.images.len(), 8, "www unchanged by the overwrite");
 }
