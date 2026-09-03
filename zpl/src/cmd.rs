@@ -122,6 +122,13 @@ fn check_barcode_data(ctx: &mut ParseContext) {
             }
             return;
         }
+        // 2D symbologies: flag data that can never fit at parse close.
+        if matches!(bc.symbology, b'Q' | b'X' | b'7' | b'0') {
+            if let Some(msg) = crate::bc2d::size_error(bc.symbology, bc.qr_ec, bc.qr_mask, bc.pdf_security, draft.data.len()) {
+                ctx.diags.push(Diagnostic::warning("B*", msg));
+            }
+            return;
+        }
         // Task 15 1D symbologies: report what the encoder would reject so
         // the skipped field never goes out without a diagnostic.
         if let Some(msg) = bc1d::data_error(bc.symbology, bc.check, &draft.data) {
@@ -179,6 +186,10 @@ const TABLE: &[CommandSpec] = &[
     // are 2D/stacked - Task 16 territory; their commands warn and skip.)
     CommandSpec { mnemonic: *b"B ", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::barcode_digit },
     CommandSpec { mnemonic: *b"BA", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::code93_field },
+    // Task 16: 2D symbologies. ^B0 (Aztec) and ^B7 (PDF417) scan through
+    // the digit route; ^BQ (QR) and ^BX (DataMatrix) are two-letter.
+    CommandSpec { mnemonic: *b"BQ", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::qr_field },
+    CommandSpec { mnemonic: *b"BX", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::datamatrix_field },
     CommandSpec { mnemonic: *b"BK", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::codabar_field },
     CommandSpec { mnemonic: *b"BE", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::ean13_field },
     CommandSpec { mnemonic: *b"BU", prefix: Prefix::Caret, kind: CmdKind::Format, handler: bc::upca_field },

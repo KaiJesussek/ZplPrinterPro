@@ -166,6 +166,31 @@ pub struct BarcodeDraft {
     pub start: u8,
     /// ^BK l: Codabar stop character (A-D, default A).
     pub stop: u8,
+    /// ^BQ m: QR error-correction level letter H/Q/M/L (guide default Q).
+    pub qr_ec: u8,
+    /// ^BQ e: QR mask pattern 0..7 (guide default 7).
+    pub qr_mask: u8,
+    /// ^BX s: DataMatrix quality level (0/50/80/100/140/200; guide default 0).
+    pub dm_quality: u32,
+    /// ^BX f: DataMatrix format ID 1..6 (guide default 6).
+    pub dm_format: u8,
+    /// ^BX a: DataMatrix aspect ratio 1 square / 2 rectangular (default 1).
+    pub dm_aspect: u8,
+    /// ^B0 d: Aztec error control / symbol size (0, 01-99, 101-104, 201-232,
+    /// 300 = Rune; guide default 0).
+    pub az_level: u32,
+    /// ^B0 e: Aztec menu symbol indicator (Y/N; default N).
+    pub az_menu: bool,
+    /// ^B0 f: Aztec structured-append symbol count 1..26 (default 1).
+    pub az_append: u8,
+    /// ^B7 s: PDF417 security level 0..8 (guide default 0).
+    pub pdf_security: u8,
+    /// ^B7 c: PDF417 data columns 1..30 (0 = automatic).
+    pub pdf_cols: u32,
+    /// ^B7 r: PDF417 rows 3..90 (0 = automatic).
+    pub pdf_rows: u32,
+    /// ^B7 t: PDF417 truncation Y/N (default N).
+    pub pdf_truncate: bool,
 }
 
 /// The shape a drawing-field command (`^GB ^GC ^GD ^GE`) deposits on the
@@ -412,6 +437,18 @@ impl FieldDraft {
                     check: b.check,
                     start: b.start,
                     stop: b.stop,
+                    qr_ec: b.qr_ec,
+                    qr_mask: b.qr_mask,
+                    dm_quality: b.dm_quality,
+                    dm_format: b.dm_format,
+                    dm_aspect: b.dm_aspect,
+                    az_level: b.az_level,
+                    az_menu: b.az_menu,
+                    az_append: b.az_append,
+                    pdf_security: b.pdf_security,
+                    pdf_cols: b.pdf_cols,
+                    pdf_rows: b.pdf_rows,
+                    pdf_truncate: b.pdf_truncate,
                     // The interpretation line prints in the field's font
                     // (guide ^BC: "The interpretation line can be printed
                     // in any font by placing the font command before the

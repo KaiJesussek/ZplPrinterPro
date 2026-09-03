@@ -118,6 +118,37 @@ pub struct BarcodeField {
     pub start: u8,
     /// `^BK l`: Codabar stop character A-D (guide default A).
     pub stop: u8,
+    /// `^BQ m`: QR error-correction level letter H/Q/M/L (guide default Q).
+    pub qr_ec: u8,
+    /// `^BQ e`: QR mask pattern 0..7 (guide default 7).
+    pub qr_mask: u8,
+    /// `^BX s`: DataMatrix quality level (guide default 0; 0/200 encode
+    /// as ECC 200, legacy convolution values 50..140 warn at parse).
+    pub dm_quality: u32,
+    /// `^BX f`: DataMatrix format ID 1..6 (guide default 6; 1..5 validate
+    /// the character set, 6 = full 256 ISO 8-bit set).
+    pub dm_format: u8,
+    /// `^BX a`: DataMatrix aspect ratio 1 square / 2 rectangular
+    /// (guide default 1).
+    pub dm_aspect: u8,
+    /// `^B0 d`: Aztec error control and symbol size (guide default 0:
+    /// automatic layers at 23% EC; 01-99 EC%, 101-104 / 201-232 forced
+    /// compact/full layers, 300 = Rune).
+    pub az_level: u32,
+    /// `^B0 e`: Aztec menu symbol indicator Y/N (guide default N).
+    pub az_menu: bool,
+    /// `^B0 f`: Aztec structured-append symbol count 1..26 (default 1).
+    pub az_append: u8,
+    /// `^B7 s`: PDF417 security level 0..8 (guide default 0 = error
+    /// detection only, 2 EC codewords; levels 1..8 -> 2^(s+1)).
+    pub pdf_security: u8,
+    /// `^B7 c`: PDF417 data columns 1..30 (0 = automatic, guide default).
+    pub pdf_cols: u32,
+    /// `^B7 r`: PDF417 rows 3..90 (0 = automatic, guide default).
+    pub pdf_rows: u32,
+    /// `^B7 t`: PDF417 truncation Y/N (guide default N): right row
+    /// indicators and stop reduced to a single-module bar.
+    pub pdf_truncate: bool,
     /// `^A`/`^A@` font request for the interpretation line, captured when
     /// the symbology field was parsed - guide ^BC p.94: "The interpretation
     /// line can be printed in any font by placing the font command before
@@ -257,6 +288,18 @@ mod tests {
                     check: b'N',
                     start: b'A',
                     stop: b'A',
+                    qr_ec: b'Q',
+                    qr_mask: 7,
+                    dm_quality: 0,
+                    dm_format: 6,
+                    dm_aspect: 1,
+                    az_level: 0,
+                    az_menu: false,
+                    az_append: 1,
+                    pdf_security: 0,
+                    pdf_cols: 0,
+                    pdf_rows: 0,
+                    pdf_truncate: false,
                     font: [b'0', b'1'],
                     font_height: 30,
                     font_width: 20,

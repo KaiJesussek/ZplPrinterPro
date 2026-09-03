@@ -7,6 +7,7 @@ pub mod bc1d;
 mod bc128;
 pub mod cmd;
 pub mod codepage;
+pub mod bc2d;
 pub mod reed_solomon;
 pub(crate) mod tables;
 pub mod config;

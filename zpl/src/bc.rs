@@ -12,7 +12,7 @@ use crate::bc128;
 use crate::bc1d;
 use crate::config::{to_tenths, u32_in};
 use crate::diag::{Diagnostic, Diagnostics};
-use crate::ir::BarcodeField;
+use crate::ir::{BarcodeField, Rotation};
 use crate::state::{BarcodeDraft, ParseContext};
 use crate::textfmt::{draft_mut, parse_rotation, split_commas};
 
@@ -72,6 +72,21 @@ pub fn encode(
 /// empty pattern - the parser already warned where it can (^FS with no
 /// data), so this never panics and never fails.
 pub fn barcode_field(f: &BarcodeField) -> Pattern {
+    // 2D symbologies (Task 16) encode the ^CI-decoded Unicode text as
+    // UTF-8 bytes (the brief: byte mode QR, byte-compaction PDF417,
+    // DataMatrix/Aztec byte streams) - lossless for any decoded charset.
+    if matches!(f.symbology, b'Q' | b'X' | b'7' | b'0') {
+        let data = f.data.as_bytes();
+        if data.is_empty() {
+            return Pattern::Bars(Vec::new());
+        }
+        return match crate::bc2d::encode_2d(f, data) {
+            Ok(pattern) => pattern,
+            // Invalid data -> empty pattern; the parse already warned
+            // where it could (see cmd::check_barcode_data).
+            Err(_) => Pattern::Bars(Vec::new()),
+        };
+    }
     // The IR keeps barcode data as a Latin-1 view of the source bytes
     // (Task 12 upgrades the codepage decode); recover the bytes through
     // Latin-1, NOT `str::as_bytes` - that would UTF-8-re-encode bytes >=
@@ -286,6 +301,18 @@ pub(crate) fn code_128(ctx: &mut ParseContext, params: &[u8]) {
         check: b'N',
         start: b'A',
         stop: b'A',
+        qr_ec: b'Q',
+        qr_mask: 7,
+        dm_quality: 0,
+        dm_format: 6,
+        dm_aspect: 1,
+        az_level: 0,
+        az_menu: false,
+        az_append: 1,
+        pdf_security: 0,
+        pdf_cols: 0,
+        pdf_rows: 0,
+        pdf_truncate: false,
     });
     if let Some(r) = rotation {
         d.rotation = r;
@@ -378,6 +405,8 @@ pub(crate) fn barcode_digit(ctx: &mut ParseContext, params: &[u8]) {
         b'5' => barcode_1d(ctx, rest, "B5", b'5', SPEC_B5),
         b'8' => barcode_1d(ctx, rest, "B8", b'8', SPEC_B8),
         b'9' => barcode_1d(ctx, rest, "B9", b'9', SPEC_B9),
+        b'0' => aztec_field(ctx, rest),
+        b'7' => pdf417_field(ctx, rest),
         _ => {
             // ^B0 Aztec, ^B4 Code 49, ^B6, ^B7 PDF417: 2D or stacked
             // symbologies outside the 1D scope (Task 16 owns the 2D
@@ -391,6 +420,290 @@ pub(crate) fn barcode_digit(ctx: &mut ParseContext, params: &[u8]) {
             ));
         }
     }
+}
+
+/// The 2D symbologies' shared option block, stored on the draft and
+/// consumed by the `bc2d` encoders at render time.
+#[derive(Default, Clone, Copy)]
+struct Opt2d {
+    module: u32,
+    qr_ec: u8,
+    qr_mask: u8,
+    dm_quality: u32,
+    dm_format: u8,
+    dm_aspect: u8,
+    az_level: u32,
+    az_menu: bool,
+    az_append: u8,
+    pdf_security: u8,
+    pdf_cols: u32,
+    pdf_rows: u32,
+    pdf_truncate: bool,
+}
+
+fn finish_2d(ctx: &mut ParseContext, symbology: u8, rotation: Option<Rotation>, opt: Opt2d) {
+    let (by_ratio, by_height) = (ctx.mode.by_ratio, ctx.mode.by_height);
+    let Some(d) = draft_mut(ctx) else {
+        return; // no format open: a bare ^B outside ^XA..^XZ is a no-op
+    };
+    d.barcode = Some(BarcodeDraft {
+        symbology,
+        module: opt.module,
+        ratio: by_ratio,
+        height: by_height,
+        line: b'N',
+        interpret: false,
+        ucc: false,
+        model: b'N',
+        check: b'N',
+        start: b'A',
+        stop: b'A',
+        qr_ec: opt.qr_ec,
+        qr_mask: opt.qr_mask,
+        dm_quality: opt.dm_quality,
+        dm_format: opt.dm_format,
+        dm_aspect: opt.dm_aspect,
+        az_level: opt.az_level,
+        az_menu: opt.az_menu,
+        az_append: opt.az_append,
+        pdf_security: opt.pdf_security,
+        pdf_cols: opt.pdf_cols,
+        pdf_rows: opt.pdf_rows,
+        pdf_truncate: opt.pdf_truncate,
+    });
+    if let Some(r) = rotation {
+        d.rotation = r;
+    }
+}
+
+/// ^BQo,h,s,m,e (guide p.128): orientation, model 1/2 (default 2; model 1
+/// is encoded as model 2 with a warning), magnification (cell size,
+/// default ^BY module), EC level H/Q/M/L (default Q; M for invalid), mask
+/// 0..7 (default 7).
+pub(crate) fn qr_field(ctx: &mut ParseContext, params: &[u8]) {
+    let parts = split_commas(params);
+    let rotation = match parts.first().copied() {
+        Some(o) if o.is_empty() => None,
+        Some(o) => match parse_rotation(o) {
+            Some(r) => Some(r),
+            None => {
+                warn_invalid("BQ", "orientation", o, ctx.diags);
+                None
+            }
+        },
+        None => None,
+    };
+    let model = u32_in(parts.get(1).copied(), "BQ", "model", ctx.diags, 1, 2, 2);
+    if model == 1 {
+        ctx.diags.push(Diagnostic::warning(
+            "BQ",
+            "QR model 1 is not supported by this build; encoding as model 2",
+        ));
+    }
+    let mag = u32_in(parts.get(2).copied(), "BQ", "magnification", ctx.diags, 1, 100, ctx.mode.by_module);
+    let ec = match parts.get(3).and_then(|p| p.first()).copied() {
+        Some(c @ (b'H' | b'Q' | b'M' | b'L')) => c,
+        _ => {
+            if parts.get(3).is_some_and(|p| !p.is_empty()) {
+                warn_invalid("BQ", "error correction", parts.get(3).copied().unwrap_or(&[]), ctx.diags);
+            }
+            b'Q'
+        }
+    };
+    let mask = u32_in(parts.get(4).copied(), "BQ", "mask", ctx.diags, 0, 7, 7) as u8;
+    finish_2d(
+        ctx,
+        b'Q',
+        rotation,
+        Opt2d {
+            module: mag,
+            qr_ec: ec,
+            qr_mask: mask,
+            ..Opt2d::default()
+        },
+    );
+}
+
+/// ^BXo,h,s,c,r,f,g,a (guide p.144): orientation; element height (0/empty
+/// -> ^BY h approximates the symbol height; cell size = ^BY module);
+/// quality 0/50/80/100/140/200 (default 0 - 0 and 200 encode ECC 200; the
+/// legacy convolution levels 50..140 warn and still encode ECC 200);
+/// columns/rows 9..49 (validated for ECC 200 evenness, sizing is
+/// automatic - a forced size is outside this build's model, warned);
+/// format ID 1..6 (default 6 = full 256 8-bit set); escape char (accepted,
+/// the ^BX input escapes are not modeled - data encodes literally);
+/// aspect 1 = square, 2 = rectangular (default 1).
+pub(crate) fn datamatrix_field(ctx: &mut ParseContext, params: &[u8]) {
+    let parts = split_commas(params);
+    let rotation = match parts.first().copied() {
+        Some(o) if o.is_empty() => None,
+        Some(o) => match parse_rotation(o) {
+            Some(r) => Some(r),
+            None => {
+                warn_invalid("BX", "orientation", o, ctx.diags);
+                None
+            }
+        },
+        None => None,
+    };
+    let element = u32_in(parts.get(1).copied(), "BX", "element height", ctx.diags, 1, 32000, 0);
+    let quality = u32_in(parts.get(2).copied(), "BX", "quality", ctx.diags, 0, 200, 0);
+    if matches!(quality, 50 | 80 | 100 | 140) {
+        ctx.diags.push(Diagnostic::warning(
+            "BX",
+            format!("DataMatrix quality {quality} is a legacy convolution-ECC level; encoding ECC 200"),
+        ));
+    }
+    for (pos, name) in [(3usize, "columns"), (4, "rows")] {
+        if parts.get(pos).is_some_and(|p| !p.is_empty()) {
+            ctx.diags.push(Diagnostic::warning(
+                "BX",
+                format!("DataMatrix {name} forcing is not supported by this build; the smallest fitting symbol is selected automatically"),
+            ));
+        }
+    }
+    let _cols = u32_in(parts.get(3).copied(), "BX", "columns", ctx.diags, 9, 49, 0);
+    let _rows = u32_in(parts.get(4).copied(), "BX", "rows", ctx.diags, 9, 49, 0);
+    let format = u32_in(parts.get(5).copied(), "BX", "format ID", ctx.diags, 1, 6, 6) as u8;
+    let _esc = parts.get(6); // accepted, unused (documented)
+    let aspect = u32_in(parts.get(7).copied(), "BX", "aspect ratio", ctx.diags, 1, 2, 1) as u8;
+    finish_2d(
+        ctx,
+        b'X',
+        rotation,
+        Opt2d {
+            module: if element == 0 { ctx.mode.by_module } else { element },
+            dm_quality: quality,
+            dm_format: format,
+            dm_aspect: aspect,
+            ..Opt2d::default()
+        },
+    );
+}
+
+/// ^B7o,h,s,c,r,t (guide p.79): orientation; row height (h x module =
+/// printed row height in dots; default ^BY height); security 0..8 (0 =
+/// error detection only / 2 EC codewords; 1..8 -> 2^(s+1)); columns 1..30
+/// and rows 3..90 (0/empty = automatic); truncation Y/N (right row
+/// indicators + stop reduced to a single-module bar).
+pub(crate) fn pdf417_field(ctx: &mut ParseContext, params: &[u8]) {
+    let parts = split_commas(params);
+    let rotation = match parts.first().copied() {
+        Some(o) if o.is_empty() => None,
+        Some(o) => match parse_rotation(o) {
+            Some(r) => Some(r),
+            None => {
+                warn_invalid("B7", "orientation", o, ctx.diags);
+                None
+            }
+        },
+        None => None,
+    };
+    let height = u32_in(parts.get(1).copied(), "B7", "row height", ctx.diags, 1, 32000, ctx.mode.by_height);
+    let security = u32_in(parts.get(2).copied(), "B7", "security level", ctx.diags, 0, 8, 0) as u8;
+    let cols = u32_in(parts.get(3).copied(), "B7", "columns", ctx.diags, 1, 30, 0);
+    let rows = u32_in(parts.get(4).copied(), "B7", "rows", ctx.diags, 3, 90, 0);
+    let truncate = yn(parts.get(5).copied(), "B7", "truncation", ctx.diags, b'N') == b'Y';
+    let (by_module, by_ratio) = (ctx.mode.by_module, ctx.mode.by_ratio);
+    let mut opt = Opt2d::default();
+    opt.module = by_module;
+    opt.pdf_security = security;
+    opt.pdf_cols = cols;
+    opt.pdf_rows = rows;
+    opt.pdf_truncate = truncate;
+    let Some(d) = draft_mut(ctx) else {
+        return;
+    };
+    d.barcode = Some(BarcodeDraft {
+        symbology: b'7',
+        module: opt.module,
+        ratio: by_ratio,
+        height,
+        line: b'N',
+        interpret: false,
+        ucc: false,
+        model: b'N',
+        check: b'N',
+        start: b'A',
+        stop: b'A',
+        qr_ec: opt.qr_ec,
+        qr_mask: opt.qr_mask,
+        dm_quality: opt.dm_quality,
+        dm_format: opt.dm_format,
+        dm_aspect: opt.dm_aspect,
+        az_level: opt.az_level,
+        az_menu: opt.az_menu,
+        az_append: opt.az_append,
+        pdf_security: security,
+        pdf_cols: cols,
+        pdf_rows: rows,
+        pdf_truncate: truncate,
+    });
+    if let Some(r) = rotation {
+        d.rotation = r;
+    }
+}
+
+/// ^B0a,b,c,d,e,f,g (guide p.64): orientation; magnification 1..10
+/// (default ^BY module); ECI indicator Y/N (accepted - ECI is not
+/// modeled, warned); error control / symbol size 0, 01-99, 101-104,
+/// 201-232, 300 (Rune - unsupported, the field is skipped with a
+/// diagnostic); menu symbol Y/N (unsupported, skipped); structured
+/// append 1..26 / ID (unsupported beyond 1, skipped).
+pub(crate) fn aztec_field(ctx: &mut ParseContext, params: &[u8]) {
+    let parts = split_commas(params);
+    let rotation = match parts.first().copied() {
+        Some(o) if o.is_empty() => None,
+        Some(o) => match parse_rotation(o) {
+            Some(r) => Some(r),
+            None => {
+                warn_invalid("B0", "orientation", o, ctx.diags);
+                None
+            }
+        },
+        None => None,
+    };
+    let mag = u32_in(parts.get(1).copied(), "B0", "magnification", ctx.diags, 1, 10, ctx.mode.by_module);
+    if yn(parts.get(2).copied(), "B0", "extended channel interpretation", ctx.diags, b'N') == b'Y' {
+        ctx.diags.push(Diagnostic::warning(
+            "B0",
+            "Aztec ECI is not supported by this build; encoding without it",
+        ));
+    }
+    let level = u32_in(parts.get(3).copied(), "B0", "error control", ctx.diags, 0, 300, 0);
+    let menu = yn(parts.get(4).copied(), "B0", "menu symbol", ctx.diags, b'N') == b'Y';
+    let append = u32_in(parts.get(5).copied(), "B0", "structured append", ctx.diags, 1, 26, 1) as u8;
+    let _id = parts.get(6); // structured-append ID, accepted (unused)
+    if level == 300 {
+        ctx.diags.push(Diagnostic::warning(
+            "B0",
+            "Aztec Rune (d=300) is not supported by this build; field skipped",
+        ));
+    }
+    if menu {
+        ctx.diags.push(Diagnostic::warning(
+            "B0",
+            "Aztec menu symbols are not supported by this build; field skipped",
+        ));
+    }
+    if append > 1 {
+        ctx.diags.push(Diagnostic::warning(
+            "B0",
+            "Aztec structured append is not supported by this build; field skipped",
+        ));
+    }
+    finish_2d(
+        ctx,
+        b'0',
+        rotation,
+        Opt2d {
+            module: mag,
+            az_level: level,
+            az_menu: menu,
+            az_append: append,
+            ..Opt2d::default()
+        },
+    );
 }
 
 /// Shared parameter parsing for the Task 15 1D symbologies.
@@ -476,6 +789,18 @@ fn barcode_1d(ctx: &mut ParseContext, params: &[u8], cmd: &str, symbology: u8, s
         check,
         start,
         stop,
+        qr_ec: b'Q',
+        qr_mask: 7,
+        dm_quality: 0,
+        dm_format: 6,
+        dm_aspect: 1,
+        az_level: 0,
+        az_menu: false,
+        az_append: 1,
+        pdf_security: 0,
+        pdf_cols: 0,
+        pdf_rows: 0,
+        pdf_truncate: false,
     });
     if let Some(r) = rotation {
         d.rotation = r;
