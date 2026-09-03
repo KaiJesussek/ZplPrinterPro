@@ -617,6 +617,36 @@ pub struct HostValueRequest {
     pub terminator: Vec<u8>,
 }
 
+/// An interrupted binary download (`^GF` B/C, `~DY` B) whose declared
+/// payload straddles a parse-chunk boundary. The header's `params` borrow
+/// the chunk buffer, which the caller drains after parsing, so the driver
+/// copies them; `buf` accumulates the raw tail consumed from later chunks
+/// (the remaining `declared - already` bytes, taken raw so `^`/`~` bytes
+/// inside the payload never tokenize). The parse loop completes the
+/// download in the chunk that supplies the last owed byte and runs
+/// `handler` with the original header params plus the accumulated tail -
+/// exactly what the single-chunk path receives. A stream that truly ends
+/// mid-payload warns at EOF (whole-stream `parse_stream`'s tail check;
+/// the TCP session's EOF branch); a payload merely spanning chunks is
+/// valid input and stays silent.
+#[derive(Debug)]
+pub struct PendingBinary {
+    /// Two-byte command mnemonic, for the truncation warning's command.
+    pub mnemonic: [u8; 2],
+    /// The header's parameter bytes as scanned (header segments plus any
+    /// payload bytes the params run absorbed before the first command
+    /// character), copied out of the chunk buffer.
+    pub params: Vec<u8>,
+    /// Payload bytes the header's params run already absorbed.
+    pub already: usize,
+    /// The byte count the command declared.
+    pub declared: usize,
+    /// Raw payload bytes accumulated from later chunks.
+    pub buf: Vec<u8>,
+    /// The command's payload receiver (`CommandSpec::binary_handler`).
+    pub handler: fn(&mut ParseContext, &[u8], &[u8]),
+}
+
 /// Per-format parsing context handed to command handlers.
 pub struct ParseContext<'a> {
     pub state: FormatState,
@@ -662,6 +692,10 @@ pub struct ParseContext<'a> {
     /// the ^XZ push completes so the server can attribute diagnostics to
     /// the right label when one chunk contains several formats.
     pub diag_start: usize,
+    /// A binary download (`^GF` B/C, `~DY` B) interrupted by a chunk
+    /// boundary; the next parse call's loop keeps raw-consuming it. `None`
+    /// once the payload completed or the stream ended (warned there).
+    pub pending_binary: Option<PendingBinary>,
 }
 
 impl<'a> ParseContext<'a> {
@@ -682,6 +716,7 @@ impl<'a> ParseContext<'a> {
             stream_base: 0,
             format_start: 0,
             diag_start: 0,
+            pending_binary: None,
         }
     }
 }

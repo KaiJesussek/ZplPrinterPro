@@ -17,7 +17,7 @@ use zpl::diag::{Diagnostic, Diagnostics, Severity};
 use zpl::fonts::DefaultFontProvider;
 use zpl::render::{render, RenderOptions};
 use zpl::scanner::Scanner;
-use zpl::state::{FormatState, ParseContext, PrinterConfig, PrinterMode, QueryRequest};
+use zpl::state::{FormatState, ParseContext, PendingBinary, PrinterConfig, PrinterMode, QueryRequest};
 
 use crate::archive::{unix_ms, LabelRow};
 use crate::hs::hs_response;
@@ -49,6 +49,12 @@ struct Persist {
     /// window from buffer start and slurp diagnostics raised before its
     /// ^XA (stray warnings, earlier formats' leftovers).
     diag_start: usize,
+    /// A binary download (`^GF` B/C, `~DY` B) interrupted by a read-chunk
+    /// boundary. The stash copies the header's params out of the chunk
+    /// buffer and accumulates the raw tail from later chunks; the parse
+    /// driver clears it once the payload completes. A connection that
+    /// ends mid-payload warns in the EOF branch below.
+    pending_binary: Option<PendingBinary>,
 }
 
 impl Persist {
@@ -59,6 +65,7 @@ impl Persist {
         ctx.serial_counters = mem::take(&mut self.serials);
         ctx.format_start = self.format_start;
         ctx.diag_start = self.diag_start;
+        ctx.pending_binary = mem::take(&mut self.pending_binary);
     }
 
     fn hand_out(&mut self, ctx: &mut ParseContext) {
@@ -68,6 +75,7 @@ impl Persist {
         self.serials = mem::take(&mut ctx.serial_counters);
         self.format_start = ctx.format_start;
         self.diag_start = ctx.diag_start;
+        self.pending_binary = mem::take(&mut ctx.pending_binary);
     }
 }
 
@@ -335,6 +343,22 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
         let msg = "connection closed with an unfinished format; label not archived";
         eprintln!("tcp: {msg}");
         diags.push(Diagnostic::warning("^XA", msg));
+        state.counters.warnings.fetch_add(1, Ordering::Relaxed);
+    }
+    // EOF with a binary download still in flight: the chunk the payload
+    // straddled was only interrupted, not truncated - but a closed
+    // connection truly ends it. Warn once and drop (the parse loop itself
+    // stays silent at chunk ends; only this branch, which knows the stream
+    // is over, raises the diagnostic).
+    if let Some(pending) = persist.pending_binary.take() {
+        let mnemonic = core::str::from_utf8(&pending.mnemonic[..]).unwrap_or("??");
+        let msg = format!(
+            "truncated binary data: expected {} bytes, got {}",
+            pending.declared,
+            pending.already + pending.buf.len()
+        );
+        eprintln!("tcp: {msg}");
+        diags.push(Diagnostic::warning(mnemonic, msg));
         state.counters.warnings.fetch_add(1, Ordering::Relaxed);
     }
 }

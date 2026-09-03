@@ -342,3 +342,93 @@ async fn hs_query_answered_inline_with_placeholder() {
     drop(sock); // EOF; the session must end cleanly
     let _ = state;
 }
+
+#[tokio::test]
+async fn binary_payload_split_across_reads_decodes_fully() {
+    let dir = test_dir("gf-split");
+    let _keep = Cleanup(dir.clone());
+    let (addr, state) = spawn(dir.clone()).await;
+
+    // A ^GFB,2000 payload split across two reads (the session reads ~8
+    // KiB; large graphics are the common case): the header lands in read
+    // 1, the tail in read 2. The tail carries ^/~ bait to prove the
+    // payload stays raw - a scanner that tokenized it would archive
+    // phantom labels. The full decode must be warning-free and the raw
+    // .zpl byte-exact.
+    let mut payload = vec![0x41u8; 500]; // plain start (params absorb)
+    payload.extend_from_slice(&[0x5E, 0x7E, 0x01]); // "^~\x01"
+    payload.extend_from_slice(b"^XA^XZ"); // phantom-format bait
+    payload.extend_from_slice(&[0x42; 240]);
+    payload.extend_from_slice(&[0x5E, b'F', b'S']); // bogus ^FS inside
+    payload.extend_from_slice(&[0x43; 250]);
+    payload.extend_from_slice(b"~DY^FS");
+    payload.resize(2000, 0x44);
+    let mut label = b"^XA^FO0,0^GFB,2000,2000,8,".to_vec();
+    label.extend_from_slice(&payload);
+    label.extend_from_slice(b"^FS^XZ");
+
+    let mut sock = TcpStream::connect(addr).await.unwrap();
+    sock.write_all(&label[..1000]).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await; // separate reads
+    sock.write_all(&label[1000..]).await.unwrap();
+    sock.shutdown().await.unwrap(); // EOF ends the session
+
+    wait_labels(&state, 1).await;
+    {
+        let arc = state.archive.lock().await;
+        assert_eq!(arc.len(), 1, "exactly one label \u{2014} no phantom from ^ bait");
+        let rows = arc.rows();
+        assert_eq!(rows[0].row.diags, 0, "split payload must be warning-free: {:?}", rows[0].messages);
+        assert_eq!(rows[0].messages.len(), 0);
+    }
+    // A wrong warning (truncation, phantom command, EOF partial) would
+    // bump the counter; settle a moment for a stray late warning to land.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        state.counters.warnings.load(Ordering::Relaxed),
+        0,
+        "the whole split must decode with ZERO warnings"
+    );
+
+    let raw = std::fs::read(dir.join("labels/1.zpl")).unwrap();
+    assert_eq!(raw, label, "raw .zpl must be the exact sent bytes incl. the payload tail");
+    let ir: Label = serde_json::from_slice(&std::fs::read(dir.join("labels/1.json")).unwrap()).unwrap();
+    assert_eq!(ir.fields.len(), 1, "one graphic field, no phantom fields");
+    match &ir.fields[0] {
+        zpl::ir::Field::Graphic(g) => assert_eq!(g.data, payload, "decoded payload must be byte-exact"),
+        other => panic!("expected graphic field, got {other:?}"),
+    }
+    let png = std::fs::read(dir.join("labels/1.png")).unwrap();
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n", "PNG signature");
+    // 2000 bytes at 8 bytes/row = 250 rows; PNG drains the 832-dot
+    // default-width canvas at auto height = content bottom (250).
+    let (w, h) = (
+        u32::from_be_bytes(png[16..20].try_into().unwrap()),
+        u32::from_be_bytes(png[20..24].try_into().unwrap()),
+    );
+    assert_eq!((w, h), (832, 250), "PNG dimensions");
+}
+
+#[tokio::test]
+async fn eof_mid_binary_payload_warns_once_and_stores_nothing() {
+    let dir = test_dir("gf-eof");
+    let _keep = Cleanup(dir.clone());
+    let (addr, state) = spawn(dir.clone()).await;
+
+    // True truncation: the connection ends mid-payload. Exactly one
+    // warning - the truncation diagnostic from the session's EOF branch
+    // (the parse loop itself must stay silent at chunk ends, or a payload
+    // that merely spans reads would warn). Outside ^XA..^XZ so the
+    // unfinished-format EOF diagnostic cannot double-fire.
+    let mut sock = TcpStream::connect(addr).await.unwrap();
+    let mut head = b"^GFB,2000,2000,8,".to_vec();
+    head.extend_from_slice(&[0x41; 500]);
+    sock.write_all(&head).await.unwrap();
+    sock.shutdown().await.unwrap();
+
+    wait_warnings(&state, 1).await;
+    tokio::time::sleep(Duration::from_millis(50)).await; // let a wrong push land
+    let arc = state.archive.lock().await;
+    assert_eq!(arc.len(), 0, "a truncated download must not be archived");
+    let _ = dir;
+}

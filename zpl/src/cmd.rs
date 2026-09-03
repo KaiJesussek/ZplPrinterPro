@@ -8,7 +8,7 @@ use crate::geom;
 use crate::ir::Label;
 use crate::memory;
 use crate::scanner::{Cmd, Scanner, Token};
-use crate::state::{FieldDraft, FormatState, ParseContext, QueryRequest};
+use crate::state::{FieldDraft, FormatState, ParseContext, PendingBinary, QueryRequest};
 use crate::textfmt;
 
 /// Command prefix: `^` (format commands) or `~` (printer operations).
@@ -1358,6 +1358,57 @@ pub fn parse_stream(scanner: &mut Scanner, ctx: &mut ParseContext) {
             Token::Data(data) => ctx.state.capture(data),
         }
     }
+    // Whole-stream parse has no later chunk to supply the payload a
+    // stashed download still owes, so a pending binary here is genuine
+    // truncation: warn and drop. The input after the truncation point was
+    // never consumed into the payload, so it parsed normally above (the
+    // trailing commands stay parseable). The chunked driver
+    // ([`parse_stream_collect`]) deliberately has NO such check - a
+    // payload merely spanning chunks is valid - the TCP session's EOF
+    // branch warns instead.
+    if let Some(pending) = ctx.pending_binary.take() {
+        ctx.diags.push(Diagnostic::warning(
+            core::str::from_utf8(&pending.mnemonic[..]).unwrap_or("??"),
+            format!(
+                "truncated binary data: expected {} bytes, got {}",
+                pending.declared,
+                pending.already + pending.buf.len()
+            ),
+        ));
+    }
+}
+
+/// Continue an interrupted binary download ([`ParseContext::pending_binary`])
+/// against the scanner's remaining bytes: consume the raw payload the
+/// declared count still owes from the stream (payload bytes may legally be
+/// `^`/`~`/`^FS` - "all control prefixes are ignored until the total number
+/// of bytes needed ... is sent", guide p.215/p.181 - so they must never
+/// tokenize), then run the stored handler with the header's params plus the
+/// accumulated tail once the payload completes. Runs at the top of the
+/// chunked driver's loop, before `scanner.next()` can see the payload. A
+/// chunk that ends mid-payload leaves the stash in place for the next parse
+/// call; only a stream that truly ends there warns (the session's EOF
+/// branch). Valid input that merely spans chunks stays silent.
+fn continue_pending_binary(scanner: &mut Scanner, ctx: &mut ParseContext) {
+    if scanner.remaining() == 0 {
+        return;
+    }
+    let Some(mut pending) = ctx.pending_binary.take() else {
+        return;
+    };
+    let need = pending
+        .declared
+        .saturating_sub(pending.already)
+        .saturating_sub(pending.buf.len());
+    pending
+        .buf
+        .extend_from_slice(scanner.raw_take(need.min(scanner.remaining())));
+    if pending.buf.len() < need {
+        ctx.pending_binary = Some(pending); // chunk ended mid-payload
+        return;
+    }
+    let handler = pending.handler;
+    handler(ctx, &pending.params, &pending.buf);
 }
 
 /// Drive one scanned command token - shared by [`parse_stream`] and
@@ -1396,13 +1447,22 @@ fn run_cmd_token(
     {
         let want = declared.saturating_sub(already);
         if want > scanner.remaining() {
-            ctx.diags.push(Diagnostic::warning(
-                core::str::from_utf8(&cmd.mnemonic[..]).unwrap_or("??"),
-                format!(
-                    "truncated binary data: expected {declared} bytes, got {}",
-                    already + scanner.remaining()
-                ),
-            ));
+            // The payload straddles a parse-chunk boundary (the TCP
+            // session reads ~8 KiB at a time; large graphics are the
+            // common case, not an edge). The header's params borrow this
+            // chunk's buffer, which the caller drains, so stash a copy;
+            // the next parse call's loop keeps raw-consuming the payload
+            // (see [`continue_pending_binary`]). This is NOT an error: a
+            // stream that truly ends mid-payload warns at EOF
+            // (`parse_stream`'s tail check; the session's EOF branch).
+            ctx.pending_binary = Some(PendingBinary {
+                mnemonic: cmd.mnemonic,
+                params: cmd.params.to_vec(),
+                already,
+                declared,
+                buf: Vec::new(),
+                handler,
+            });
             return None;
         }
         // The payload's tail: the `^`/`~`/`^FS` bytes the declared count
@@ -1470,13 +1530,22 @@ pub fn parse_stream_collect(
     labels: &mut Vec<ParsedLabel>,
 ) {
     scanner.set_chars(ctx.mode.cmd_char, ctx.mode.tilde_char);
-    while let Some(token) = scanner.next(matches!(ctx.state, FormatState::Field { .. })) {
+    loop {
+        // Finish any binary download the previous chunk started BEFORE
+        // the scanner can tokenize its payload: the bytes are raw data,
+        // and the span accounting picks them up through scanner.pos().
+        continue_pending_binary(scanner, ctx);
+        let Some(token) = scanner.next(matches!(ctx.state, FormatState::Field { .. })) else {
+            break;
+        };
         // This token's global span: token_start carries over from the
         // previous token (or the session's chunk base); token_end is the
         // current scanner position plus the bytes consumed by earlier
         // chunks, so spans survive chunk boundaries. A binary payload
-        // consumed inside the token re-pins token_end past the raw bytes,
-        // so the next token's start lands after them.
+        // consumed inside the token - or by the continuation above -
+        // moves scanner.pos() past the raw bytes, so the next token's
+        // start lands after them and the archived raw slice re-parses to
+        // the same decode.
         ctx.token_start = ctx.token_end;
         ctx.token_end = ctx.stream_base + scanner.pos();
         match token {
@@ -1489,6 +1558,10 @@ pub fn parse_stream_collect(
             Token::Data(data) => ctx.state.capture(data),
         }
     }
+    // NO truncation check here: chunk-end != EOF-on-purpose. A payload
+    // that merely spans chunks stays in ctx.pending_binary for the next
+    // parse call; the TCP session's EOF branch warns when the connection
+    // truly ends mid-payload.
 }
 
 /// Reconstruct one command token as its raw input bytes (dropping the

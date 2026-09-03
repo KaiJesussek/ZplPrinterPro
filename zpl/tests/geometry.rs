@@ -4,7 +4,10 @@
 mod common;
 
 use common::parse_one;
-use zpl::diag::Severity;
+use zpl::cmd::{parse_stream, parse_stream_collect};
+use zpl::diag::{Diagnostics, Severity};
+use zpl::scanner::Scanner;
+use zpl::state::{Memory, ParseContext};
 use zpl::ir::{
     BoxField, CircleField, DiagonalField, EllipseField, Field, GraphicField, GraphicKind, Label,
 };
@@ -319,6 +322,104 @@ fn gf_binary_truncated_warns_and_parses_on() {
     match &label.fields[0] {
         Field::Text(t) => assert_eq!(t.data, "hi"),
         other => panic!("expected the second format's text field, got {other:?}"),
+    }
+}
+
+/// A `^GFB` format whose 55-byte payload is deliberately hostile: it
+/// opens with plain bytes (which the scanner's params run absorbs),
+/// then a `^` cuts the params off mid-payload, and it contains `^XA^XZ`
+/// (phantom-format bait) and a fake `^FS` - bytes that must stay raw
+/// under binary framing. Returns the raw format and a split point inside
+/// the payload.
+fn hostile_gf_src() -> (Vec<u8>, usize) {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&[0x41; 8]); // plain bytes the params absorb
+    payload.extend_from_slice(&[0x5E, 0x7E, 0x01]); // "^~\x01" - params stop here
+    payload.extend_from_slice(b"^XA^XZ"); // phantom-format bait
+    payload.extend_from_slice(&[0x42; 18]); // incl. a fake ^FS inside
+    payload.extend_from_slice(b"^FS");
+    payload.extend_from_slice(&[0x43; 17]);
+    assert_eq!(payload.len(), 55);
+    // 55 = 11 rows x 5 bytes per row ^GF B framing: b = c = 55, d = 5.
+    let mut src = b"^XA^FO5,5^GFB,55,55,5,".to_vec();
+    src.extend_from_slice(&payload);
+    src.extend_from_slice(b"^FS^XZ");
+    // Split inside the payload, AFTER the ^ that cut the params run off
+    // (16 header-relative payload bytes: 8 plain + "^~\x01" + 5 more of
+    // the ^XA^XZ bait), so chunk 1 stashes a half-consumed download.
+    (src, 24 + 16)
+}
+
+#[test]
+fn gf_binary_payload_split_across_parse_calls_decodes_fully() {
+    // The TCP session reads ~8 KiB per chunk, so large binary graphics
+    // routinely straddle the boundary: chunk 1 stashes the interrupted
+    // download into ctx.pending_binary, and the next parse call's loop
+    // keeps raw-consuming the payload (the ^/~ bait must never tokenize
+    // into phantom commands). The two-chunk decode must equal the
+    // single-chunk one byte-for-byte, and the raw span must re-parse to
+    // the same label.
+    let (src, mid) = hostile_gf_src();
+
+    // Single-chunk reference.
+    let (mut diags_ref, mut mem_ref) = (Diagnostics::default(), Memory::default());
+    let mut ref_ctx = ParseContext::new(&mut diags_ref, &mut mem_ref);
+    let mut ref_labels = Vec::new();
+    parse_stream_collect(&mut Scanner::new(&src), &mut ref_ctx, &mut ref_labels);
+    assert_eq!(ref_labels.len(), 1, "single-chunk parse must close one label");
+    let ref_data = match &ref_labels[0].label.fields[0] {
+        Field::Graphic(g) => g.data.clone(),
+        other => panic!("expected graphic field, got {other:?}"),
+    };
+
+    // Two-chunk parse on ONE context (the lib-level form of the session's
+    // per-chunk parse): re-base the token offsets for chunk 2 exactly as
+    // the TCP session does.
+    let mut diags = Diagnostics::default();
+    let mut mem = Memory::default();
+    let mut ctx = ParseContext::new(&mut diags, &mut mem);
+    let mut labels = Vec::new();
+    parse_stream_collect(&mut Scanner::new(&src[..mid]), &mut ctx, &mut labels);
+    assert!(labels.is_empty(), "chunk 1 must not close a label yet");
+    ctx.stream_base = mid;
+    ctx.token_start = mid;
+    ctx.token_end = mid;
+    parse_stream_collect(&mut Scanner::new(&src[mid..]), &mut ctx, &mut labels);
+
+    assert_eq!(labels.len(), 1, "one label, no phantom format from ^/~ bait");
+    assert_eq!(diags.items.len(), 0, "a payload spanning chunks is valid input: {diags:?}");
+    assert_eq!(
+        &src[labels[0].start..labels[0].end],
+        &src[..],
+        "the raw span covers the format incl. the whole binary payload"
+    );
+    match &labels[0].label.fields[0] {
+        Field::Graphic(g) => {
+            assert_eq!(g.data, ref_data, "two-chunk decode must byte-match the single-chunk one");
+            assert_eq!(g.bytes_per_row, 5);
+        }
+        other => panic!("expected graphic field, got {other:?}"),
+    }
+
+    // Span round-trip: re-parse the archived raw slice with a fresh
+    // context - the split must have consumed exactly the payload bytes,
+    // no more, no less.
+    let mut diags2 = Diagnostics::default();
+    let mut mem2 = Memory::default();
+    let mut ctx2 = ParseContext::new(&mut diags2, &mut mem2);
+    parse_stream(&mut Scanner::new(&src[labels[0].start..labels[0].end]), &mut ctx2);
+    assert!(
+        ctx2.diags.items.is_empty(),
+        "no diagnostics on re-parse: {:?}",
+        ctx2.diags.items
+    );
+    let label2 = ctx2.pending_label.expect("re-parsed format closes");
+    match &label2.fields[0] {
+        Field::Graphic(g) => {
+            assert_eq!(g.data, ref_data, "archived raw span must re-parse to the same decode");
+            assert_eq!(g.bytes_per_row, 5);
+        }
+        other => panic!("expected graphic field, got {other:?}"),
     }
 }
 
