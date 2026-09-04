@@ -511,8 +511,9 @@ fn prepare_codabar(start: u8, stop: u8, data: &[u8]) -> Vec<u8> {
 
 /// MSI check digits per ^BM e (guide p.122): A none, B one Mod 10, C two
 /// Mod 10, D one Mod 11 + one Mod 10. Mod 10 = the Luhn-style MSI check
-/// (rightmost digit doubled); Mod 11 = weights 2..9 from the right (the
-/// NCR weighting - the guide does not fix it; documented in the report).
+/// (rightmost digit doubled, digit-summed products); Mod 11 = NCR weights
+/// 2..=7 repeating from the rightmost digit (reference-verified on
+/// ^BMN,D "1234567": cd11=4, cd10=1).
 fn prepare_msi(mode: u8, data: &[u8]) -> Vec<u8> {
     if !data.iter().all(u8::is_ascii_digit) {
         return data.to_vec(); // encoder rejects invalid data
@@ -562,12 +563,12 @@ fn msi_mod10(data: &[u8]) -> u8 {
 }
 
 fn msi_mod11(data: &[u8]) -> u8 {
-    // Weights 2..=9 repeat from the right (NCR MSI weighting).
+    // NCR weights 2..=7 repeat from the rightmost digit (reference-verified).
     let mut sum = 0u32;
     let mut w = 2u32;
     for &b in data.iter().rev() {
         sum += (b - b'0') as u32 * w;
-        w = if w == 9 { 2 } else { w + 1 };
+        w = if w == 7 { 2 } else { w + 1 };
     }
     ((11 - sum % 11) % 11) as u8
 }
