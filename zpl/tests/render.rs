@@ -1542,3 +1542,56 @@ fn t15_all_symbologies_render() {
         out.bitmap.height
     );
 }
+
+/// R4: `^FB` block geometry at the drawn cell 24 (parity case 07):
+/// the corrected advances make the wrapped first line fit inside the
+/// `^FB` box (the uncorrected table overruns its edge) while keeping
+/// left/right justification flush within it.
+#[test]
+fn t04_fb_block_geometry_24() {
+    use zpl::fonts::DefaultFontProvider;
+    let fonts = DefaultFontProvider::new();
+    let left = b"^XA^LL300^FO20,20^FB240,3,0,L^A0N,24,24^FDZebra block text wraps at the field width with justification left.^FS^XZ";
+    let right = b"^XA^LL300^FO280,20^FB240,3,0,R^A0N,24,24^FDThis block is right justified across three lines.^FS^XZ";
+    let run = |src: &[u8]| -> (u32, u32, Vec<u8>) {
+        let mut diags = Diagnostics::default();
+        let mut memory = Memory::default();
+        let mut ctx = ParseContext::new(&mut diags, &mut memory);
+        parse_stream(&mut Scanner::new(src), &mut ctx);
+        let label = ctx.pending_label.take().unwrap();
+        let opts = RenderOptions {
+            dpi: 203,
+            fonts: &fonts,
+            memory: &*ctx.memory,
+            mode: &ctx.mode,
+        };
+        let out = render(&label, &opts).expect("render failed structurally");
+        decode_png(&out.bitmap.to_png())
+    };
+    let col_dark = |px: &[u8], w: u32, x: u32, y0: u32, y1: u32| {
+        (y0..y1).any(|y| {
+            let byte = px[((y * w + x) / 8) as usize];
+            byte & (0x80 >> ((x % 8) as u8)) != 0
+        })
+    };
+    // Left block: the corrected advances pull the fourth word ("wraps")
+    // inside the box - the reference's last ink is 236-238, the
+    // uncorrected table overruns past 239.
+    let (w, h, px) = run(left);
+    assert!(w > 240 && h >= 90, "{}x{}", w, h);
+    let cols: Vec<u32> = (20..240).filter(|&x| col_dark(&px, w, x, 20, 44)).collect();
+    assert!((20..=22).contains(cols.first().unwrap()), "block first ink near the field origin");
+    assert!(
+        *cols.last().unwrap() <= 239,
+        "wrapped line fits the box (last ink {}, uncorrected table overruns)",
+        cols.last().unwrap()
+    );
+    // Right block: flush-right placement inside the same box width.
+    let (w, _h, px) = run(right);
+    let l1: Vec<u32> = (300..520).filter(|&x| col_dark(&px, w, x, 20, 60)).collect();
+    assert!(
+        l1.first().unwrap() > &290 && l1.first().unwrap() <= &343,
+        "right block inks inside the box (first ink {})",
+        l1.first().unwrap()
+    );
+}

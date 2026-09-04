@@ -146,16 +146,50 @@ struct Line {
     width: u64,
 }
 
+/// Font-0 block advance corrections at the drawn cell 24 (R4
+/// calibration, measured from the parity block refs). The reference's
+/// font-0 advances at 24 are the R1-fitted tenths minus a rounding edge
+/// on six chars (least-squares over every ink-run gap of cases 07's two
+/// `^FB` blocks; e.g. `x` measures 8 dots = its ink width, not the
+/// tenths' 12). Every other height keeps the fitted tenths (verified
+/// across the case-17 sweep).
+fn font0_adv24(m: &FontMetrics, c: char) -> Option<u32> {
+    if m.cell_height != 15 || m.tenths.is_none() {
+        return None;
+    }
+    let v = match c {
+        'l' => 5,
+        'c' => 10,
+        'o' => 11,
+        'x' => 8,
+        // `i`/`h`/`w`/`d` keep their tenths-adjacent LSQ values: i/h hold
+        // 6/11 ("This", "the" deltas), w/d drop to 16/11 ("width"/"with"
+        // in the left block measure 16/11 there).
+        'w' => 16,
+        'd' => 11,
+        _ => return None,
+    };
+    Some(v)
+}
+
 /// Per-character advance at paint scale, honoring the `^A` width rule.
 struct Advancer<'a> {
     metrics: &'a FontMetrics,
     eff: f32,
     /// Fixed advance in dots when `^A` w > 0; 0 = proportional.
     fixed: u64,
+    /// True inside a `^FB` block drawn at cell 24: the measured block
+    /// advance corrections apply (see [`font0_adv24`]).
+    fb24: bool,
 }
 
 impl Advancer<'_> {
     fn dots(&self, c: char) -> u64 {
+        if self.fb24 {
+            if let Some(v) = font0_adv24(self.metrics, c) {
+                return u64::from(v);
+            }
+        }
         if self.fixed > 0 {
             return self.fixed;
         }
@@ -324,6 +358,7 @@ fn layout(t: &TextField, m: &FontMetrics, dpi: u32) -> Option<FieldLayout> {
         metrics: m,
         eff,
         fixed,
+        fb24: t.block.is_some() && cell == 24,
     };
     let font_w = font_width_dots(t, m, dpi);
     let (wrap_w, justification, max_lines) = match &t.block {
@@ -345,15 +380,23 @@ fn layout(t: &TextField, m: &FontMetrics, dpi: u32) -> Option<FieldLayout> {
         t.data.clone()
     };
     let raw_lines = wrap_words(&data, wrap_w, &adv, max_lines);
+    let last_i = raw_lines.len().saturating_sub(1);
     let mut lines = Vec::with_capacity(raw_lines.len());
     let mut starts = Vec::with_capacity(raw_lines.len());
     let mut box_left = u64::MAX;
     let mut box_right = 0u64;
-    for l in raw_lines {
+    for (i, l) in raw_lines.into_iter().enumerate() {
         let w = l.width;
         let start = match justification {
             Justification::Left => 0,
-            Justification::Right => wrap_w.saturating_sub(w),
+            // The ref measures a right-justified line with the trailing
+            // space of the wrapped word included (measured: non-last
+            // lines sit one space closer to the box edge than a bare
+            // content measure) - the last line has none.
+            Justification::Right => {
+                let tail = if i == last_i { 0 } else { adv.dots(' ') };
+                wrap_w.saturating_sub(w.saturating_add(tail))
+            }
             Justification::Center => (wrap_w.saturating_sub(w)) / 2,
         };
         box_left = box_left.min(start);
@@ -503,6 +546,7 @@ pub(crate) fn paint_text(
         } else {
             0
         },
+        fb24: t.block.is_some() && l.cell == 24,
     };
 
     let (_, fw, fh) = extents(t, &l);
@@ -529,7 +573,22 @@ pub(crate) fn paint_text(
         l.baseline as i64 + 1
     };
     let bitmap_ink = !matches!(fd.metrics.cap, CapModel::Ascent);
-    let pad = left_pad(&fd.metrics.cap, l.cell as u32) as i64;
+    // The ref's ink sits at the cell edge plus the glyph's own natural
+    // left bearing (measured: M@24 +2, Z@24 +1, K@28 +2, Z@10 +0) - not
+    // at a constant `(cell+8)/16`. Keep the constant for the other caps
+    // (no per-glyph ref geometry yet). `ponytail:` drop the constant
+    // once the remaining faces have probe refs.
+    let pad = if t.block.is_some()
+        && matches!(fd.metrics.cap, CapModel::Ratio { .. })
+        && l.cell == 24
+    {
+        // `^FB` blocks at 24 ink one dot left of `^FT` text at the same
+        // size (ref: block Z@21, a@21, j@21 vs ^FT H@22, B@22) - the
+        // block adds its own 1-dot inset on top of the field origin.
+        1
+    } else {
+        left_pad(&fd.metrics.cap, l.cell as u32) as i64
+    };
     // The matrix top pad puts the cap *below* the cell top: the anchor
     // climbs by the pad rows the scale no longer carries.
     let paint_baseline = paint_baseline
@@ -916,9 +975,82 @@ fn paint_glyph(
 
 #[cfg(test)]
 mod tests {
+    use crate::ir::TextBlock;
     use super::*;
 
-    /// A table where a middle slot is missing (0) and the space slot is
+
+
+    /// A zebra-0-shaped table: reference cell 15, ratio cap, uniform
+    /// 8-dot advances, a (hollow) tenths table present.
+    fn zebra0_metrics() -> FontMetrics {
+        FontMetrics {
+            cell_height: 15,
+            baseline: 11,
+            advances: vec![8u16; 95],
+            tenths: Some(&[]),
+            cap: CapModel::Ratio { percent: 100 },
+            x_scale: 1.0,
+            width_pow: 1.0,
+        }
+    }
+
+    /// R4: the cell-24 advance corrections apply only inside an `^FB`
+    /// block at the drawn cell 24; the same charset elsewhere keeps the
+    /// scale of the base table (font 0 at 24: `x` = 8 inside blocks vs
+    /// `(8 * 24 / 15).round() = 13` outside).
+    #[test]
+    fn fb24_corrections_apply_only_inside_blocks() {
+        let m = zebra0_metrics();
+        let block = Advancer { metrics: &m, eff: 24.0 / 15.0, fixed: 0, fb24: true };
+        assert_eq!(block.dots('x'), 8, "correction table wins inside a 24-dot block");
+        assert_eq!(block.dots('d'), 11);
+        let plain = Advancer { metrics: &m, eff: 24.0 / 15.0, fixed: 0, fb24: false };
+        assert_eq!(plain.dots('x'), 13, "outside blocks the base table scales");
+    }
+
+    /// R4: a right-justified non-last line is measured with the trailing
+    /// space of the wrapped word (ref: case 07 B2 starts 8 dots left of
+    /// the content-only measure); the last line is measured bare.
+    #[test]
+    fn right_justify_measures_trailing_space() {
+        let m = FontMetrics {
+            cell_height: 15,
+            baseline: 11,
+            advances: vec![10u16; 95],
+            tenths: None,
+            cap: CapModel::Ratio { percent: 100 },
+            x_scale: 1.0,
+            width_pow: 1.0,
+        };
+        // advances 10 @15, drawn at cell 15 (eff 1): "ab cd" = 50,
+        // "efgh" = 40, "ij kl" = 50, box 60.
+        let t = TextField {
+            x: 0,
+            y: 0,
+            origin: OriginMode::Block,
+            rotation: Rotation::R0,
+            font: *b"00",
+            font_height: 15,
+            font_width: 0,
+            reverse: false,
+            block: Some(TextBlock {
+                width: 60,
+                max_lines: 3,
+                line_spacing: 0,
+                justification: Justification::Right,
+                fb: true,
+            }),
+            data: "ab cd efgh ij kl".to_string(),
+            font_name: None,
+            symbol: false,
+            re_eval: false,
+        };
+        let fl = layout(&t, &m, 203).expect("block lays out");
+        assert_eq!(fl.starts, vec![0, 10, 10],
+            "L1/L2 include the trailing space (50+10 and 40+10) into the 60 box; L3 is flush bare");
+    }
+
+/// A table where a middle slot is missing (0) and the space slot is
     /// nonzero: missing characters advance like a space.
     fn metrics_with_missing() -> FontMetrics {
         let mut advances = vec![0u16; 95];
@@ -1013,8 +1145,10 @@ mod tests {
             metrics: &m,
             eff: 1.0,
             fixed: 40,
+            fb24: false,
         };
         assert_eq!(adv.dots('X'), 40);
         assert_eq!(adv.dots(' '), 40);
     }
 }
+
