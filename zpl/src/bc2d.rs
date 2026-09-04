@@ -2,9 +2,12 @@
 //! Aztec (^B0).
 //!
 //! All encoders return [`Pattern::Modules`] - a 1bpp module map, MSB-first
-//! row-major, black = 1 - including the standard quiet zone (QR 4 modules,
-//! DataMatrix 1, PDF417 2 left/right, Aztec 1) since the renderer paints
-//! the module map verbatim at modulexmodule dots.
+//! row-major, black = 1. QR and DataMatrix maps carry NO quiet zone: the
+//! reference paints the symbol edge exactly at the ^FO (measured corpus
+//! 11/16/12; the label margin is the quiet zone, same model as the 1D
+//! codes). PDF417 (2 left/right) and Aztec (1) keep their ISO quiet
+//! zones (no corpus measurement). The renderer paints map bits compactly
+//! (bit = row*width + col) at modulexmodule dots.
 //!
 //! Standards implemented (algorithms cross-checked against the zint
 //! reference model during development; see the Task 16 report):
@@ -273,6 +276,14 @@ fn qr_mask_flip(x: usize, y: usize, pattern: usize) -> bool {
 }
 
 pub fn qr(f: &BarcodeField, data: &[u8]) -> Result<Pattern, String> {
+    // The reference strips a leading MM, marker from ^BQ field data:
+    // corpus 11 renders the 17-byte HELLO WORLD 12345 (only v1-L can
+    // hold that) and corpus 16 the bare URL. The marker never reaches
+    // the symbol.
+    let data = match data {
+        [b'M', b'M', b',', rest @ ..] => rest,
+        _ => data,
+    };
     let level = qr_level(f.qr_ec);
     let mut version = 0;
     for v in 1..=10 {
@@ -485,8 +496,11 @@ pub fn qr(f: &BarcodeField, data: &[u8]) -> Result<Pattern, String> {
         }
     }
 
-    // Quiet zone: 4 modules on all sides.
-    Ok(grid.pattern(4, 4, 4, 4))
+    // No interior quiet zone: the reference paints the symbol at the
+    // field origin with its edges exactly at the ^FO (measured: corpus
+    // 11 ink bbox is the 21x21 symbol exactly; corpus 16 the 25x25) -
+    // the label margin supplies the quiet zone, like the 1D codes.
+    Ok(grid.pattern(0, 0, 0, 0))
 }
 
 // ---------------------------------------------------------------------
@@ -781,8 +795,10 @@ pub fn datamatrix(f: &BarcodeField, data: &[u8]) -> Result<Pattern, String> {
             }
         }
     }
-    // Quiet zone: 1 module.
-    Ok(grid.pattern(1, 1, 1, 1))
+    // No interior quiet zone: the reference paints the symbol at the
+    // field origin (measured: corpus 12 ink bbox is the 18x18 symbol
+    // exactly) - the label margin supplies the quiet zone.
+    Ok(grid.pattern(0, 0, 0, 0))
 }
 
 // ---------------------------------------------------------------------

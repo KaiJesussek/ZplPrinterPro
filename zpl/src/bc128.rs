@@ -4,7 +4,8 @@
 //!
 //! Runtime behavior follows the ZPL II guide's ^BC section (p.94-99):
 //! `>` invocation codes select subsets and special values (Table 2), a
-//! string of four or more digits auto-switches to Subset C, the default
+//! leading run of four or more digits auto-starts Subset C (start-only:
+//! mid-data digit runs stay put - corpus 09 measured), the default
 //! start is Subset B. The sheet's legacy "Subset A data is digit pairs"
 //! sentence dates from pre-mode firmware; mode A/D auto subsetting (the
 //! guide's A-mode text) is implemented instead - literal ASCII data in
@@ -311,7 +312,8 @@ enum Subset {
     C,
 }
 
-/// Length of the run of consecutive digit characters starting at `from`.
+/// Length of the run of consecutive digit characters starting at `from`
+/// (used only for the start-subset decision).
 fn digit_run(items: &[Item], from: usize) -> usize {
     let mut n = 0;
     for item in &items[from..] {
@@ -370,8 +372,11 @@ fn emit_char(vals: &mut Vec<u8>, subset: &mut Subset, c: u8) {
 ///
 /// Start choice (guide): an explicit `>9`/`>:`/`>;` at the very beginning
 /// selects the subset; otherwise Subset B - except that a leading run of
-/// four or more digits auto-starts Subset C (the guide's automatic-mode
-/// rule, which the plan's acceptance test pins for the default mode too).
+/// four or more (or an all-digit) payload auto-starts Subset C. The
+/// auto-C decision applies at the START only: digit runs that appear
+/// after letters stay in the current subset, matching the reference's
+/// codeword sequence (corpus 09 - see the bc128_midstream_digit_run
+/// test).
 fn plan(items: &[Item]) -> Vec<u8> {
     let mut vals = Vec::with_capacity(items.len() + 2);
 
@@ -426,12 +431,11 @@ fn plan(items: &[Item]) -> Vec<u8> {
                 i += 1;
             }
             Item::Char(c) if c.is_ascii_digit() => {
-                if subset != Subset::C && digit_run(items, i) >= 4 {
-                    // Guide: four or more digits auto-shift to Subset C.
-                    vals.push(CODE_C);
-                    subset = Subset::C;
-                    continue;
-                }
+                // No mid-stream auto-switch: the reference keeps literal
+                // digit runs in the current subset (measured corpus 09
+                // "(01)12345678901234(10)ABC123": the 14-digit run stays
+                // all Subset B - only a leading all-digit payload starts
+                // in C, see `plan`).
                 if subset == Subset::C {
                     // Pair digits in C; an unpaired digit (odd tail) leaves
                     // through Code B.

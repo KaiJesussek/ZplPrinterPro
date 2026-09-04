@@ -601,8 +601,9 @@ fn finish_2d(ctx: &mut ParseContext, symbology: u8, rotation: Option<Rotation>, 
 
 /// ^BQo,h,s,m,e (guide p.128): orientation, model 1/2 (default 2; model 1
 /// is encoded as model 2 with a warning), magnification (cell size,
-/// default ^BY module), EC level H/Q/M/L (default Q; M for invalid), mask
-/// 0..7 (default 7).
+/// default ^BY module), EC level H/Q/M/L (default L - the reference
+/// renders absent EC at level L; measured corpus 11/16; invalid values
+/// warn and fall back to L too), mask 0..7 (default 7).
 pub(crate) fn qr_field(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
     let rotation = match parts.first().copied() {
@@ -643,7 +644,7 @@ pub(crate) fn qr_field(ctx: &mut ParseContext, params: &[u8]) {
                     ctx.diags,
                 );
             }
-            b'Q'
+            b'L'
         }
     };
     let mask = u32_in(parts.get(4).copied(), "BQ", "mask", ctx.diags, 0, 7, 7) as u8;

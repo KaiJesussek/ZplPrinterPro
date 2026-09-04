@@ -329,7 +329,13 @@ fn check_barcode_data(ctx: &mut ParseContext) {
                 bc.qr_ec,
                 bc.qr_mask,
                 bc.pdf_security,
-                draft.data.len(),
+                // The ^BQ encoder strips a leading MM, marker before
+                // sizing; length-check the payload that encodes.
+                draft
+                    .data
+                    .strip_prefix(b"MM,")
+                    .map(<[u8]>::len)
+                    .unwrap_or(draft.data.len()),
             ) {
                 ctx.diags.push(Diagnostic::warning("B*", msg));
             }

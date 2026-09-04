@@ -37,10 +37,20 @@ fn decode_qr(pat: &Pattern) -> Result<String, String> {
         return Err(format!("expected Modules, got {pat:?}"));
     };
     let w = *width as usize;
+    let h = *height as usize;
+    // The module maps carry no quiet zone (render model, measured
+    // against the reference renders) - restore one around the symbol so
+    // rqrr's grid detection sees the required white margin.
+    let q = 4;
     let scale = 4usize;
     let mut prepared =
-        rqrr::PreparedImage::prepare_from_bitmap(w * scale, *height as usize * scale, |x, y| {
-            let i = (y / scale) * w + (x / scale);
+        rqrr::PreparedImage::prepare_from_bitmap((w + 2 * q) * scale, (h + 2 * q) * scale, |x, y| {
+            let mx = x / scale;
+            let my = y / scale;
+            if mx < q || my < q || mx >= w + q || my >= h + q {
+                return false;
+            }
+            let i = (my - q) * w + (mx - q);
             data[i >> 3] & (0x80 >> (i & 7)) != 0
         });
     let grids = prepared.detect_grids();
@@ -72,7 +82,7 @@ fn qr_roundtrip_hello_all_levels() {
         let pat = modules_of(format!("^BQN,2,2,{}", ec as char).as_bytes(), b"hello");
         match &pat {
             Pattern::Modules { width, data, .. } => {
-                assert_eq!(*width, 29, "v1 symbol + 4-module quiet zone ({ec} as char)");
+                assert_eq!(*width, 21, "v1 symbol without quiet zone ({ec} as char)");
                 assert!(!data.is_empty());
             }
             other => panic!("expected Modules, got {other:?}"),
@@ -92,11 +102,11 @@ fn qr_roundtrip_unicode_and_masks() {
     // Unicode text (UTF-8 bytes) round-trips verbatim.
     let pat = modules_of(b"^CI28^BQN,2,2,Q", "H\u{00E9}llo W\u{00F6}rld \u{2705}".as_bytes());
     assert_eq!(decode_qr(&pat).unwrap(), "H\u{00E9}llo W\u{00F6}rld \u{2705}");
-    // 44 bytes at level Q -> version 4 (33+8 = 41 modules).
+    // 44 bytes at level Q -> version 4 (33 modules, no quiet zone).
     let long = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     let pat = modules_of(b"^BQN,2,2,Q", long);
     if let Pattern::Modules { width, .. } = pat {
-        assert_eq!(width, 41, "version 4 symbol");
+        assert_eq!(width, 33, "version 4 symbol");
     }
     let pat = modules_of(b"^BQN,2,2,Q", long);
     assert_eq!(decode_qr(&pat).unwrap(), String::from_utf8_lossy(long));
@@ -105,12 +115,12 @@ fn qr_roundtrip_unicode_and_masks() {
 #[test]
 fn qr_version_info_and_big_payload() {
     // Versions 7..10 carry the version-info blocks; 120 bytes at level
-    // M -> v7 (45+8 = 53), 152 bytes -> v8 (49+8 = 57).
+    // M -> v7 (45 modules), 152 bytes -> v8 (49 modules).
     let payload = vec![b'x'; 120];
     let pat = modules_of(b"^BQN,2,2,M", &payload);
     if let Pattern::Modules { width, .. } = &pat {
         assert!(
-            matches!(width, 53),
+            matches!(width, 45),
             "v7 at level M holds 120 bytes, got {width}"
         );
     }
@@ -118,7 +128,7 @@ fn qr_version_info_and_big_payload() {
     let pat = modules_of(b"^BQN,2,2,M", &payload);
     if let Pattern::Modules { width, .. } = &pat {
         assert!(
-            matches!(width, 57),
+            matches!(width, 49),
             "v8 at level M (152 bytes), got {width}"
         );
     }
@@ -129,7 +139,7 @@ fn qr_version_info_and_big_payload() {
     let pat = modules_of(b"^BQN,2,2,H", &payload);
     if let Pattern::Modules { width, .. } = &pat {
         assert!(
-            matches!(width, 65),
+            matches!(width, 57),
             "v10 at level H (110 bytes), got {width}"
         );
     }
@@ -148,7 +158,7 @@ fn qr_v9_v10_m_level_roundtrip_uneven_ec() {
     let pat = modules_of(b"^BQN,2,2,M", &payload);
     if let Pattern::Modules { width, .. } = &pat {
         assert!(
-            matches!(width, 61),
+            matches!(width, 53),
             "v9 at level M (170 bytes), got {width}"
         );
     }
@@ -157,7 +167,7 @@ fn qr_v9_v10_m_level_roundtrip_uneven_ec() {
     let pat = modules_of(b"^BQN,2,2,M", &payload);
     if let Pattern::Modules { width, .. } = &pat {
         assert!(
-            matches!(width, 65),
+            matches!(width, 57),
             "v10 at level M (190 bytes), got {width}"
         );
     }
@@ -200,6 +210,8 @@ fn qr_too_large_is_empty_no_panic() {
 fn dm_hello_is_12x12_with_finder() {
     // "hello" -> 5 data codewords -> the 12x12 symbol (5 data + 7 EC); the
     // grid adds the 1-module quiet zone -> 14x14 modules.
+    // The map is the symbol only (no quiet zone - the render model;
+    // the reference paints the 18x18 symbol edge exactly at the ^FO).
     let pat = modules_of(b"^BXN,1,200", b"hello");
     let Pattern::Modules {
         width,
@@ -209,25 +221,24 @@ fn dm_hello_is_12x12_with_finder() {
     else {
         panic!("expected Modules");
     };
-    assert_eq!((*width, *height), (14, 14));
+    assert_eq!((*width, *height), (12, 12));
     let g = |x: usize, y: usize| {
         data[(y * (*width as usize) + x) >> 3] & (0x80 >> ((y * (*width as usize) + x) & 7)) != 0
     };
-    // The solid finder "L": bottom row (symbol row 11 = pattern row 12)
-    // and left column (symbol col 0 = pattern col 1) dark.
-    for x in 1..13 {
-        assert!(g(x, 12), "bottom finder row at x={x}");
+    // The solid finder "L": bottom row (row 11) and left column (col 0).
+    for x in 0..12 {
+        assert!(g(x, 11), "bottom finder row at x={x}");
     }
-    for y in 1..=12 {
-        assert!(g(1, y), "left finder col at row {y}");
+    for y in 1..=11 {
+        assert!(g(0, y), "left finder col at row {y}");
     }
     // Clock track: top row alternates starting dark at x=1; right column
     // alternates at odd rows from the bottom.
-    assert!(g(1, 1), "clock track corner dark");
-    assert!(!g(2, 1), "clock track alternates");
-    assert!(g(3, 1));
+    assert!(g(0, 0), "finder corner dark");
+    assert!(!g(1, 0), "clock track alternates");
+    assert!(g(2, 0));
     // EC codeword count check: 5 data + 7 EC = 12 codewords of the 12x12.
-    assert_eq!(data.len(), (14 * 14usize).div_ceil(8));
+    assert_eq!(data.len(), (12 * 12usize).div_ceil(8));
 }
 
 #[test]
@@ -237,7 +248,7 @@ fn dm_digits_compress_and_grow_symbol() {
     let Pattern::Modules { width, .. } = &pat else {
         panic!()
     };
-    assert_eq!(*width, 16 + 2, "16x16 symbol + quiet zone");
+    assert_eq!(*width, 16, "16x16 symbol (no quiet zone)");
 }
 
 #[test]
@@ -250,7 +261,7 @@ fn dm_largest_symbol_144x144_never_panics() {
     let Pattern::Modules { width, height, .. } = &pat else {
         panic!()
     };
-    assert_eq!((*width, *height), (146, 146), "144x144 symbol + quiet zone");
+    assert_eq!((*width, *height), (144, 144), "144x144 symbol (no quiet zone)");
 }
 
 #[test]
@@ -262,7 +273,7 @@ fn dm_extended_bytes_use_upper_shift() {
     let Pattern::Modules { width, .. } = &pat else {
         panic!()
     };
-    assert_eq!(*width, 20 + 2, "20x20 symbol + quiet zone");
+    assert_eq!(*width, 20, "20x20 symbol (no quiet zone)");
 }
 
 // --- PDF417: structural ---------------------------------------------------

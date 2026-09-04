@@ -158,10 +158,22 @@ fn extent(b: &BarcodeField, pat: &Pattern, fd: Option<&FontData>, dpi: u32) -> E
                 fh: cmax(fh),
             }
         }
-        Pattern::Modules { width, height, .. } => Extent {
-            fw: cmax(module as u128 * *width as u128),
-            fh: cmax(module as u128 * *height as u128),
-        },
+        // The reference anchors the QR symbol `^BY` height below the
+        // field origin (measured: corpus 11 default height 10 -> ink from
+        // y+10; corpus 16 with ^BY2,3,60 -> y+60). The blank band is part
+        // of the content box so rotation/mirror place the far corner
+        // right. DataMatrix paints at the origin.
+        Pattern::Modules { width, height, .. } => {
+            let qr_band = if b.symbology == b'Q' {
+                u128::from(if b.height == 0 { 10 } else { b.height })
+            } else {
+                0
+            };
+            Extent {
+                fw: cmax(module as u128 * *width as u128),
+                fh: cmax(module as u128 * *height as u128 + qr_band),
+            }
+        }
     }
 }
 
@@ -474,28 +486,40 @@ pub(crate) fn paint(
             height,
             data,
         } => {
-            // Paint per on-canvas destination dot: each dot maps to one
-            // module cell, so the loop is bounded by the canvas.
+            // One destination dot per module cell - bounded by the
+            // canvas. The QR symbol paints `^BY` height below the field
+            // origin (corpus measured: 11 -> y+10, 16 -> y+60); DataMatrix
+            // paints at the origin. Module maps are compact row-major
+            // bits (bit = row*width + col) - a padded ceil(width/8)-byte
+            // stride drifts every row once width is not a multiple of 8
+            // (it garbled the QR/DM rasters before the fix).
+            let shift = if b.symbology == b'Q' {
+                i64::from(if b.height == 0 { 10 } else { b.height })
+            } else {
+                0
+            };
             let m = module as i64;
             if let Some((x0, x1, y0, y1)) =
                 dest_bounds(bmp, ox, oy, b.rotation, fw, fh, 0, 0, fw, fh)
             {
-                let stride = (*width as usize).div_ceil(8);
                 for by in y0..=y1 {
                     for bx in x0..=x1 {
                         let (u, v) = unrotate(bx - ox, by - oy, b.rotation, fw, fh);
-                        if u < 0 || v < 0 {
+                        // The QR's blank band [0, shift) is not symbol
+                        // content: truncating division would smear its
+                        // low rows onto symbol row 0 (a 5-px ghost band
+                        // above the reference's top edge), so skip it
+                        // before mapping content dots to cells.
+                        if u.is_negative() || v < shift {
                             continue;
                         }
-                        let (cu, cv) = (u / m, v / m);
+                        let (cu, cv) = (u / m, (v - shift) / m);
                         if cu >= *width as i64 || cv >= *height as i64 {
                             continue;
                         }
-                        let byte = data
-                            .get(cv as usize * stride + (cu as usize >> 3))
-                            .copied()
-                            .unwrap_or(0);
-                        if byte & (0x80 >> (cu & 7)) != 0 {
+                        let bit = cv as usize * *width as usize + cu as usize;
+                        let byte = data.get(bit >> 3).copied().unwrap_or(0);
+                        if !(byte >> (7 - bit % 8)).is_multiple_of(2) {
                             bmp.set(bx as u32, by as u32, true);
                         }
                     }
@@ -525,7 +549,7 @@ mod tests {
         BarcodeField {
             x: 0,
             y: 0,
-            symbology: b'Q',
+            symbology: b'X', // neutral 2D: not QR, so module tests paint at the origin
             data: String::new(),
             module: 4,
             ratio: 30,
@@ -573,14 +597,15 @@ mod tests {
     }
 
     /// `Pattern::Modules` blits each set module cell as modulexmodule dots:
-    /// a 3x2 map (rows 101 / 010, MSB-first) at module 4 -> 12x8 dots with
-    /// black cells (0,0), (2,0), (1,1).
+    /// a 3x2 map (rows 101 / 010 in the compact row-major bit layout -
+    /// bit = row*width + col) at module 4 -> 12x8 dots with black cells
+    /// (0,0), (2,0), (1,1).
     #[test]
     fn modules_blit_module_cells() {
         let pat = Pattern::Modules {
             width: 3,
             height: 2,
-            data: vec![0b1010_0000, 0b0100_0000],
+            data: vec![0b1010_1000], // row 0 bits 0..2 = 101, row 1 bits 3..5 = 010
         };
         let (bmp, warnings) = paint_into(pat, bc(), 32, 16);
         assert!(
@@ -663,5 +688,45 @@ mod tests {
             (4..16).all(|y| (0..40).all(|x| !bmp.get(x, y))),
             "rows 1..2 have no bytes"
         );
+    }
+
+    /// Module maps are compact row-major bits (bit = row*width + col),
+    /// NOT byte-padded rows. A 10-wide map's second row starts at bit 10
+    /// (byte 1, bit 2) and its col 8 sits at bit 18 - a ceil(width/8)
+    /// byte stride would read byte 3 and print white (the bug that
+    /// garbled the QR/DM rasters). Map: row 0 all dark, row 1 dark at
+    /// col 8 only.
+    #[test]
+    fn modules_compact_rows_are_continuous() {
+        let pat = Pattern::Modules {
+            width: 10,
+            height: 2,
+            data: vec![0xFF, 0xFF, 0x20], // bits 0..=15 dark, bit 18 dark
+        };
+        let (bmp, _) = paint_into(pat, bc(), 40, 20);
+        assert!(bmp.get(32, 5), "row 1 col 8 (bit 18) must paint");
+        assert!(!bmp.get(36, 5), "row 1 col 9 has no bit and prints white");
+    }
+
+    /// The reference anchors the QR symbol `^BY` height below the field
+    /// origin (corpus 11: height 10 -> ink from y+10; corpus 16: ^BY2,3,60
+    /// -> y+60). The blank band must map to NO cells - truncating
+    /// division used to smear the band's low rows onto symbol row 0.
+    #[test]
+    fn modules_qr_anchors_below_by_height() {
+        let pat = Pattern::Modules {
+            width: 2,
+            height: 2,
+            data: vec![0b1100_0000, 0b1100_0000],
+        };
+        let mut f = bc();
+        f.symbology = b'Q';
+        f.height = 10;
+        f.module = 4;
+        let (bmp, _) = paint_into(pat, f, 40, 40);
+        assert!(!bmp.get(0, 0), "blank band above the symbol stays white");
+        assert!(bmp.get(2, 12), "symbol row 0 paints at y + by_height");
+        assert!(bmp.get(6, 12), "symbol remains on the field x origin");
+        assert!(!bmp.get(9, 12), "row 0 col 1 is white in this map");
     }
 }

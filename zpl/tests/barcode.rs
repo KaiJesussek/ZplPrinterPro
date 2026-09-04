@@ -359,6 +359,55 @@ fn bc_ucc_mode_d_strips_and_prepends_fnc1() {
     );
 }
 
+/// R2 corpus case 09 (^BCN,100,Y,N,D, "(01)12345678901234(10)ABC123"):
+/// the reference renders the literal string in Subset B - no mid-stream
+/// subset-C switch for the 14-digit run inside the message (measured
+/// from the cached reference bars, module 2: start B 104, the values
+/// ( ) 0 1 ... 1 2 3, check 35). The old encoder inserted CODE C before
+/// the digit run and diverged from the reference from that point on.
+#[test]
+fn bc128_midstream_digit_run_stays_in_subset_b() {
+    let (label, _) = common::parse_one(b"^XA^BCN,100,Y,N,D^FD(01)12345678901234(10)ABC123^FS^XZ");
+    let f = assert_single_barcode(&label);
+    assert_bars(
+        &barcode_field(f),
+        2,
+        &[
+            2, 1, 1, 2, 1, 4, // 104 start B
+            1, 3, 2, 2, 1, 2, // 8 '('
+            1, 2, 3, 1, 2, 2, // 16 '0'
+            1, 2, 3, 2, 2, 1, // 17 '1'
+            2, 2, 1, 2, 1, 3, // 9 ')'
+            1, 2, 3, 2, 2, 1, // 17 '1'
+            2, 2, 3, 2, 1, 1, // 18 '2'
+            2, 2, 1, 1, 3, 2, // 19 '3'
+            2, 2, 1, 2, 3, 1, // 20 '4'
+            2, 1, 3, 2, 1, 2, // 21 '5'
+            2, 2, 3, 1, 1, 2, // 22 '6'
+            3, 1, 2, 1, 3, 1, // 23 '7'
+            3, 1, 1, 2, 2, 2, // 24 '8'
+            3, 2, 1, 1, 2, 2, // 25 '9'
+            1, 2, 3, 1, 2, 2, // 16 '0'
+            1, 2, 3, 2, 2, 1, // 17 '1'
+            2, 2, 3, 2, 1, 1, // 18 '2'
+            2, 2, 1, 1, 3, 2, // 19 '3'
+            2, 2, 1, 2, 3, 1, // 20 '4'
+            1, 3, 2, 2, 1, 2, // 8 '('
+            1, 2, 3, 2, 2, 1, // 17 '1'
+            1, 2, 3, 1, 2, 2, // 16 '0'
+            2, 2, 1, 2, 1, 3, // 9 ')'
+            1, 1, 1, 3, 2, 3, // 33 'A'
+            1, 3, 1, 1, 2, 3, // 34 'B'
+            1, 3, 1, 3, 2, 1, // 35 'C'
+            1, 2, 3, 2, 2, 1, // 17 '1'
+            2, 2, 3, 2, 1, 1, // 18 '2'
+            2, 2, 1, 1, 3, 2, // 19 '3'
+            1, 3, 1, 3, 2, 1, // 35 (check)
+            2, 3, 3, 1, 1, 1, 2, // stop
+        ],
+    );
+}
+
 /// ^BC m=U (UCC case mode): the guide pads fewer than 19 digits with
 /// trailing zeros. "1234" -> "1234000000000000000": Subset C pairs then the
 /// odd tail digit in B - [105, 12 34 00x7, 100, 16, check, stop], check =
