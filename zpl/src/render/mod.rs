@@ -79,10 +79,14 @@ impl Bitmap {
 
     /// Paint one dot with a field color: `B` sets black, `W` erases
     /// (paints white = 0) - the guide's line-color semantics (the `W`
-    /// color is an eraser, used for white boxes over black).
+    /// color is an eraser, used for white boxes over black). `X` inverts
+    /// the dot (XOR) - `^FR` reverse print of a drawing field, measured
+    /// on the reference (case 21): the reversed filled box turns black
+    /// ink white and blank paper black.
     fn paint(&mut self, x: u32, y: u32, color: u8) {
         match color {
             b'W' | b'w' => self.set(x, y, false),
+            b'X' | b'x' => self.set(x, y, !self.get(x, y)),
             _ => self.set(x, y, true),
         }
     }
@@ -200,14 +204,20 @@ pub fn render(label: &Label, opts: &RenderOptions) -> Result<RenderOutcome, Rend
             }
             Field::Box(b) => {
                 let (fx, fy) = place(opts.mode, w, h, b.x, b.y, b.width, b.height);
-                draw_rect(&mut bmp, fx, fy, b.width, b.height, b.thickness, b.color);
+                // `^FR` reverse print: the field's ink is XORed into the
+                // canvas instead of painted black (the reference logo's
+                // white frame - measured; see Bitmap::paint).
+                let color = if b.reverse { b'X' } else { b.color };
+                draw_rect(&mut bmp, fx, fy, b.width, b.height, b.thickness, color);
             }
             Field::Circle(c) => {
                 let (fx, fy) = place(opts.mode, w, h, c.x, c.y, c.diameter, c.diameter);
-                draw_circle(&mut bmp, fx, fy, c.diameter, c.thickness, c.color);
+                let color = if c.reverse { b'X' } else { c.color };
+                draw_circle(&mut bmp, fx, fy, c.diameter, c.thickness, color);
             }
             Field::Diagonal(d) => {
                 let (fx, fy) = place(opts.mode, w, h, d.x, d.y, d.width, d.height);
+                let color = if d.reverse { b'X' } else { d.color };
                 draw_diagonal(
                     &mut bmp,
                     fx,
@@ -216,12 +226,13 @@ pub fn render(label: &Label, opts: &RenderOptions) -> Result<RenderOutcome, Rend
                     d.height,
                     d.direction,
                     d.thickness,
-                    d.color,
+                    color,
                 );
             }
             Field::Ellipse(e) => {
                 let (fx, fy) = place(opts.mode, w, h, e.x, e.y, e.width, e.height);
-                draw_ellipse(&mut bmp, fx, fy, e.width, e.height, e.thickness, e.color);
+                let color = if e.reverse { b'X' } else { e.color };
+                draw_ellipse(&mut bmp, fx, fy, e.width, e.height, e.thickness, color);
             }
             Field::Graphic(g) => match &g.kind {
                 GraphicKind::Inline => {

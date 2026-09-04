@@ -53,9 +53,10 @@ pub fn encode(
     ratio: u32,
     height: u32,
     _line: u8,
+    flags: u16,
 ) -> Result<Pattern, String> {
     match symbology {
-        b'C' => bc128::encode(data, module),
+        b'C' => bc128::encode(data, module, (flags & 0xff) as u8, flags & 0x100 != 0),
         // Task 15: the remaining 1D symbologies (mnemonics per the guide).
         b'1' => bc1d::code11(data, module, ratio),
         b'2' => bc1d::i2of5(data, module, ratio),
@@ -114,7 +115,7 @@ pub fn barcode_field(f: &BarcodeField) -> Pattern {
         // data; the encoders stay option-free.
         bc1d::prepare(f, &data)
     };
-    match encode(f.symbology, &data, module, ratio, height, f.line) {
+    match encode(f.symbology, &data, module, ratio, height, f.line, (f.model as u16) | if f.ucc { 0x100 } else { 0 }) {
         Ok(pattern) => pattern,
         Err(_) => Pattern::Bars(Vec::new()),
     }

@@ -116,8 +116,17 @@ pub(crate) fn draw_rect(
         return;
     }
     let t = (thickness as i64).min(w64.min(h64));
+    // Top band fixed at the outer edge; the bottom band starts past the top
+    // band so no cell is painted twice. Double painting is invisible for
+    // solid colors but cancels ^FR's XOR ink (a merged band would invert
+    // twice back to the original) - the reference fills a reverse-video
+    // box with a single invert (measured, case 21 logo).
     draw_thick_line(bm, x, y, w64, t, color); // top
-    draw_thick_line(bm, x, y + h64 - t, w64, t, color); // bottom
+    let bot_y0 = (y + h64 - t).max(y + t);
+    let bot_h = y + h64 - bot_y0;
+    if bot_h > 0 {
+        draw_thick_line(bm, x, bot_y0, w64, bot_h, color); // bottom
+    }
     if h64 > 2 * t {
         let mid = h64 - 2 * t;
         draw_thick_vline(bm, x, y + t, mid, t, color); // left

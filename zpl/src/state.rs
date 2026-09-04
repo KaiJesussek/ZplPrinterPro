@@ -464,6 +464,7 @@ impl FieldDraft {
                     height,
                     thickness,
                     color,
+                    reverse: self.reverse,
                 }),
                 Geometry::Circle {
                     diameter,
@@ -475,6 +476,7 @@ impl FieldDraft {
                     diameter,
                     thickness,
                     color,
+                    reverse: self.reverse,
                 }),
                 Geometry::Diagonal {
                     width,
@@ -490,6 +492,7 @@ impl FieldDraft {
                     thickness,
                     color,
                     direction,
+                    reverse: self.reverse,
                 }),
                 Geometry::Ellipse {
                     width,
@@ -503,6 +506,7 @@ impl FieldDraft {
                     height,
                     thickness,
                     color,
+                    reverse: self.reverse,
                 }),
             };
         }

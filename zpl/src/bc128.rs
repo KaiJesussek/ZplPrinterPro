@@ -371,13 +371,17 @@ fn emit_char(vals: &mut Vec<u8>, subset: &mut Subset, c: u8) {
 /// with the subset switches the guide and ISO/IEC 15417 require.
 ///
 /// Start choice (guide): an explicit `>9`/`>:`/`>;` at the very beginning
-/// selects the subset; otherwise Subset B - except that a leading run of
-/// four or more (or an all-digit) payload auto-starts Subset C. The
-/// auto-C decision applies at the START only: digit runs that appear
-/// after letters stay in the current subset, matching the reference's
-/// codeword sequence (corpus 09 - see the bc128_midstream_digit_run
-/// test).
-fn plan(items: &[Item]) -> Vec<u8> {
+/// selects the subset; otherwise Subset B - except that in **automatic
+/// mode** (`^BC ...,A` - guide p.95: "A string of four or more numeric
+/// digits causes an automatic shift to Subset C") or UCC/EAN mode D
+/// ("Subset C using FNC1 values are automatically selected") a leading
+/// run of four or more digits auto-starts Subset C. The reference
+/// renders the default (`N` mode) all-digit payload "12345678" as Start B
+/// with the literal digit characters (measured, case 21) - the auto-C
+/// decision applies at the START only: digit runs that appear after
+/// letters stay in the current subset, matching the reference's codeword
+/// sequences (corpus 09 - see the bc128_midstream_digit_run test).
+fn plan(items: &[Item], mode: u8, ucc: bool) -> Vec<u8> {
     let mut vals = Vec::with_capacity(items.len() + 2);
 
     // Explicit start code in front.
@@ -385,13 +389,20 @@ fn plan(items: &[Item]) -> Vec<u8> {
         Some(Item::Val(v)) if (START_A..=START_C).contains(v) => Some(*v),
         _ => None,
     };
-    // Otherwise: the first literal decides - a 4+ digit run starts C.
+    // Otherwise: the first literal decides - a 4+ digit run starts C, but
+    // only under the guide's automatic (`A`) or UCC (`D`) modes. The
+    // default no-selected-mode (`N`) payload encodes literally in the
+    // start subset (Subset B), which is what the reference does.
+    // UCC/EAN content (`e=Y`, mode U or D) also packs digit runs into
+    // subset C - the guide: "Subset C using FNC1 values are automatically
+    // selected" for UCC/EAN modes.
     let auto_c = match lead_start {
         Some(_) => false,
-        None => {
+        None if mode == b'A' || mode == b'D' || mode == b'U' || ucc => {
             let first_literal = items.iter().position(|i| matches!(i, Item::Char(_)));
             matches!(first_literal, Some(pos) if digit_run(items, pos) >= 4)
         }
+        None => false,
     };
     let start = lead_start.unwrap_or(if auto_c { START_C } else { START_B });
     vals.push(start);
@@ -523,8 +534,9 @@ fn bars(vals: &[u8], module: u32) -> Pattern {
 
 /// Encode Code 128 from already-prepared `^FD` data (^FH-unhexed, UCC prep
 /// applied by `bc::barcode_field`). `module` is the ^BY module width in
-/// dots; the returned bar widths are in dots.
-pub(crate) fn encode(data: &[u8], module: u32) -> Result<Pattern, String> {
+/// dots; `mode` is the ^BC `m` parameter (N/U/A/D) that gates the
+/// automatic subset-C start. The returned bar widths are in dots.
+pub(crate) fn encode(data: &[u8], module: u32, mode: u8, ucc: bool) -> Result<Pattern, String> {
     if data.is_empty() {
         return Err("Code 128: empty barcode data".into());
     }
@@ -532,7 +544,7 @@ pub(crate) fn encode(data: &[u8], module: u32) -> Result<Pattern, String> {
     // caller that bypassed the defaults - fall back to the guide default.
     let module = if module == 0 { 2 } else { module };
     let items = parse_items(data);
-    let mut vals = plan(&items);
+    let mut vals = plan(&items, mode, ucc);
     let check = checksum(&vals);
     vals.push(check);
     vals.push(STOP);

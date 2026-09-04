@@ -50,7 +50,7 @@ use ab_glyph::{point, Font, FontVec, GlyphId};
 use crate::bc::Pattern;
 use crate::fonts::{left_pad, matrix_pad, CapModel, FontData};
 use crate::ir::{BarcodeField, Rotation};
-use crate::render::text::{advance_at, draw_baseline, font_scale, scan_bitmap_ink, MAX_GLYPH_CELL};
+use crate::render::text::{advance_at, draw_baseline, font_scale, scan_bitmap_ink};
 use crate::render::{font_spec, place, resolve_font, Bitmap, RenderOptions};
 
 /// Content-coordinate ceiling: any dot beyond this can never intersect the
@@ -79,51 +79,32 @@ fn cmax(v: u128) -> u32 {
     v.min(u32::MAX as u128) as u32
 }
 
-/// The interpret-line cell height in dots: the `^A` height rule applied to
-/// the field font (`0` = standard matrix; capped like text rasterization).
-/// 0 when the font is unavailable - the line then prints nothing.
-fn line_cell(b: &BarcodeField, fd: Option<&FontData>, dpi: u32) -> u32 {
-    let Some(fd) = fd else { return 0 };
-    let eff = if b.font_height > 0 {
-        b.font_height as f32 / fd.metrics.cell_height.max(1) as f32
-    } else {
-        dpi as f32 / 203.0
-    };
-    ((fd.metrics.cell_height as f32 * eff).round()).clamp(1.0, MAX_GLYPH_CELL as f32) as u32
+/// The interpret-line cell height in dots. The reference renders the line
+/// in font 0 at a size proportional to the BAR height, ignoring the
+/// field's `^A` font state (measured, case 21: ^CFA,15 before the sample's
+/// ^BC still prints a font-0 line - serif digits, ~40-dot cell for a
+/// 270-dot bar - and corpus 08: a 100-dot bar gets a ~15-dot cell): the
+/// line cell is `15%` of the bar height, clamped to a sane band. The
+/// reference digit advance at that cell runs ~30 dots; the line is
+/// centered on the symbol (see [`paint_line`]).
+fn line_cell(b: &BarcodeField) -> u32 {
+    let h = if b.height == 0 { 10 } else { b.height };
+    (h * 15 / 100).clamp(15, 60)
 }
 
-/// Total width of the interpret line at the field font's size rules
-/// (fixed `^A` width when set, else proportional advances), clamped.
-fn line_width(b: &BarcodeField, fd: &FontData, dpi: u32) -> u32 {
-    let eff = if b.font_height > 0 {
-        b.font_height as f32 / fd.metrics.cell_height.max(1) as f32
-    } else {
-        dpi as f32 / 203.0
-    };
-    let fixed = if matches!(fd.metrics.cap, CapModel::Ascent) {
-        b.font_width > 0
-    } else {
-        false
-    };
+/// Total width of the interpret line at the font-0 line cell (proportional
+/// advances; the field's fixed `^A` width does not apply - the line is a
+/// font-0 field in the reference), clamped.
+fn line_width(b: &BarcodeField, fd: &FontData, cell: u32) -> u32 {
     let mut total: u128 = 0;
     for ch in b.data.chars() {
-        let adv = if fixed {
-            b.font_width as u128
-        } else {
-            u128::from(advance_at(
-                &fd.metrics,
-                ch,
-                ((fd.metrics.cell_height as f32 * eff).round()) as u32,
-            ))
-        };
-        total += adv;
+        total += u128::from(advance_at(&fd.metrics, ch, cell));
     }
     cmax(total)
 }
 
-/// Measure the R0 content box of a barcode field. `fd` is the resolved
-/// interpret-line font (needed for its cell/width), or `None`.
-fn extent(b: &BarcodeField, pat: &Pattern, fd: Option<&FontData>, dpi: u32) -> Extent {
+/// Measure the R0 content box of a barcode field.
+fn extent(b: &BarcodeField, pat: &Pattern, lc: u32, tw: u32) -> Extent {
     // ^BY/^BC defaults, mirror of bc::barcode_field (hand-built IR can
     // carry 0s that the parser never leaves behind).
     let module = if b.module == 0 { 2 } else { b.module };
@@ -135,26 +116,13 @@ fn extent(b: &BarcodeField, pat: &Pattern, fd: Option<&FontData>, dpi: u32) -> E
             // quiet zone; the label margin is the quiet zone).
             let quiet = 0u128;
             let pat_w: u128 = bars.iter().map(|x| x.width as u128).sum();
-            let below = b.line == b'Y';
-            let above = b.interpret;
-            let lc = if below || above {
-                line_cell(b, fd, dpi) as u128
-            } else {
-                0
-            };
             // Each printed interpretation line adds its own cell: `f=Y` puts
             // one below the bars (`v` in [h, h+lc)) and `g=Y` one above them
             // (negative `v`), so the content box spans [-lc, h+lc) - the box
             // height counts the two cells separately.
-            let lc_span = (u128::from(below) + u128::from(above)) * lc;
-            let fh = height as u128 + lc_span;
-            let tw = if below || above {
-                fd.map(|fd| line_width(b, fd, dpi) as u128).unwrap_or(0)
-            } else {
-                0
-            };
+            let fh = height as u128 + u128::from(lc);
             Extent {
-                fw: cmax((2 * quiet + pat_w).max(tw)),
+                fw: cmax((2 * quiet + pat_w).max(u128::from(tw))),
                 fh: cmax(fh),
             }
         }
@@ -180,16 +148,10 @@ fn extent(b: &BarcodeField, pat: &Pattern, fd: Option<&FontData>, dpi: u32) -> E
 /// The field's (y, height) in label space for the auto-height scan: the
 /// bar block (plus the interpret line, when one prints and its font
 /// resolves - a missing font hides only the line, not the bars).
-pub(crate) fn footprint(b: &BarcodeField, opts: &RenderOptions) -> Option<(u32, u32)> {
+pub(crate) fn footprint(b: &BarcodeField, _opts: &RenderOptions) -> Option<(u32, u32)> {
     let height = if b.height == 0 { 10 } else { b.height };
     let line = b.line == b'Y' || b.interpret;
-    let lc = if line {
-        resolve_font(&font_spec(b.font, &b.font_name), opts)
-            .map(|fd| line_cell(b, Some(&fd), opts.dpi))
-            .unwrap_or(0)
-    } else {
-        0
-    };
+    let lc = if line { line_cell(b) } else { 0 };
     // Each printed line adds its own cell (f=Y below, g=Y above): the box
     // covers [-lc, h+lc) relative to the origin, and label-level transforms
     // (^POI/^PMY far corner, auto height) must see the full span.
@@ -299,9 +261,11 @@ fn paint_line(
     fd: &FontData,
     g: &Extent,
     y_top: i64,
+    cell: u32,
+    bar_w: i64,
     ox: i64,
     oy: i64,
-    opts: &RenderOptions,
+    _opts: &RenderOptions,
     warnings: &mut Vec<String>,
 ) {
     let Ok(mut face) = FontVec::try_from_vec(fd.ttf.clone()) else {
@@ -316,13 +280,9 @@ fn paint_line(
         warnings.push("font has unusable vertical metrics; interpretation line skipped".into());
         return;
     }
-    let eff = if b.font_height > 0 {
-        b.font_height as f32 / fd.metrics.cell_height.max(1) as f32
-    } else {
-        opts.dpi as f32 / 203.0
-    };
-    let cell =
-        ((fd.metrics.cell_height as f32 * eff).round()).clamp(1.0, MAX_GLYPH_CELL as f32) as u32;
+    // The line cell is the built-in [`line_cell`] height (15% of the bar
+    // height); the field font's ^A size rules do not apply.
+    let eff = 1.0;
     let baseline = draw_baseline(&fd.metrics, eff, cell);
     // Bitmap-snap fonts can ink past the cell (font A renders 15-row
     // digits in a 9-row line); extend the draw band to the cap, like
@@ -357,23 +317,21 @@ fn paint_line(
         baseline
     };
     let pad = left_pad(&fd.metrics.cap, cell) as f32;
-    let fixed = if matches!(fd.metrics.cap, CapModel::Ascent) && b.font_width > 0 {
-        Some(b.font_width as i64)
-    } else {
-        None
-    };
     let fw = g.fw as i64;
     let fh = g.fh as i64;
-    let mut char_x: i64 = 0;
+    // The reference centers the interpretation line on the symbol (measured
+    // case 08/21: "ZEBRA" and "12345678" sit centered under the bars). The
+    // line's proportional advance box is centered in the bar block; a fixed
+    // `^A` width does not apply to the built-in line.
+    let line_w: i64 = b
+        .data
+        .chars()
+        .map(|c| u128::from(advance_at(&fd.metrics, c, cell)) as i64)
+        .sum();
+    let center = ((bar_w - line_w) / 2).max(0);
+    let mut char_x: i64 = center;
     for ch in b.data.chars() {
-        let adv = match fixed {
-            Some(f) => f,
-            None => advance_at(
-                &fd.metrics,
-                ch,
-                ((fd.metrics.cell_height as f32 * eff).round()) as u32,
-            ) as i64,
-        };
+        let adv = advance_at(&fd.metrics, ch, cell) as i64;
         if adv > 0 {
             // Beyond the content ceiling no glyph can be visible; stop
             // accumulating instead of risking i64 overflow on hostile data.
@@ -431,21 +389,25 @@ pub(crate) fn paint(
     warnings: &mut Vec<String>,
 ) {
     let line = b.line == b'Y' || b.interpret;
-    let fd = if line {
-        let spec = font_spec(b.font, &b.font_name);
-        match resolve_font(&spec, opts) {
-            Some(fd) => Some(fd),
-            None => {
-                warnings.push(format!(
-                    "interpretation line font unavailable ({spec:?}); line skipped"
-                ));
-                None
-            }
-        }
+    // The interpretation line prints in the built-in font 0 at a cell
+    // proportional to the bar height (the reference's convention - see
+    // [`line_cell`]); the field's ^A font state is not consulted.
+    let fd: Option<FontData> = if line {
+        resolve_font(&font_spec(*b"0 ", &None), opts)
     } else {
         None
     };
-    let g = extent(b, pat, fd.as_ref(), opts.dpi);
+    let (lc_span, tw) = if line {
+        let lc = line_cell(b);
+        // Each printed interpretation line adds its own cell: `f=Y` below
+        // the bars, `g=Y` above them - the content box spans [-lc, h+lc).
+        let span = (u32::from(b.line == b'Y') + u32::from(b.interpret)) * lc;
+        let tw = fd.as_ref().map(|f| line_width(b, f, lc)).unwrap_or(0);
+        (span, tw)
+    } else {
+        (0, 0)
+    };
+    let g = extent(b, pat, lc_span, tw);
     let (ox, oy) = place(
         opts.mode,
         bmp.width as i64,
@@ -531,13 +493,17 @@ pub(crate) fn paint(
         }
     }
     if let Some(fd) = fd {
+        let cell = line_cell(b);
+        let bar_w: i64 = match pat {
+            Pattern::Bars(bars) => bars.iter().map(|x| x.width as i64).sum(),
+            Pattern::Modules { .. } => g.fw as i64,
+        };
         if b.line == b'Y' {
             let h = if b.height == 0 { 10 } else { b.height };
-            paint_line(bmp, b, &fd, &g, h as i64, ox, oy, opts, warnings);
+            paint_line(bmp, b, &fd, &g, h as i64, cell, bar_w, ox, oy, opts, warnings);
         }
         if b.interpret {
-            let lc = line_cell(b, Some(&fd), opts.dpi) as i64;
-            paint_line(bmp, b, &fd, &g, -lc, ox, oy, opts, warnings);
+            paint_line(bmp, b, &fd, &g, -(cell as i64), cell, bar_w, ox, oy, opts, warnings);
         }
     }
 }

@@ -190,6 +190,10 @@ pub struct BoxField {
     pub thickness: u32,
     /// `b'B'` black / `b'W'` white (the guide's `c` parameter letters).
     pub color: u8,
+    /// `^FR` reverse print: the field's ink is XORed into the canvas
+    /// (white over existing ink, black over blank paper) - the reference
+    /// logo's white frame over the black box (measured, case 21).
+    pub reverse: bool,
 }
 
 /// A circle (`^GC`); thickness extends inward from the outline.
@@ -200,6 +204,7 @@ pub struct CircleField {
     pub diameter: u32,
     pub thickness: u32,
     pub color: u8,
+    pub reverse: bool,
 }
 
 /// A diagonal line (`^GD`) joining opposite corners of its bounding box.
@@ -213,6 +218,7 @@ pub struct DiagonalField {
     pub direction: u8,
     pub thickness: u32,
     pub color: u8,
+    pub reverse: bool,
 }
 
 /// An ellipse (`^GE`).
@@ -224,6 +230,7 @@ pub struct EllipseField {
     pub height: u32,
     pub thickness: u32,
     pub color: u8,
+    pub reverse: bool,
 }
 
 /// An inline or stored graphics image (`^GF` / `^XG`).
@@ -330,6 +337,7 @@ mod tests {
                     height: 190,
                     thickness: 3,
                     color: b'B',
+                    reverse: false,
                 }),
                 Field::Circle(CircleField {
                     x: 30,
@@ -337,6 +345,7 @@ mod tests {
                     diameter: 40,
                     thickness: 2,
                     color: b'B',
+                    reverse: false,
                 }),
                 Field::Diagonal(DiagonalField {
                     x: 60,
@@ -346,6 +355,7 @@ mod tests {
                     direction: b'L',
                     thickness: 4,
                     color: b'W',
+                    reverse: false,
                 }),
                 Field::Ellipse(EllipseField {
                     x: 90,
@@ -354,6 +364,7 @@ mod tests {
                     height: 80,
                     thickness: 3,
                     color: b'B',
+                    reverse: false,
                 }),
                 Field::Graphic(GraphicField {
                     x: 100,

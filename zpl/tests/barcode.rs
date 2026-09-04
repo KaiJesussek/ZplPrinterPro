@@ -51,19 +51,19 @@ fn assert_single_barcode(label: &zpl::ir::Label) -> &BarcodeField {
 
 // --- Code 128: automatic subset C and check digit -------------------------
 
-/// `^FO0,0^BY2,3,60^BCN,60,N,N^FD12345678^FS`: eight digits -> automatic
-/// Subset C (guide: a string of four or more digits causes an automatic
-/// shift to Subset C), start C 105 and four digit pairs. Reference
-/// (ISO/IEC 15417):
+/// `^FO0,0^BY2,3,60^BCN,60,N,N^FD12345678^FS`: eight digits in the default
+/// no-selected-mode (`N`) - the reference renders the payload literally
+/// in Subset B (measured: the labelary viewer sample "12345678" decodes
+/// as start B 104 + single-digit characters; the guide's "a string of
+/// four or more numeric digits causes an automatic shift to Subset C"
+/// belongs to automatic mode `m=A` only). Reference (ISO/IEC 15417):
 ///
-///   value 105 (start C) 211232
-///   value 12             112232
-///   value 34             131123
-///   value 56             331121
-///   value 78             241112
-///   check = (105 + 12*1 + 34*2 + 56*3 + 78*4) mod 103 = 665 mod 103 = 47
-///   value 47             133121
-///   stop                 2331112
+///   value 104 (start B) 211214
+///   values 17..24       123221 223211 221132 221231 213212 223112 312131 311222
+///   check = (104 + 17*1 + 18*2 + 19*3 + 20*4 + 21*5 + 22*6 + 23*7 + 24*8)
+///           mod 103 = 884 mod 103 = 60
+///   value 60            121133
+///   stop                2331112
 #[test]
 fn bc128_auto_switches_and_checks() {
     let (label, diags) = common::parse_one(b"^XA^FO0,0^BY2,3,60^BCN,60,N,N^FD12345678^FS^XZ");
@@ -110,7 +110,30 @@ fn bc128_auto_switches_and_checks() {
         &barcode_field(f),
         2,
         &[
-            2, 1, 1, 2, 3, 2, // 105
+            2, 1, 1, 2, 1, 4, // 104 start B
+            1, 2, 3, 2, 2, 1, // 17 '1'
+            2, 2, 3, 2, 1, 1, // 18 '2'
+            2, 2, 1, 1, 3, 2, // 19 '3'
+            2, 2, 1, 2, 3, 1, // 20 '4'
+            2, 1, 3, 2, 1, 2, // 21 '5'
+            2, 2, 3, 1, 1, 2, // 22 '6'
+            3, 1, 2, 1, 3, 1, // 23 '7'
+            3, 1, 1, 2, 2, 2, // 24 '8'
+            3, 1, 4, 1, 1, 1, // 60 check
+            2, 3, 3, 1, 1, 1, 2, // stop
+        ],
+    );
+
+    // Automatic mode (`m=A`) keeps the guide's subset-C packing: the same
+    // eight digits encode as start C 105 + four digit pairs.
+    let (label, _) = common::parse_one(b"^XA^FO0,0^BY2,3,60^BCN,60,N,N,N,A^FD12345678^FS^XZ");
+    let f = assert_single_barcode(&label);
+    assert_eq!(f.model, b'A');
+    assert_bars(
+        &barcode_field(f),
+        2,
+        &[
+            2, 1, 1, 2, 3, 2, // 105 start C
             1, 1, 2, 2, 3, 2, // 12
             1, 3, 1, 1, 2, 3, // 34
             3, 3, 1, 1, 2, 1, // 56
@@ -440,10 +463,10 @@ fn bc_ucc_case_mode_pads_to_19_digits() {
 /// Task 15's 1D symbologies (here ^B3 Code 39) encode.
 #[test]
 fn encode_rejects_unknown_symbology_and_empty() {
-    assert!(zpl::bc::encode(b'4', b"ABC", 2, 30, 60, b'N').is_err()); // ^B4 is 2D Code 49 - native
-    assert!(zpl::bc::encode(b'C', b"", 2, 30, 60, b'N').is_err());
-    assert!(zpl::bc::encode(b'C', b"ABC", 2, 30, 60, b'N').is_ok());
-    assert!(zpl::bc::encode(b'3', b"ABC123", 2, 30, 60, b'N').is_ok());
+    assert!(zpl::bc::encode(b'4', b"ABC", 2, 30, 60, b'N', 0).is_err()); // ^B4 is 2D Code 49 - native
+    assert!(zpl::bc::encode(b'C', b"", 2, 30, 60, b'N', 0).is_err());
+    assert!(zpl::bc::encode(b'C', b"ABC", 2, 30, 60, b'N', 0).is_ok());
+    assert!(zpl::bc::encode(b'3', b"ABC123", 2, 30, 60, b'N', 0).is_ok());
 }
 
 /// Non-ASCII bytes substitute '?' (Code 128 is 7-bit); high bytes never
@@ -475,14 +498,17 @@ fn bc_high_byte_in_subset_c_never_panics() {
         &barcode_field(f),
         2,
         &[
-            2, 1, 1, 2, 3, 2, // 105
-            1, 1, 2, 2, 3, 2, // 12
-            1, 3, 1, 1, 2, 3, // 34
-            3, 3, 1, 1, 2, 1, // 56
-            2, 4, 1, 1, 1, 2, // 78
-            1, 1, 4, 1, 3, 1, // 100 CODE B
+            2, 1, 1, 2, 1, 4, // 104 start B (mode N: no auto subset-C)
+            1, 2, 3, 2, 2, 1, // 17 '1'
+            2, 2, 3, 2, 1, 1, // 18 '2'
+            2, 2, 1, 1, 3, 2, // 19 '3'
+            2, 2, 1, 2, 3, 1, // 20 '4'
+            2, 1, 3, 2, 1, 2, // 21 '5'
+            2, 2, 3, 1, 1, 2, // 22 '6'
+            3, 1, 2, 1, 3, 1, // 23 '7'
+            3, 1, 1, 2, 2, 2, // 24 '8'
             2, 1, 2, 3, 2, 1, // 31 '?'
-            1, 1, 2, 2, 3, 2, // 12 (check)
+            2, 1, 2, 1, 2, 3, // 30 (check)
             2, 3, 3, 1, 1, 1, 2, // stop
         ],
     );
