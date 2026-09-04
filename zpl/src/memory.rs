@@ -438,7 +438,14 @@ pub(crate) fn abort_download(_ctx: &mut ParseContext, _params: &[u8]) {
 /// graphic in any supported format. The data bytes land raw in
 /// `Memory.fonts` (Task 13 rasterizes). Header segments: `d:f` name,
 /// `b` = A (ASCII hex), B (binary), C (AR-compressed), P (PNG/ZB64);
-/// `x` = extension, `t` = byte count, `w` = bytes/row (ignored for fonts).
+/// `x` = extension of stored file (guide p.182): `G` routes the download
+/// to the stored-image path (raw `.GRF`); `E` = TrueType Extension
+/// (`.TTE`) and `T` = TrueType (`.TTF`/`.OTF`) store the bytes verbatim
+/// as downloaded-font objects, and any other extension lands the same way
+/// (the printer stores an object per its extension - the guide's
+/// remaining values are non-font objects this emulator keeps raw).
+/// `t` = total number of bytes in the file (p.182); `w` = bytes per row,
+/// "value ignored" for `.TTF`/`.TTE` fonts (p.183).
 pub(crate) fn download_object(ctx: &mut ParseContext, params: &[u8]) {
     let (segs, data) = head_segments(params, 5);
     let raw_name = segs.first().copied().unwrap_or(&[]);

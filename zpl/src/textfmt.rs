@@ -481,9 +481,33 @@ pub(crate) fn select_font(ctx: &mut ParseContext, params: &[u8]) {
 /// `^A@N,50,50,E:CYRI_UB.FNT`. The orientation/size parameters behave like
 /// `^A`'s; the font name (device stripped) is recorded on the field as
 /// `TextField.font_name` (Task 11 maps it to `FontSpec::Downloaded`).
-/// A name-less `^A@` carries over the last named font (guide: "The font
-/// named carries over on all subsequent ^A@ commands without a font name");
-/// before any name was given it keeps the `^CF` default.
+///
+/// Selection/alignment rules transcribed from the guide (p.62):
+/// * `o` - field orientation, default "N or the last ^FW value": a
+///   supplied rotation overrides the field's `^FW`; an absent one keeps
+///   it (the code below only assigns `d.rotation` when a letter came).
+/// * `h`/`w` - for a downloaded TrueType font (scalable) these are "the
+///   height/width in dots of the entire character block"; missing values
+///   use the last accepted `^CF` size, and a 0 keeps the standard font
+///   matrix (`^A` p.60). `w` fixes every advance to that width; `h` is
+///   the cell height the fonts module's cell model draws (`~DY` p.181
+///   supplies the bytes; the stored font's own header metrics supply the
+///   baseline and proportional advances - see `fonts.rs`).
+/// * `d:f.x` - the extension values are `.FNT = font`, `.TTF = TrueType`
+///   and `.TTE = TrueType Extension`; the device is a storage hint and is
+///   stripped, the name (with extension) is the memory key.
+/// * A name-less `^A@` carries over the last named font (guide: "The
+///   font named carries over on all subsequent ^A@ commands without a
+///   font name"); before any name was given it keeps the `^CF` default
+///   (font A at power-up - `^A` p.62: "if an invalid or no name is
+///   entered, the default set by ^CF is used").
+///
+/// Guide-silent corner (kept, documented): a `w`-only `^A@` (h 0) does
+/// not derive `h` from `w` via the standard matrix (p.60 "If you specify
+/// only the height or width value, the standard matrix ... determines the
+/// other value" - the matrix of a downloaded TTF is its own metrics and
+/// the guide gives no ratio); it keeps the `^CF` default height and fixes
+/// the advance to `w`.
 fn select_downloaded_font(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
     let orientation = parts

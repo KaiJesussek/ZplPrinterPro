@@ -10,6 +10,37 @@
 //! The committed trait surface (`fn get(&self, spec)`, Task 10) therefore
 //! stays unchanged.
 //!
+//! # Downloaded fonts: the guide's cell model (transcribed)
+//!
+//! No reference oracle exists for downloads (the reference service does
+//! not process them), so the downloaded-font model is guide-spec with the
+//! current behavior kept where the guide is silent. The guide's own model:
+//!
+//! * `^A@` p.62 - `h` is "the height in dots of the entire character
+//!   block", `w` "the width in dots of the entire character block"
+//!   (scalable fonts; "Magnification factors are unnecessary, because
+//!   characters are scaled"). A missing `h`/`w` uses the last accepted
+//!   `^CF` value; `^A` p.60: "If the value is not given or a 0 (zero) is
+//!   entered, the height or width is determined by the standard font
+//!   matrix." For a downloaded font the standard matrix is its own bytes:
+//!   the hhea vertical extent is the character block.
+//! * The baseline is measured "from the top of the matrix" (Fonts and
+//!   Barcodes p.1581-1582: "Baseline numbers define where the baseline is
+//!   located in relationship to the top of the matrix"), so the baseline
+//!   row down from the cell top is the downloaded font's own hhea ascent.
+//! * Advances come from the font's own hmtx widths (downloaded fonts are
+//!   proportional; `^A@` `w` fixes every advance to the character-block
+//!   width when given).
+//! * `~DY` p.181-183 supplies the bytes; its header fields `t` (byte
+//!   count) and `w` (bytes per row - "value ignored" for `.TTF`/`.TTE`,
+//!   p.183) are transmission framing, not metrics. The metric model lives
+//!   in the downloaded font's own header tables (`head`/`hhea`/`hmtx`).
+//!
+//! [`CapModel::Ascent`] keeps the renderer on this model: the field's
+//! requested `h` is the whole cell, the face's ascent lands on the
+//! baseline (drawn via the ascender fit), and the ink is top-anchored
+//! inside the cell (see `font_data_from_ttf` for the measured numbers).
+//!
 //! # Metric sourcing (the plan's authority rule)
 //!
 //! Cell heights come from the ZPL II Programming Guide's font tables
@@ -660,21 +691,44 @@ impl Default for DefaultFontProvider {
 }
 
 /// Build the [`FontData`] for a downloaded font (`^A@`) stored in
-/// `Memory.fonts`. The bytes are parsed once and measured at a fixed
-/// reference size of 100 ppem; like the built-in tables these are 203 dpi
-/// reference values the renderer rescales (`dpi/203`, and from
-/// `cell_height` to the field's requested height). `None` when the bytes
-/// are not a usable TrueType font - the caller warns and skips the field.
+/// `Memory.fonts`, on the guide's scalable-font cell model (module docs).
 ///
-/// Any fixed reference ppem would do (the renderer rescales); 100 keeps
-/// whole-dot rounding from collapsing the small advances.
+/// The cell is the downloaded font's own: measured once at a fixed
+/// reference size of 100 ppem - like the built-in tables these are 203 dpi
+/// reference values the renderer rescales (`dpi/203`, and from
+/// `cell_height` to the field's requested height). Any fixed reference
+/// ppem would do (the renderer rescales); 100 keeps whole-dot rounding
+/// from collapsing the small advances.
+///
+/// * `cell_height` - the entire character block (`^A@` p.62): the hhea
+///   vertical extent `ascent - descent` at the reference size, so an
+///   `^A@` `h` of `H` dots draws the face with its em box spanning `H`
+///   (the renderer's `eff = h / cell_height`).
+/// * `baseline` - the baseline row down from the top of the cell
+///   (p.1581-1582): the font's own hhea ascent at the reference size,
+///   clamped into the cell (a corrupt hhea where the ascent exceeds the
+///   vertical extent must not push the baseline past the cell).
+/// * `advances` - the font's own hmtx widths at the reference size; the
+///   renderer scales them by the drawn cell (a missing glyph prints as a
+///   space, per the module's documented rule).
+/// * `cap` - [`CapModel::Ascent`], so the renderer draws the glyphs
+///   top-anchored with the ascender fit instead of the bitmap cap rule.
+///
+/// `None` when the bytes are not a usable TrueType font (unparseable, or
+/// zero units-per-em) - the caller warns and skips the field. A parseable
+/// font with degenerate hhea vertical metrics (e.g. ascent 0) yields
+/// `Some` with a 1-dot cell; the renderer's paint guard warns and skips
+/// the field, so a corrupt download prints nothing, never garbage.
 pub fn font_data_from_ttf(ttf: &[u8]) -> Option<FontData> {
     let face = FontVec::try_from_vec(ttf.to_vec()).ok()?;
     let ppem = 100.0;
     let upem = face.units_per_em().unwrap_or(2048.0);
+    if upem <= 0.0 {
+        return None;
+    }
     let (ascent, descent) = (face.ascent_unscaled(), face.descent_unscaled());
     let cell_height = ((ascent - descent) * ppem / upem).round().max(1.0) as u32;
-    let baseline = (ascent * ppem / upem).round().max(1.0) as u32;
+    let baseline = ((ascent * ppem / upem).round().max(1.0) as u32).min(cell_height);
     Some(FontData {
         ttf: ttf.to_vec(),
         metrics: FontMetrics {
