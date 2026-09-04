@@ -26,7 +26,26 @@
 pub(crate) fn decode_graphic_data(data: &[u8], t: usize, w: usize) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(t);
     let mut i = 0;
-    let mut hi: Option<u8> = None; // pending high nibble of an open byte
+    let mut hi: Option<u8> = None; // pending low nibble of an open byte
+    // Nibble slots consumed in the current row; resets when a row reaches
+    // its full width (2w nibbles). The reference-verified fill semantics
+    // (20k-case differential against the p.1761 compression scheme)
+    // hinge on this counter: ','/'!' always pad the CURRENT row to 2w,
+    // closing a pending low nibble with the fill digit first.
+    let mut row = 0usize;
+    let nibble = |out: &mut Vec<u8>, hi: &mut Option<u8>, row: &mut usize, v: u8| {
+        match *hi {
+            Some(h) => {
+                out.push((h << 4) | v);
+                *hi = None;
+            }
+            None => *hi = Some(v),
+        }
+        *row += 1;
+        if *row == 2 * w {
+            *row = 0;
+        }
+    };
     while i < data.len() && out.len() < t {
         let c = data[i];
         if c.is_ascii_whitespace() {
@@ -36,58 +55,62 @@ pub(crate) fn decode_graphic_data(data: &[u8], t: usize, w: usize) -> Option<Vec
         match c {
             b';' => break,
             b',' | b'!' | b':' => {
+                // A fill char with a pending low nibble closes it with the
+                // fill's digit first (the odd-run shorthand: "...G3!" =
+                // three ones then the fill 1, so the pending '3' pairs into
+                // 0x31; guide p.1762's "odd zeros ... single comma" is the
+                // ',' case of the same rule).
                 if hi.is_some() {
-                    // Guide p.1762 shorthand: a trailing run of an ODD
-                    // number of zeros is written "one zero and a single
-                    // comma" - the comma closes the dangling 0 nibble into
-                    // a 0x00 byte before filling the row. Any other
-                    // dangling nibble (or `!`/`:` there) is malformed.
-                    if c == b',' && hi == Some(0) {
-                        out.push(0x00);
-                        hi = None;
-                    } else {
+                    // A dangling nibble may only be closed by a ',' or '!'
+                    // fill (the odd-run shorthand); a ':' with a pending
+                    // nibble is malformed - the encoder emits ':' only in
+                    // lieu of a whole repeated line (row boundary).
+                    if c == b':' {
                         return None;
                     }
-                }
-                let fill = match c {
-                    b',' => 0x00,
-                    b'!' => 0xFF,
-                    _ => {
-                        // ':' repeats the previous full row (row start only).
-                        if out.len() % w != 0 || out.len() < w {
-                            return None;
-                        }
-                        let prev = out.len() - w;
-                        if out.len() + w > t {
-                            return None;
-                        }
-                        out.extend_from_within(prev..prev + w);
+                    out.push((hi.unwrap() << 4) | if c == b',' { 0 } else { 1 });
+                    hi = None;
+                    row += 1;
+                    if row == 2 * w {
+                        // The close itself completed the row: the encoder
+                        // writes a fill char in lieu of a run that ENDS the
+                        // line, so a completed row must not pad further.
+                        row = 0;
                         i += 1;
                         continue;
                     }
-                };
-                // Row fill: zeros/ones to the end of the current row, never
-                // past the declared size (a row already complete at `t` -
-                // the nibble-close case - fills nothing).
-                if out.len() != t {
-                    let n = w - (out.len() % w);
-                    if out.len() + n > t {
+                }
+                if c == b':' {
+                    // ':' repeats the previous full row (the encoder emits
+                    // it in lieu of a repeated line; row start only).
+                    if row != 0 || out.len() < w || out.len() + w > t {
                         return None;
                     }
-                    out.extend(std::iter::repeat_n(fill, n));
+                    let prev = out.len() - w;
+                    out.extend_from_within(prev..prev + w);
+                    i += 1;
+                    continue;
                 }
+                // Row fill: pad the current row to its full width. The
+                // encoder writes a fill char IN LIEU OF the row's final
+                // run, so the pad always completes the row - a bare fill
+                // pads a whole row, a run that already ended the row has
+                // 'row' reset to 0 by then and pads a full row too (the
+                // all-zeros/ones line case). ',' pads 0-nibbles (0x00
+                // bytes); '!' pads 1-nibbles, which pack two per byte as
+                // 0x11 - NOT 0xFF.
+                let n = (2 * w - row) / 2;
+                if out.len() + n > t {
+                    return None;
+                }
+                out.extend(std::iter::repeat_n(if c == b',' { 0x00 } else { 0x11 }, n));
+                row = 0;
                 i += 1;
             }
             // 0-9 A-F: a nibble.
             _ if c.is_ascii_hexdigit() => {
                 let v = hex_val(c).unwrap(); // open nibble: holds the byte
-                match hi {
-                    Some(h) => {
-                        out.push((h << 4) | v);
-                        hi = None;
-                    }
-                    None => hi = Some(v),
-                }
+                nibble(&mut out, &mut hi, &mut row, v);
                 i += 1;
             }
             // Repeat-count letters: a run of letters sums; the following
@@ -102,19 +125,8 @@ pub(crate) fn decode_graphic_data(data: &[u8], t: usize, w: usize) -> Option<Vec
                 let Some(v) = data.get(j).copied().and_then(hex_val) else {
                     return None; // repeat run with no value digit
                 };
-                // Set bits by expanding `sum` nibbles of value `v`.
-                let pending = usize::from(hi.is_some());
-                if out.len() + (pending + sum) / 2 > t {
-                    return None;
-                }
                 for _ in 0..sum {
-                    match hi {
-                        Some(h) => {
-                            out.push((h << 4) | v);
-                            hi = None;
-                        }
-                        None => hi = Some(v),
-                    }
+                    nibble(&mut out, &mut hi, &mut row, v);
                 }
                 i = j + 1;
             }
@@ -234,6 +246,41 @@ fn luma(rgb: &[u8]) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reference_compression_vectors_decode() {
+        // Deterministic vectors generated against the p.1761
+        // compression-scheme encoder (20k-case differential,
+        // BinaryKits-verified semantics): edge constructs plus
+        // seeded random grids incl. `:`-row-repeats.
+        let cases: &[(&[u8], &[u8], usize)] = &[
+            (b",", b"\x00\x00\x00\x00", 4),
+            (b"NF", b"\xff\xff\xff\xff", 4),
+            (b"G8,", b"\x80\x00", 2),
+            (b"GE,,", b"\xe0\x00\x00\x00", 2),
+            (b"!", b"\x11\x11\x11\x11", 4),
+            (b"G1G2!!", b"\x12\x11\x11\x11", 2),
+            (b"HAH0HA,", b"\xaa\x00\xaa\x00", 4),
+            (b"GFG0GF,,", b"\xf0\xf0\x00\x00\x00\x00", 3),
+            (b"GCGBG8GFG7GFG7GE", b"\xcb\x8f\x7f~", 4),
+            (b"G0G4G8GAGBGAGFG3H8G7G2G8GCG1GDH4G2GDGBG8G9GD", b"\x04\x8a\xba\xf3\x88r\x8c\x1dD-\xb8\x9d", 3),
+            (b"G6G4GD!H8G0GE", b"d\xd1\x88\x0e", 1),
+            (b"GFG3H8G2GDG3GEGCG5GEG1G0G6GBGEG1G9HD", b"\xf3\x88->\xc5\xe1\x06\xbe\x19\xdd", 5),
+            (b"G4G3GDGEGCGFG8H0GEG8GDG4G2G3G1GEGAG8GDGAGDGAG4GEGDG1GFGAGE", b"C\xde\xcf\x80\x0e\x8dB1\xea\x8d\xad\xa4\xed\x1f\xae", 3),
+            (b"HDGEG0GBH6G5G9G3G7HCGFG3GE", b"\xdd\xe0\xb6e\x93|\xcf>", 4),
+            (b"G4G3G9G4GCG6GEG8G0GEG6GCG4G6G4G7G5G8H4", b"C\x94\xc6\xe8\x0elFGXD", 2),
+            (b"G1G0H9GFGDGBG6G5GFGAG5GEG0G2GAGEGCG5G4G2G9G1GAGDG6G5GFG0G9G7G5G7G8G3GAGCGAGBG9G0H4G1G9G6G7G8G4GDGBG8G5G7G3HFGCH0G9G1GFGD", b"\x10\x99\xfd\xb6_\xa5\xe0*\xecT)\x1a\xd6_\x09ux:\xca\xb9\x04A\x96xM\xb8W?\xfc\x00\x91\xfd", 8),
+            (b"GBGDGBG2", b"\xbd\xb2", 1),
+        ];
+        for (comp, want, w) in cases {
+            assert_eq!(
+                decode_graphic_data(comp, want.len(), *w).as_deref(),
+                Some(*want),
+                "vector failed: {:?}",
+                String::from_utf8_lossy(comp)
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

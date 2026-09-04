@@ -769,8 +769,11 @@ mod tests {
         let oddzero_midrow =
             decode_graphic_data(b"FFFF0,", 4, 2).expect("odd-zero comma fills the row");
         assert_eq!(oddzero_midrow, vec![0xFF, 0xFF, 0x00, 0x00]);
-        // A dangling NON-zero nibble before the comma is malformed.
-        assert!(decode_graphic_data(b"F,", 2, 1).is_none());
+        // A dangling nibble before ',' closes with 0 (reference-verified:
+        // the encoder writes "GE," for the row "E0"); a ':' with a pending
+        // nibble stays malformed.
+        assert_eq!(decode_graphic_data(b"F,", 1, 1), Some(vec![0xF0]));
+        assert_eq!(decode_graphic_data(b"3!", 1, 1), Some(vec![0x31]));
         // Malformed: odd nibble count, bad repeat digit, mid-byte ':'.
         assert!(decode_graphic_data(b"M6", 3, 1).is_none());
         assert!(decode_graphic_data(b"M", 1, 1).is_none());
