@@ -133,37 +133,83 @@ cargo test --workspace
 > external renderer's images, outputs, corpora, or metrics ever enter
 > this repository, and `parity/` (gitignored) is scratch space.
 
-Verify rendering parity against an external reference renderer of your
+Rendering is verified against an external reference rasterizer of your
 choosing - any ZPL-to-image engine you trust: a commercial rasterizer,
-an open-source one, or a printer driver that can echo its raster.
+an open-source one, or a printer driver that can echo its raster. The
+reference's identity lives only in the gitignored `parity/fetch.sh`;
+the workflow below is engine-agnostic.
 
-1. **Build a corpus of *our* labels.** Reuse the formats from the test
-   fixtures and write a few of your own covering text, `^FB` blocks,
-   1D and 2D barcodes, graphics, and codepages. Save them as
-   `parity/corpus/*.zpl`. The corpus is *ours* - never the reference
+1. **Corpus** - `parity/corpus/*.zpl` holds *our* labels: text, `^FB`
+   blocks, 1D and 2D barcodes, graphics, codepages, font probes, and a
+   mixed viewer-style sample. The corpus is ours - never the reference
    engine's sample data.
-2. **Render with our engine.** Run them through the library example
-   above (or the server's archive) into `parity/ours/`.
-3. **Render with the reference engine** into `parity/reference/`, using
-   the same resolution (203 dpi) and media dimensions.
-4. **Diff at three levels.**
-   - **Graphics, byte-exact:** compare the raw rasters pixel by pixel.
-     Expect small systematic offsets (quiet-zone margins, padding
-     policies); classify them per label type rather than chasing noise.
-   - **Barcodes, geometry + decode:** module widths and heights,
-     quiet zones, and - decisively - decode. Both outputs must decode
-     to the same payload with an independent scanner; a barcode that
-     decodes identically is correct even where pixels differ by a dot.
-   - **Text, structural:** character cells, baselines, line breaks,
-     `^FB` block layout. Compare positions and structure, not
-     sub-pixel glyph shapes - the bundled face is close to, but not
-     identical with, a real printer's fonts.
-5. **Record metric corrections as local overrides.** Any measured
-   nudge (a module width off by a dot, a cell height that needs
-   adjusting) goes into an uncommitted notes file under `parity/`
-   alongside the scratch outputs. Corrections stay local until
-   validated against real hardware; they are never folded into the
-   tree as reference-derived "golden data".
+2. **Fetch once, cache by sha1** - `parity/fetch.sh` renders every
+   corpus case on the reference engine at 203 dpi into
+   `parity/ref/<sha1(zpl)>.png`. Each case is fetched exactly once;
+   all iteration happens against the cache (the service budget is
+   shared - re-fetching is a last resort).
+3. **Render locally** - `parity/local.sh` POSTs the same corpus to the
+   server's `POST /api/render?dpi=203` endpoint and caches the results
+   under the same sha1 keys in `parity/local/`.
+4. **Diff** - `parity/diff.py` compares every case that has both PNGs
+   and prints the absolute-error pixel count, the % of differing
+   pixels, and the difference bounding box, plus a red-on-white mask
+   in `parity/diff/`.
+5. **Iterate offline** - change the engine, re-run only `local.sh`
+   (cached sha1 keys mean only changed behavior re-renders), diff
+   again. No reference round-trip inside the loop.
+
+Measured corrections (an advance table, a module rule, a mode
+selection) are facts about the reference's semantics: they land in the
+engine as documented behavior with tests, never as reference-derived
+"golden data".
+
+### Current standing (203 dpi, cached reference rasters)
+
+| Case | AE | % | Residual |
+| --- | ---: | ---: | --- |
+| 01 text-basic | 1477 | 0.59% | ink-shape floor |
+| 02 text-rotations | 2369 | 0.95% | ink-shape floor |
+| 03 text-ft | 2097 | 0.84% | ink-shape floor |
+| 04 text-ft-rotated | 2768 | 1.11% | ink-shape floor |
+| 05 text-cp850 | 5306 | 2.13% | ink-shape floor |
+| 06 text-utf8 | 1494 | 0.60% | ink-shape floor |
+| 07 text-fb | 10780 | 4.32% | `^FB` block space placement |
+| 08 bc128 | 631 | 0.25% | interpret-line ink |
+| 09 bc-uccd | 2867 | 1.15% | interpret-line ink |
+| 10 bc39 | 0 | 0 | byte-exact |
+| 11 qr | 0 | 0 | byte-exact |
+| 12 dm | 0 | 0 | byte-exact |
+| 13 gb | 0 | 0 | byte-exact |
+| 14 gfa | 672 | 0.27% | graphic decode corner |
+| 15 serial | 404 | 0.16% | ink-shape floor |
+| 16 kitchen-sink | 8313 | 2.50% | mixed (`^FB` + ink floor) |
+| 17 font0-sizes | 4982 | 1.50% | ink-shape floor |
+| 18 fontA-sizes | 12577 | 3.78% | ink-shape floor |
+| 20-29 font probes | 427-11069 | 0.23-3.17% | ink-shape floor |
+| 21 viewer-sample | 65513 | 6.46% | ink-shape floor |
+| 30 msi-mod11 | 727 | 0.44% | interpret-line ink |
+| 31 planet | 562 | 0.34% | interpret-line ink |
+
+Residual classes:
+
+- **Ink-shape floor.** Cells, advances, baselines, symbol grids and
+  module geometry are calibrated to the reference; what remains on
+  text and font cases is glyph-rasterization drift between the bundled
+  DejaVu-family faces and the printer's fonts - largest on big cells,
+  absent where no text is involved (Code 39, QR, DataMatrix and boxes
+  are byte-exact).
+- **Interpret-line ink.** Barcodes that print their human-readable
+  line (font 0 at 15% of the bar height, centered under the symbol)
+  carry that same glyph-ink floor on the line; the bars and 2D modules
+  themselves are exact.
+- **Two no-public-spec areas.** `^FB` justified-line space placement:
+  the guide specifies line wrapping but not the reference's
+  position-dependent space widths, so those are pinned empirically
+  from the reference rasters. Downloaded fonts (`^A@` with `~DY`):
+  the reference engine does not process downloads at all - the guide's
+  model is implemented and unit-tested, with hardware validation
+  pending. Neither can be oracle-pinned like the rest.
 
 Nothing produced by the reference engine - images, dumps, metrics,
 notes - is committed. `parity/` is gitignored scratch, and the

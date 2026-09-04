@@ -25,7 +25,7 @@ fn field() -> BarcodeField {
         start: b'A',
         stop: b'A',
         qr_ec: b'Q',
-        qr_mask: 7,
+        qr_mask: 0, // ^BQ e absent -> mask 0 (the reference's fixed pick, measured corpus 11/16)
         dm_quality: 0,
         dm_format: 6,
         dm_aspect: 1,

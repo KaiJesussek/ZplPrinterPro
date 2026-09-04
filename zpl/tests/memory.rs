@@ -697,7 +697,7 @@ fn total_memory_cap_warns_and_drops() {
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
     // 8 MiB images via ~DG (the '!' row op fills each 4096-byte row with
-    // 0xFF, so the payload is a few KB); 8 of them fill the cap exactly.
+    // 0x11 bytes, so the payload is a few KB); 8 of them fill the cap exactly.
     let rows = 8 * 1024 * 1024 / 4096;
     let fill = "!".repeat(rows);
     for i in 0..8 {

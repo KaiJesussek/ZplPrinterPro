@@ -78,9 +78,11 @@ pub fn encode(
 /// empty pattern - the parser already warned where it can (^FS with no
 /// data), so this never panics and never fails.
 pub fn barcode_field(f: &BarcodeField) -> Pattern {
-    // 2D symbologies (Task 16) encode the ^CI-decoded Unicode text as
-    // UTF-8 bytes (the brief: byte mode QR, byte-compaction PDF417,
-    // DataMatrix/Aztec byte streams) - lossless for any decoded charset.
+    // 2D symbologies (Task 16) encode the ^CI-decoded Unicode text by
+    // ISO mode selection: QR numeric/alphanumeric/byte by payload bits
+    // (measured: the ^BQ reference encodes alphanumerically), PDF417
+    // byte compaction, DataMatrix C40 for basic-set runs / ASCII
+    // elsewhere, Aztec byte streams - lossless for any decoded charset.
     if matches!(f.symbology, b'Q' | b'X' | b'7' | b'0') {
         let data = f.data.as_bytes();
         if data.is_empty() {
@@ -141,10 +143,11 @@ fn latin1_bytes(data: &str) -> Vec<u8> {
 /// digit rule pick Subset C for numeric UCC/EAN data - and the encoder
 /// keeps the parentheses/spaces in the human-readable line (the
 /// interpret line prints the raw ^FD data). The page's remaining D-mode
-/// sentence, "Automatically sizes the human readable", names a firmware
-/// behavior with no rule to transcribe (no target size or formula is
-/// given); the interpret line follows the field's ^A font rules instead
-/// (documented v1 scope - auto-size is out of the guide's scope).
+/// sentence, "Automatically sizes the human readable", gives no size
+/// rule; the reference's own choice was measured: the line renders in
+/// built-in font 0 at 15% of the bar height (clamped 15..60 dots),
+/// centered under the symbol, ignoring the field's ^A font (corpus
+/// 08/21 - see render::barcode::line_cell).
 fn prepare_ucc(f: &BarcodeField, data: Vec<u8>) -> Vec<u8> {
     let mut data = data;
     if f.model == b'D' {

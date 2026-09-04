@@ -167,15 +167,19 @@ pub struct BarcodeField {
     /// `^A`/`^A@` font request for the interpretation line, captured when
     /// the symbology field was parsed - guide ^BC p.94: "The interpretation
     /// line can be printed in any font by placing the font command before
-    /// the barcode command" (the UCC/EAN section's Figure 12 shows the size
-    /// parameters, `^A0N,40,30`, applying too). Same shape as `TextField`'s.
+    /// the barcode command". The reference does NOT honor it: the line
+    /// renders in built-in font 0 at ~15% of the bar height, ignoring the
+    /// field's `^A` font and sizes (measured, corpus 08/21). Same shape as
+    /// `TextField`'s; kept for state completeness.
     pub font: [u8; 2],
     /// `^A` character height in dots; 0 = standard font matrix.
     pub font_height: u32,
     /// `^A` character width in dots; 0 = standard font matrix.
     pub font_width: u32,
-    /// `^A@`: the stored (downloaded) font the interpretation line prints
-    /// with, or `None` for a built-in font (draft `^CF` default).
+    /// `^A@`: stored (downloaded) font name, captured for state
+    /// completeness - the reference renders the interpretation line in
+    /// built-in font 0 regardless (measured, corpus 08/21), so the
+    /// renderer does not consult this for barcode fields.
     pub font_name: Option<String>,
     pub rotation: Rotation,
 }

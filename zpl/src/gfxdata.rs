@@ -13,7 +13,9 @@
 /// - a run of repeat-count letters (`G..Y` = 1..19, `g..z` = 20..400 in
 ///   steps of 20; the counts of a run sum) followed by the hex digit to
 ///   repeat, e.g. `M6` = seven `6`s, `hB` = forty `B`s, `vMB` = 327 `B`s;
-/// - `,` / `!` fill the rest of the current row with `0x00` / `0xFF`;
+/// - `,` / `!` fill the rest of the current row with 0-nibbles (`0x00`
+///   bytes) / 1-nibbles (`0x11` bytes - the fill is a single set bit,
+///   not an all-ones byte);
 /// - `:` repeats the previous row;
 /// - `;` terminates the data (legacy ZPL I form);
 /// - CR/LF inside multi-line downloads are ignored.

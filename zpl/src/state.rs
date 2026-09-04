@@ -556,10 +556,10 @@ impl FieldDraft {
                     pdf_cols: b.pdf_cols,
                     pdf_rows: b.pdf_rows,
                     pdf_truncate: b.pdf_truncate,
-                    // The interpretation line prints in the field's font
-                    // (guide ^BC: "The interpretation line can be printed
-                    // in any font by placing the font command before the
-                    // barcode command") - captured at ^FS like text.
+                    // The field's ^A font is captured at ^FS like text,
+                    // but the reference renders the interpretation line in
+                    // built-in font 0 at ~15% of the bar height, ignoring
+                    // it (measured, corpus 08/21) - see render::barcode.
                     font: self.font,
                     font_height: self.font_height,
                     font_width: self.font_width,
