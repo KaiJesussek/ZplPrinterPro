@@ -23,7 +23,7 @@ const FIXTURE_TTF: &[u8] = include_bytes!("fixtures/DejaVuSansCondensed.ttf");
 /// tables in `zpl/src/fonts.rs`; a change to either side is a review
 /// event.
 const GUIDE_CELLS: &[(u8, u32, CapModel)] = &[
-    (b'A', 9, CapModel::Matrix { base: 7, divisor: 9, pad: 0, lp: 0 }),
+    (b'A', 9, CapModel::Matrix { base: 7, divisor: 12, pad: 0, lp: 0 }),
     (b'B', 11, CapModel::Matrix { base: 11, divisor: 11, pad: 0, lp: 0 }),
     (b'C', 18, CapModel::Matrix { base: 14, divisor: 18, pad: 0, lp: 0 }),
     (b'D', 18, CapModel::Matrix { base: 14, divisor: 18, pad: 0, lp: 0 }),

@@ -402,7 +402,7 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32, f32)] = &[
     (
         b'A',
         9,
-        CapModel::Matrix { base: 7, divisor: 9, pad: 0, lp: 0 },
+        CapModel::Matrix { base: 7, divisor: 12, pad: 0, lp: 0 },
         1.468,
         1.927,
         1.0,
