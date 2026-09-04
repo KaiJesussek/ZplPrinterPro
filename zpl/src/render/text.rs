@@ -737,6 +737,79 @@ fn rotate_point(
     }
 }
 
+/// The dot coverage needed to print ink (fraction of the dot the outline
+/// covers). 0.5 = area-majority 1-bit rendering; the 2x supersample makes
+/// the measurement exact at the dot grid (a raw threshold at 1x samples
+/// the same area, phase wobbles included). Kept as a named constant so
+/// the R1 calibration is a one-place change.
+const BITMAP_INK_THRESHOLD: f32 = 0.5;
+
+/// Scan a glyph's ink as 1-bit dots on the pen-anchored dot grid (the
+/// reference prints bitmap ink: a dot is black when the outline covers
+/// at least [`BITMAP_INK_THRESHOLD`] of it - no anti-aliasing). The
+/// outline is rasterized at 2x resolution and each dot's sample block
+/// is accumulated back to one per-dot coverage; the supersample shares
+/// the 1x fractional origin (`b`), so the ink box (anchored at the
+/// pen/pad) cannot shift by even one dot, and the summed samples
+/// partition the dot, so `0.5` here is exactly the 1x coverage rule.
+///
+/// `put` receives pixel coordinates in the same convention as
+/// `px_bounds()` pixels: `floor(bounds.min) + dot` for each inked dot.
+/// Shared with the barcode interpret-line painting (Task 14).
+pub(crate) fn scan_bitmap_ink<F>(
+    face: &mut FontVec,
+    gid: GlyphId,
+    px_scale: ab_glyph::PxScale,
+    pos: ab_glyph::Point,
+    b: &ab_glyph::Rect,
+    mut put: F,
+) where
+    F: FnMut(i64, i64),
+{
+    let glyph = gid.with_scale_and_position(
+        ab_glyph::PxScale {
+            x: px_scale.x * 2.0,
+            y: px_scale.y * 2.0,
+        },
+        point(pos.x * 2.0, pos.y * 2.0),
+    );
+    let Some(out) = face.outline_glyph(glyph) else { return };
+    // Which half of each dot the 2x pixel grid starts in (0 or 1): the
+    // 2x grid is anchored at `floor(2*b.min)`, one dot at `floor(b.min) +
+    // i` spans 2x pixels `2i - f` and `2i - f + 1` with `f =
+    // floor(2*frac(b.min))`, so dot = `(px + f) / 2`.
+    let fx = ((b.min.x * 2.0).floor() - b.min.x.floor() * 2.0) as i64;
+    let fy = ((b.min.y * 2.0).floor() - b.min.y.floor() * 2.0) as i64;
+    let ox = b.min.x.floor() as i64;
+    let oy = b.min.y.floor() as i64;
+    let mut cur: Option<(i64, i64, f32)> = None;
+    out.draw(|px, py, cov| {
+        if cov <= 0.0 {
+            return;
+        }
+        let dx = (px as i64 + fx) / 2;
+        let dy = (py as i64 + fy) / 2;
+        match cur.take() {
+            Some((cdx, cdy, acc)) if cdx == dx && cdy == dy => {
+                cur = Some((dx, dy, acc + cov));
+            }
+            prev => {
+                if let Some((pxx, pyy, acc)) = prev {
+                    if acc >= BITMAP_INK_THRESHOLD {
+                        put(ox + pxx, oy + pyy);
+                    }
+                }
+                cur = Some((dx, dy, cov));
+            }
+        }
+    });
+    if let Some((pxx, pyy, acc)) = cur {
+        if acc >= BITMAP_INK_THRESHOLD {
+            put(ox + pxx, oy + pyy);
+        }
+    }
+}
+
 /// Rasterize one glyph and map it through the field rotation. The glyph
 /// is skipped entirely (no raster allocation) when its destination cell
 /// misses the canvas; every write goes through [`Bitmap::set`].
@@ -805,36 +878,26 @@ fn paint_glyph(
         x: scale * x_scale,
         y: scale,
     };
-    let outlined = if bitmap_ink {
+    let (pos, outlined) = if bitmap_ink {
         let bare = gid.with_scale_and_position(px_scale, point(0.0, 0.0));
         let bx0 = face
             .outline_glyph(bare)
             .map(|o| o.px_bounds().min.x.floor())
             .unwrap_or(0.0);
-        let glyph = gid.with_scale_and_position(
-            px_scale,
-            point(cell_left as f32 - bx0 + pad as f32, 0.0),
-        );
-        let Some(outlined) = face.outline_glyph(glyph) else {
+        let pos = point(cell_left as f32 - bx0 + pad as f32, 0.0);
+        let Some(outlined) = face.outline_glyph(gid.with_scale_and_position(px_scale, pos)) else {
             return;
         };
-        outlined
+        (pos, outlined)
     } else {
-        let glyph = gid.with_scale_and_position(px_scale, point(cell_left as f32, 0.0));
-        let Some(outlined) = face.outline_glyph(glyph) else {
+        let pos = point(cell_left as f32, 0.0);
+        let Some(outlined) = face.outline_glyph(gid.with_scale_and_position(px_scale, pos)) else {
             return;
         };
-        outlined
+        (pos, outlined)
     };
     let b = outlined.px_bounds();
-    outlined.draw(|px, py, cov| {
-        if cov < 0.5 {
-            return;
-        }
-        // ab_glyph pixels are baseline-relative with y up: the glyph's
-        // horizontal offset plus the baseline-relative row.
-        let gx_w = b.min.x.floor() as i64 + px as i64;
-        let gy_up = b.min.y.floor() as i64 + py as i64;
+    scan_bitmap_ink(face, gid, px_scale, pos, &b, |gx_w, gy_up| {
         let cell_rel_x = gx_w - cell_left;
         // Display rows increase downward from the baseline (`gy_up` is the
         // baseline-relative pixel row), so the row from the cell top is

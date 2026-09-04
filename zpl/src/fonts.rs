@@ -248,9 +248,10 @@ pub trait FontProvider {
 /// The bundled faces, embedded at compile time, one per built-in font
 /// letter. Each is open-licensed and its license text is committed beside
 /// it (the `LICENSE-*` files in the fixtures directory):
-/// * `0` - DejaVuSansCondensed (Bitstream Vera license, Gaussian
-///   distribution): its narrow proportions match the reference's
-///   low-advance bitmap font 0 best of the measured faces.
+/// * `0` - Noto Sans Condensed Bold (SIL OFL 1.1): the reference's font-0
+///   strokes measure ~1.6-1.8x DejaVu Sans Condensed at the same cap, so
+///   the closest bundled weight wins on ink (the R1 round; advances stay
+///   the measured `FONT0_TENTHS`, so only the ink changes).
 /// * `A`-`D`, `F`, `G`, `P`-`V` - Noto Sans Condensed (SIL OFL 1.1), the
 ///   condensed sans the reference's bitmap families track.
 /// * `E` - OCR-B (jaycee723/ocr-b, SIL OFL 1.1), the OCR letter face.
@@ -261,8 +262,8 @@ pub trait FontProvider {
 const BUNDLED_FACES: &[(u8, &str, &[u8])] = &[
     (
         b'0',
-        "DejaVu Sans Condensed",
-        include_bytes!("../tests/fixtures/DejaVuSansCondensed.ttf"),
+        "Noto Sans Condensed Bold",
+        include_bytes!("../tests/fixtures/NotoSans-CondensedBold.ttf"),
     ),
     (
         b'A',

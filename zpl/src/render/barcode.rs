@@ -50,7 +50,7 @@ use ab_glyph::{point, Font, FontVec, GlyphId};
 use crate::bc::Pattern;
 use crate::fonts::{left_pad, matrix_pad, CapModel, FontData};
 use crate::ir::{BarcodeField, Rotation};
-use crate::render::text::{advance_at, draw_baseline, font_scale, MAX_GLYPH_CELL};
+use crate::render::text::{advance_at, draw_baseline, font_scale, scan_bitmap_ink, MAX_GLYPH_CELL};
 use crate::render::{font_spec, place, resolve_font, Bitmap, RenderOptions};
 
 /// Content-coordinate ceiling: any dot beyond this can never intersect the
@@ -130,7 +130,10 @@ fn extent(b: &BarcodeField, pat: &Pattern, fd: Option<&FontData>, dpi: u32) -> E
     let height = if b.height == 0 { 10 } else { b.height };
     match pat {
         Pattern::Bars(bars) => {
-            let quiet = module as u128 * 10; // 10 modules per side
+            // The reference starts the first bar at the field origin
+            // (verified on the corpus 1D cases 08/10/30 - no interior
+            // quiet zone; the label margin is the quiet zone).
+            let quiet = 0u128;
             let pat_w: u128 = bars.iter().map(|x| x.width as u128).sum();
             let below = b.line == b'Y';
             let above = b.interpret;
@@ -289,7 +292,7 @@ fn paint_line(
     opts: &RenderOptions,
     warnings: &mut Vec<String>,
 ) {
-    let Ok(face) = FontVec::try_from_vec(fd.ttf.clone()) else {
+    let Ok(mut face) = FontVec::try_from_vec(fd.ttf.clone()) else {
         warnings.push(
             "stored font bytes are not a usable TrueType font; interpretation line skipped".into(),
         );
@@ -387,13 +390,10 @@ fn paint_line(
                 let glyph = gid.with_scale_and_position(px_scale, point(u0f, 0.0));
                 if let Some(outlined) = face.outline_glyph(glyph) {
                     let pbox = outlined.px_bounds();
-                    outlined.draw(|px, py, cov| {
-                        if cov < 0.5 {
-                            return;
-                        }
+                    scan_bitmap_ink(&mut face, gid, px_scale, point(u0f, 0.0), &pbox, |gx, gy_up| {
                         // Mirror of text.rs's pixels: baseline-relative, y up.
-                        let gx = pbox.min.x.floor() as i64 + px as i64 - u0;
-                        let gy = paint_baseline as i64 + pbox.min.y.floor() as i64 + py as i64;
+                        let gx = gx - u0;
+                        let gy = paint_baseline as i64 + gy_up;
                         if gx < 0 || gx >= adv || gy < 0 || gy >= draw_cell as i64 {
                             return;
                         }
@@ -448,9 +448,9 @@ pub(crate) fn paint(
     let fh = g.fh as i64;
     match pat {
         Pattern::Bars(bars) => {
-            let quiet = c50(module as u128 * 10);
+            let quiet = 0u128; // reference: first bar at the field origin
             let h = c50(if b.height == 0 { 10 } else { b.height } as u128);
-            let mut off: u128 = quiet as u128;
+            let mut off: u128 = quiet;
             for bar in bars {
                 if bar.black {
                     paint_rect(

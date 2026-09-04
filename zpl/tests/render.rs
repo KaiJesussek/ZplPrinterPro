@@ -1228,28 +1228,22 @@ fn bar_bit_at(bars: &[zpl::bc::Bar], quiet: u32, h: u32, u: u32, v: u32) -> bool
 }
 
 /// Golden brief case: `^FO0,0^BY2,3,60^BCN,60,N,N^FD12345678^FS` - the
-/// first black bar starts after the quiet zone, the bar run matches the
-/// Task 9 encoder output dot-for-dot, and the bars are 60 dots tall.
+/// first black bar starts AT the field origin (the reference inserts no
+/// interior quiet zone; the label margin is the quiet zone), the bar run
+/// matches the Task 9 encoder output dot-for-dot, and the bars are 60
+/// dots tall.
 #[test]
-fn barcode_first_bar_after_quiet_zone() {
+fn barcode_first_bar_at_field_origin() {
     let src = b"^XA^PW240^LL120^FO0,0^BY2,3,60^BCN,60,N,N^FD12345678^FS^XZ";
     let (label, out) = render_bc(src);
     assert!(out.warnings.is_empty(), "clean render: {:?}", out.warnings);
     let f = single_barcode(&label);
-    let quiet = 10 * f.module; // 10 modules each side
+    let quiet = 0u32; // reference: bars start at the ^FO origin
     assert_eq!((f.module, f.height), (2, 60), "^BY2,3,60 and ^BC h=60");
 
-    // Quiet zone: the first 20 columns are white (no bar starts at x=0).
-    assert!(
-        !(0..quiet).any(|x| (0..60).any(|y| out.bitmap.get(x, y))),
-        "left quiet zone stays white"
-    );
     // First bar is 4 dots wide (elements 2,1,1,2,3,2 at module 2) and the
     // full 60 dots tall; the space element after it is white.
-    assert!(
-        out.bitmap.get(quiet, 0) && out.bitmap.get(quiet + 3, 59),
-        "first bar"
-    );
+    assert!(out.bitmap.get(quiet, 0) && out.bitmap.get(quiet + 3, 59), "first bar");
     assert!(!out.bitmap.get(quiet + 4, 0), "first space element");
     // Row 60 is the bar-height boundary: nothing below (f=:N - no line).
     assert!(
@@ -1270,34 +1264,28 @@ fn barcode_first_bar_after_quiet_zone() {
 }
 
 /// Rotated barcode (`^BCR`, 90deg clockwise): the R0 content plane rotates
-/// about the field origin - the left quiet zone lands on top, the bars
-/// become horizontal rows running down the page, and the right quiet zone
-/// lands at the bottom. Every column inside the rotated bar area carries
-/// the same pattern, so a row scan equals the encoder's content scan.
+/// about the field origin - the bars become horizontal rows running down
+/// the page from the top (no interior quiet zone, like the reference).
+/// Every column inside the rotated bar area carries the same pattern, so
+/// a row scan equals the encoder's content scan.
 #[test]
 fn barcode_rotation_90() {
     let src = b"^XA^PW240^LL240^FO0,0^BY2,3,60^BCR,60,N,N^FD12345678^FS^XZ";
     let (label, out) = render_bc(src);
     let f = single_barcode(&label);
     assert_eq!(f.rotation, Rotation::R90);
-    let quiet = 10 * f.module;
+    let quiet = 0u32; // reference: bars start at the ^FO origin
     let Pattern::Bars(bars) = barcode_field(f) else {
         panic!("Code 128 is a bar pattern")
     };
     // fh = bar height (no interpret line).
     let fh = f.height;
 
-    // Top: the left quiet zone (content u < quiet) rotates to rows y < quiet.
-    assert!(
-        !(0..quiet).any(|y| (0..240).any(|x| out.bitmap.get(x, y))),
-        "left quiet zone lands on top"
-    );
-    // Bottom: the right quiet zone (content u in [fh*... wait, right quiet
-    // zone = pattern width + quiet) lands at rows y >= 202.
+    // Bottom: the pattern ends at row `pat_w` (no right quiet zone).
     let pat_w: u32 = bars.iter().map(|b| b.width).sum();
     assert!(
-        !(quiet + pat_w..240).any(|y| (0..240).any(|x| out.bitmap.get(x, y))),
-        "right quiet zone lands at the bottom"
+        !(pat_w..240).any(|y| (0..240).any(|x| out.bitmap.get(x, y))),
+        "nothing below the rotated pattern"
     );
     // Beyond the rotated bar height (columns x >= fh) everything is white.
     assert!(
@@ -1326,9 +1314,10 @@ fn barcode_interpret_line_below_bars() {
     let f = single_barcode(&label);
     assert_eq!((f.line, f.interpret), (b'Y', false));
 
-    // The bars keep the full 60-dot height (the line is NOT inside it).
+    // The bars keep the full 60-dot height (the line is NOT inside it) and
+    // start at the field origin (reference: no interior quiet zone).
     assert!(
-        out.bitmap.get(20, 0) && out.bitmap.get(23, 59),
+        out.bitmap.get(0, 0) && out.bitmap.get(3, 59),
         "bars span 0..60"
     );
     // First line ink appears exactly below the bars: the font-A cap is
@@ -1369,9 +1358,9 @@ fn barcode_interpret_line_above_bars() {
         (0..15).any(|y| (0..40).any(|x| out_above.bitmap.get(x, y))),
         "line ink appears above the bars"
     );
-    // Bars are unchanged below the origin.
+    // Bars are unchanged below the origin (first bar at the ^FO origin).
     assert!(
-        out_above.bitmap.get(20, 15) && out_above.bitmap.get(23, 74),
+        out_above.bitmap.get(0, 15) && out_above.bitmap.get(3, 74),
         "bars still start at the ^FO origin"
     );
 }
@@ -1395,8 +1384,8 @@ fn barcode_both_interpret_lines_auto_height() {
         "above line ink"
     );
     assert!(
-        bmp.get(20, 15) && bmp.get(23, 74),
-        "bars span the full 60-dot height"
+        bmp.get(0, 15) && bmp.get(3, 74),
+        "bars span the full 60-dot height from the origin"
     );
     assert!(
         (75..84).any(|y| (0..40).any(|x| bmp.get(x, y))),
@@ -1410,29 +1399,30 @@ fn barcode_both_interpret_lines_auto_height() {
 /// the full [-lc, h+lc) span, so the far-corner math sees all the ink).
 #[test]
 fn barcode_poi_keeps_both_interpret_lines() {
-    // ^FO30,20: pattern width 158 (43 elements at module 2), quiet 20 each
-    // side -> fw = 198; fh = 60 + 2*9 = 78. Flipped origin
-    // (300-30-198, 300-20-78) = (72, 202): above-line rows [193,202) at
-    // cols [72,112), bars rows [202,262) at cols [92,250), below-line rows
-    // [262,271) at cols [72,112).
+    // ^FO30,20: pattern width 158 (43 elements at module 2), no interior
+    // quiet zone (reference) -> fw = 158; fh = 60 + 2*9 = 78. ^POI moves
+    // the field to the far corner (300-30-158, 300-20-78) = (112, 202);
+    // the content plane renders from there unchanged: bars on rows
+    // [202,262) at cols [112,270), the above line at rows [193,202), the
+    // below line at rows [262,271).
     let (label, out) =
         render_bc(b"^XA^PW300^LL300^POI^FO30,20^BY2,3,60^BCN,60,Y,Y^FD12345678^FS^XZ");
     let f = single_barcode(&label);
     assert_eq!(f.rotation, Rotation::R0);
     assert!(out.warnings.is_empty(), "clean: {:?}", out.warnings);
     let bmp = &out.bitmap;
-    assert!(bmp.get(92, 202) && bmp.get(95, 261), "bars flipped intact");
+    // First bar (u in [0,4)) at the far-corner origin.
+    assert!(bmp.get(112, 202) && bmp.get(115, 261), "bars flipped intact");
     assert!(
-        !(72..92).any(|x| (208..262).any(|y| bmp.get(x, y))),
-        "bar quiet zone inside the flipped field (the above line's 15-row
-         glyphs overflow into the bar's first rows, like the reference)"
+        !(0..112).any(|x| (0..300).any(|y| bmp.get(x, y))),
+        "nothing left of the flipped field"
     );
     assert!(
-        (193..207).any(|y| (72..130).any(|x| bmp.get(x, y))),
+        (193..202).any(|y| (112..212).any(|x| bmp.get(x, y))),
         "above line survived the flip (15-row cap in the 9-row cell)"
     );
     assert!(
-        (262..276).any(|y| (72..130).any(|x| bmp.get(x, y))),
+        (262..271).any(|y| (112..212).any(|x| bmp.get(x, y))),
         "below line survived the flip"
     );
     assert!(
@@ -1505,9 +1495,13 @@ fn barcode_hostile_module_never_panics() {
     };
     let out = render(&label, &opts).expect("hostile barcode IR is still a valid render");
     assert_eq!((out.bitmap.width, out.bitmap.height), (8, 12));
+    // Bars start at the field origin (no interior quiet zone), so the
+    // c50-clamped first bar covers the entire tiny canvas at every
+    // rotation - the point of the test is that MAX modules stay bounded
+    // (no panic, no unbounded work), not that the origin stays white.
     assert!(
-        (0..8).all(|x| (0..12).all(|y| !out.bitmap.get(x, y))),
-        "u32::MAX-module bars never intersect the tiny canvas"
+        (0..8).all(|x| (0..12).all(|y| out.bitmap.get(x, y))),
+        "c50-clamped module-2^32 bar covers the tiny canvas"
     );
 }
 
