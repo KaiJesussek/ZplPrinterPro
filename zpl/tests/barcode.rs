@@ -87,7 +87,7 @@ fn bc128_auto_switches_and_checks() {
             start: b'A',
             stop: b'A',
             qr_ec: b'Q',
-            qr_mask: 7,
+            qr_mask: 0,
             dm_quality: 0,
             dm_format: 6,
             dm_aspect: 1,
@@ -974,38 +974,40 @@ fn digit_command_leading_comma_variant_b3() {
     assert_eq!(f.line, b'N', "f=N after the glued check-digit segment");
 }
 
-/// ^B5 Planet (USPS): "0123" -> frame + four digits + frame, each digit
-/// five bars (two tall, three short) at one-module pitch, tall bars fill
-/// both rows of the two-row module grid, short bars sit in the bottom
-/// row. Hand-computed from the USPS PLANET pattern table:
-///
-///   0=11000 1=00011 2=00101 3=00110
-///
-/// Columns (38 modules wide): frame(0); 0->[1,3]tall [5,7,9]short;
-/// 1->[10,12,14]short [16,18]tall; 2->[19,21,23]short [25,27]tall;
-/// 3->[28,30,36]short [32,34]tall; frame(37).
-///
-/// Row bits (MSB-first bytes, stride 5):
-///   bottom row (all bars):   {1,3,5,7,9,10,12,14,16,18,19,21,23,25,27,28,30,32,34,36,37}
-///   = D5 6A B5 5A AC
-///   top row (tall only):     {0,1,3,16,18,23,27,32,34,37}
-///   = D0 00 A1 10 A4
+/// ^B5 Planet (USPS), geometry measured against the reference (parity
+/// probe 31 at ^BY2/^B5N,120): bars one ^BY module wide, spaces 3/2
+/// modules, tall bars the field height, short bars 2/5 of it
+/// bottom-anchored, and a USPS mod-10 check digit appended to the bars.
+/// The PLANET digit patterns are the POSTNET patterns with inverted
+/// polarity - a table 1-bit paints a SHORT bar. "0123" -> check 4, so
+/// the bars carry 01234; here module 1 (bar and space both 1 dot), h 30
+/// -> tall 30, short 12. The dark-bar heights, left to right:
+///   frame, then 0=SS TTT, 1=TTT SS, 2=TT S T S, 3=TT SS T,
+///   4=T S TT S, then frame (S = Some(12), T = None).
 #[test]
-fn b5_planet_module_grid() {
+fn b5_planet_bars() {
     let (label, diags) = common::parse_one(b"^XA^BY1,3,30^B5N,30^FD0123^FS^XZ");
     assert!(diags.items.is_empty(), "expected no warnings: {diags:?}");
     let f = assert_single_barcode(&label);
     assert_eq!(f.symbology, b'5');
     // ^B5's f defaults to N (the only 1D symbology that does).
     assert_eq!(f.line, b'N');
-    assert_eq!(
-        &barcode_field(f),
-        &Pattern::Modules {
-            width: 38,
-            height: 2,
-            data: vec![0xD5, 0x6A, 0xB5, 0x5A, 0xAC, 0xD0, 0x00, 0xA1, 0x10, 0xA4],
-        },
-    );
+    let Pattern::Bars(bars) = &barcode_field(f) else {
+        panic!("Planet must paint bars now (measured reference model)");
+    };
+    let t: Option<u32> = None;
+    let s = Some(12);
+    // bit=1 -> short: 0=11000, 1=00011, 2=00101, 3=00110, 4=01001.
+    let expect: Vec<Option<u32>> = [&[0u8][..], &[1, 1, 0, 0, 0], &[0, 0, 0, 1, 1], &[0, 0, 1, 0, 1],
+        &[0, 0, 1, 1, 0], &[0, 1, 0, 0, 1], &[0u8][..]]
+        .concat()
+        .iter()
+        .map(|&bit| if bit == 1 { s } else { t })
+        .collect();
+    assert_eq!(bars.len(), expect.len() * 2 - 1, "5 bars per digit + 2 frames, spaces between");
+    for (i, bar) in bars.iter().filter(|b| b.black).enumerate() {
+        assert_eq!((bar.width, bar.height), (1, expect[i]), "dark bar {i}");
+    }
 }
 
 /// ^BY module and ratio are hostile u32s (parse caps w at 9999, so the

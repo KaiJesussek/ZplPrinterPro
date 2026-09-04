@@ -514,6 +514,7 @@ fn bars(vals: &[u8], module: u32) -> Pattern {
             bars.push(Bar {
                 width: (w as u32).saturating_mul(module),
                 black: k % 2 == 0,
+                height: None,
             });
         }
     }

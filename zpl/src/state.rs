@@ -183,7 +183,8 @@ pub struct BarcodeDraft {
     pub stop: u8,
     /// ^BQ m: QR error-correction level letter H/Q/M/L (guide default Q).
     pub qr_ec: u8,
-    /// ^BQ e: QR mask pattern 0..7 (guide default 7).
+    /// ^BQ e: QR mask pattern 0..7 (default 0 - the reference's fixed
+    /// pick; measured corpus 11/16).
     pub qr_mask: u8,
     /// ^BX s: DataMatrix quality level (0/50/80/100/140/200; guide default 0).
     pub dm_quality: u32,

@@ -337,6 +337,7 @@ fn bars_fixed(runs: &[u32], module: u32) -> Pattern {
             .map(|(i, &r)| Bar {
                 width: sat_dots((r as u64) * (module as u64)),
                 black: i % 2 == 0,
+                height: None,
             })
             .collect(),
     )
@@ -354,6 +355,7 @@ fn bars_ratio(runs: &[u32], narrow: u32, wide: u32) -> Pattern {
             .map(|(i, &r)| Bar {
                 width: if r == 1 { narrow } else { wide },
                 black: i % 2 == 0,
+                height: None,
             })
             .collect(),
     )
@@ -886,43 +888,59 @@ pub(crate) fn upce(data: &[u8], module: u32) -> Result<Pattern, String> {
 }
 
 /// Encode Planet Code (USPS; guide ^B5 p.78): digits 0-9 only. Each
-/// digit is five bars (two tall, three short) at one-module pitch with
-/// one-module spaces; tall frame bars open and close the symbol. The
-/// tall/short bar heights ARE the data, so the encoder returns
-/// `Pattern::Modules` - a two-row cell grid (tall = both rows, short =
-/// the bottom row) that the Task 14 drawer paints module-by-module with
-/// no changes. The `^BY` module is the cell size; the field's `h` maps to
-/// the grid height only in the h = 2xmodule case (documented limitation
-/// of the fixed module grid).
-pub(crate) fn planet(data: &[u8], _module: u32) -> Result<Pattern, String> {
+/// digit is five bars (two tall, three short) with tall frame bars
+/// opening and closing the symbol; the tall/short heights ARE the data.
+///
+/// Geometry measured against the reference (parity probe 31, module 2,
+/// height 120): bars one ^BY module wide, the inter-bar space 3/2
+/// modules (the USPS 2:3 element ratio at 203 dpi), tall bars the full
+/// field height, short bars 2/5 of it, bottom-anchored. PLANET digit
+/// patterns are the POSTNET patterns with inverted polarity - the
+/// table's 1-bit columns paint SHORT bars (the reference renders "1"
+/// as T T T S S). The USPS mod-10 check digit is appended to the bars
+/// ("0123" renders as 01234) while the interpretation line shows the
+/// field data.
+pub(crate) fn planet(data: &[u8], module: u32, height: u32) -> Result<Pattern, String> {
     check_digits(data, "Planet Code (^B5)")?;
     if data.is_empty() {
         return Err("Planet Code (^B5): field data is required".into());
     }
-    let width = 1 + data.len() * 9 + 1; // frame + digits + frame, modules
-    let stride = width.div_ceil(8);
-    let mut grid = vec![0u8; stride * 2];
-    // Short bars sit in the bottom row, tall bars fill both rows.
-    for (i, &d) in data.iter().enumerate() {
-        let bars = PLANET[(d - b'0') as usize];
-        let base = 1 + i * 9;
-        for (b, &tall) in bars.iter().enumerate() {
-            let col = base + b * 2;
-            grid[col / 8] |= 0x80 >> (col % 8);
-            if tall == 1 {
-                grid[stride + col / 8] |= 0x80 >> (col % 8);
-            }
+    // Reference check digit (corpus 31: "12345" -> bars "123455").
+    let sum: u32 = data.iter().map(|&d| u32::from(d - b'0')).sum();
+    let check = (10 - sum % 10) % 10;
+    let short_h = (2 * height.max(1)) / 5;
+    let space = 3 * module / 2;
+    let mut bars = Vec::with_capacity(2 + data.len() * 10);
+    bars.push(Bar {
+        width: module,
+        black: true,
+        height: None,
+    }); // leading frame
+    for digit in data.iter().copied().chain(std::iter::once(b'0' + check as u8)) {
+        for &short in &PLANET[(digit - b'0') as usize] {
+            bars.push(Bar {
+                width: space,
+                black: false,
+                height: None,
+            });
+            bars.push(Bar {
+                width: module,
+                black: true,
+                height: if short == 1 { Some(short_h) } else { None },
+            });
         }
     }
-    grid[0] |= 0x80; // leading frame bar
-    grid[stride] |= 0x80;
-    grid[(width - 1) / 8] |= 0x80 >> ((width - 1) % 8);
-    grid[stride + (width - 1) / 8] |= 0x80 >> ((width - 1) % 8);
-    Ok(Pattern::Modules {
-        width: width as u32,
-        height: 2,
-        data: grid,
-    })
+    bars.push(Bar {
+        width: space,
+        black: false,
+        height: None,
+    });
+    bars.push(Bar {
+        width: module,
+        black: true,
+        height: None,
+    }); // trailing frame
+    Ok(Pattern::Bars(bars))
 }
 
 /// Zero-suppression (GS1 Table 5, forward direction; the guide's p.86

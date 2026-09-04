@@ -465,6 +465,9 @@ pub(crate) fn paint(
             let mut off: u128 = quiet;
             for bar in bars {
                 if bar.black {
+                    // A per-bar height override (Planet's short bars)
+                    // paints bottom-anchored inside the field band.
+                    let bh = i64::from(bar.height.unwrap_or(h as u32));
                     paint_rect(
                         bmp,
                         ox,
@@ -473,9 +476,9 @@ pub(crate) fn paint(
                         fw,
                         fh,
                         c50(off),
-                        0,
+                        h - bh,
                         c50(bar.width as u128),
-                        h,
+                        bh,
                     );
                 }
                 off += bar.width as u128;
@@ -562,7 +565,7 @@ mod tests {
             start: b'A',
             stop: b'A',
             qr_ec: b'Q',
-            qr_mask: 7,
+            qr_mask: 0,
             dm_quality: 0,
             dm_format: 6,
             dm_aspect: 1,

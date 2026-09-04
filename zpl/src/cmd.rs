@@ -324,18 +324,14 @@ fn check_barcode_data(ctx: &mut ParseContext) {
         }
         // 2D symbologies: flag data that can never fit at parse close.
         if matches!(bc.symbology, b'Q' | b'X' | b'7' | b'0') {
+            // The ^BQ encoder applies its marker/mode transform before
+            // sizing; size_error re-runs the same transform on the bytes.
             if let Some(msg) = crate::bc2d::size_error(
                 bc.symbology,
                 bc.qr_ec,
                 bc.qr_mask,
                 bc.pdf_security,
-                // The ^BQ encoder strips a leading MM, marker before
-                // sizing; length-check the payload that encodes.
-                draft
-                    .data
-                    .strip_prefix(b"MM,")
-                    .map(<[u8]>::len)
-                    .unwrap_or(draft.data.len()),
+                &draft.data,
             ) {
                 ctx.diags.push(Diagnostic::warning("B*", msg));
             }

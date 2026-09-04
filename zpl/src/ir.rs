@@ -134,7 +134,8 @@ pub struct BarcodeField {
     pub stop: u8,
     /// `^BQ m`: QR error-correction level letter H/Q/M/L (guide default Q).
     pub qr_ec: u8,
-    /// `^BQ e`: QR mask pattern 0..7 (guide default 7).
+    /// `^BQ e`: QR mask pattern 0..7 (default 0 - the reference's fixed
+    /// pick; measured corpus 11/16, the guide's 7 does not match it).
     pub qr_mask: u8,
     /// `^BX s`: DataMatrix quality level (guide default 0; 0/200 encode
     /// as ECC 200, legacy convolution values 50..140 warn at parse).
@@ -305,7 +306,7 @@ mod tests {
                     start: b'A',
                     stop: b'A',
                     qr_ec: b'Q',
-                    qr_mask: 7,
+                    qr_mask: 0,
                     dm_quality: 0,
                     dm_format: 6,
                     dm_aspect: 1,

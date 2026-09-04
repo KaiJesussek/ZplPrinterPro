@@ -102,13 +102,14 @@ fn qr_roundtrip_unicode_and_masks() {
     // Unicode text (UTF-8 bytes) round-trips verbatim.
     let pat = modules_of(b"^CI28^BQN,2,2,Q", "H\u{00E9}llo W\u{00F6}rld \u{2705}".as_bytes());
     assert_eq!(decode_qr(&pat).unwrap(), "H\u{00E9}llo W\u{00F6}rld \u{2705}");
-    // 44 bytes at level Q -> version 4 (33 modules, no quiet zone).
+    // 44 characters at level Q, all alphanumeric-capable (digits +
+    // upper-case) -> ISO alphanumeric mode -> version 3 (29 modules); a
+    // byte-mode decoder still reads the same text back.
     let long = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     let pat = modules_of(b"^BQN,2,2,Q", long);
     if let Pattern::Modules { width, .. } = pat {
-        assert_eq!(width, 33, "version 4 symbol");
+        assert_eq!(width, 29, "alphanumeric version 3 symbol");
     }
-    let pat = modules_of(b"^BQN,2,2,Q", long);
     assert_eq!(decode_qr(&pat).unwrap(), String::from_utf8_lossy(long));
 }
 

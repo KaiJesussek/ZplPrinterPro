@@ -11,13 +11,19 @@
 //!
 //! Standards implemented (algorithms cross-checked against the zint
 //! reference model during development; see the Task 16 report):
-//! - QR ISO/IEC 18004: byte mode, versions 1..10, levels L/M/Q/H, model 2,
-//!   mask 0..7 (guide default 7). `ponytail:` versions 1..10 - the byte
-//!   tables for v11..40 add no behavior, only more blocks; extend
-//!   QR_DATA/QR_BLOCKS/QR_TOTAL/QR_CENTERS when a payload needs > 271 B.
-//! - DataMatrix ISO/IEC 16022 ECC 200: ASCII encodation (digit pairs,
-//!   upper-shift escape for >= 0x80), square 10^2..144^2 + the six standard
-//!   rectangular sizes, Reed-Solomon over GF(256) 0x12d, Annex F placement.
+//! - QR ISO/IEC 18004: ISO mode selection (numeric/alphanumeric/byte by
+//!   payload bits - the ^BQ reference encodes alphanumerically),
+//!   versions 1..10, levels L/M/Q/H (absent ^BQ EC defaults to Q per the
+//!   reference), model 2, mask from `^BQ e` (default 0 - the reference's
+//!   fixed pick, measured on both corpus QRs). `ponytail:` versions
+//!   1..10 - the data tables for v11..40
+//!   add no behavior, only more blocks; extend QR_DATA/QR_BLOCKS/
+//!   QR_TOTAL/QR_CENTERS when a payload needs > 271 B.
+//! - DataMatrix ISO/IEC 16022 ECC 200: C40 encodation for uppercase
+//!   runs (measured reference choice), ASCII encodation elsewhere
+//!   (digit pairs, upper-shift escape for >= 0x80), square 10^2..144^2 +
+//!   the six standard rectangular sizes, Reed-Solomon over GF(256)
+//!   0x12d, Annex F placement.
 //! - PDF417 ISO/IEC 15438: byte compaction, security 0..8 (2..512 EC cws),
 //!   GF(929) RS, truncation.
 //! - Aztec ISO/IEC 24778: binary (byte) encodation, compact/full, the
@@ -156,28 +162,168 @@ fn qr_level(ec: u8) -> usize {
     }
 }
 
-/// Byte-mode capacity of version v at level (count field 8 bits v1..9, 16 v10).
-fn qr_capacity(level: usize, v: usize) -> usize {
-    let bits = QR_DATA[level][v - 1] as usize * 8;
-    (bits - 4 - if v < 10 { 8 } else { 16 }) / 8
+/// The ISO/IEC 18004 data-encodation modes this encoder selects between.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum QrMode {
+    Numeric,
+    Alnum,
+    Byte,
 }
 
-/// The data-codeword stream: mode 0100 | count | bytes | terminator | pad
-/// (ISO/IEC 18004 6.4.9/6.4.10).
-fn qr_data_codewords(capacity: usize, data: &[u8], version: usize) -> Vec<u8> {
-    // Character count indicator: 8 bits v1-9, 16 bits v10+ (ISO Table 3).
-    let countbits = if version >= 10 { 16 } else { 8 };
+/// The QR alphanumeric character set (ISO/IEC 18004 7.4.3): digits,
+/// upper-case letters, space, and `$%*+-./:`.
+const QR_ALNUM: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:";
+
+/// Mode indicator bits (ISO/IEC 18004 7.4.1).
+fn qr_mode_indicator(mode: QrMode) -> u8 {
+    match mode {
+        QrMode::Numeric => 0b0001,
+        QrMode::Alnum => 0b0010,
+        QrMode::Byte => 0b0100,
+    }
+}
+
+/// Character-count indicator width per mode (ISO/IEC 18004 Table 3):
+/// versions 1..9 / version 10 (the encoder caps at v10).
+fn qr_count_bits(mode: QrMode, version: usize) -> usize {
+    let wide = version >= 10;
+    match mode {
+        QrMode::Numeric => {
+            if wide { 12 } else { 10 }
+        }
+        QrMode::Alnum => {
+            if wide { 13 } else { 9 }
+        }
+        QrMode::Byte => {
+            if wide { 16 } else { 8 }
+        }
+    }
+}
+
+/// Payload bits for `len` characters in `mode` (ISO/IEC 18004 7.4.2-7.4.4):
+/// numeric packs 3 digits per 10 bits (leftover 1 -> 4, 2 -> 7), alphanumeric
+/// packs 2 chars per 11 bits (leftover 1 -> 6), byte is 8 per char.
+fn qr_payload_bits(mode: QrMode, len: usize) -> usize {
+    match mode {
+        QrMode::Numeric => (len / 3) * 10 + match len % 3 {
+            0 => 0,
+            1 => 4,
+            _ => 7,
+        },
+        QrMode::Alnum => (len / 2) * 11 + (len % 2) * 6,
+        QrMode::Byte => len * 8,
+    }
+}
+
+/// Whether `len` characters of `mode` fit version `v` at `level` (the mode
+/// header + count field + payload must fit the version's data bits).
+fn qr_mode_fits(mode: QrMode, len: usize, level: usize, v: usize) -> bool {
+    let cap = QR_DATA[level][v - 1] as usize * 8;
+    4 + qr_count_bits(mode, v) + qr_payload_bits(mode, len) <= cap
+}
+
+/// The reference's ^BQ field-data rule (measured corpus 11/16): a leading
+/// `MM,` marker is consumed together with the following character, and the
+/// remainder is encoded in alphanumeric mode - lower-case is uppercased
+/// and characters outside the alphanumeric set are dropped. (Labelary
+/// renders `MM,HELLO WORLD 12345` as `ELLO WORLD 12345` and the kitchen
+/// sink URL as `TTPS://EXAMPLE.COM/PATHQ1`; rqrr decode, this probe.)
+fn qr_segment(data: &[u8]) -> (QrMode, Vec<u8>) {
+    if let Some(rest) = data.strip_prefix(b"MM,") {
+        let mut payload = Vec::with_capacity(rest.len().saturating_sub(1));
+        for &b in rest.iter().skip(1) {
+            let up = b.to_ascii_uppercase();
+            if QR_ALNUM.contains(&up) {
+                payload.push(up);
+            }
+        }
+        (QrMode::Alnum, payload)
+    } else {
+        let mode = if data.iter().all(|b| b.is_ascii_digit()) {
+            QrMode::Numeric
+        } else if data.iter().all(|&b| QR_ALNUM.contains(&b)) {
+            QrMode::Alnum
+        } else {
+            QrMode::Byte
+        };
+        (mode, data.to_vec())
+    }
+}
+
+/// The data-codeword stream: mode indicator | count | payload bits |
+/// terminator | pad (ISO/IEC 18004 6.4.9/6.4.10). `payload` is the
+/// transmitted text (already marker-stripped and mode-converted).
+fn qr_data_codewords(capacity: usize, mode: QrMode, payload: &[u8], version: usize) -> Vec<u8> {
+    let countbits = qr_count_bits(mode, version);
     let total_bits = capacity * 8;
     let mut bits: Vec<u8> = Vec::with_capacity(total_bits);
+    let mi = qr_mode_indicator(mode);
     for i in (0..4).rev() {
-        bits.push(((0b0100 >> i) & 1) as u8);
+        bits.push((mi >> i) & 1);
     }
     for i in (0..countbits).rev() {
-        bits.push((((data.len() as u32) >> i) & 1) as u8);
+        bits.push((((payload.len() as u32) >> i) & 1) as u8);
     }
-    for &b in data {
-        for i in (0..8).rev() {
-            bits.push((b >> i) & 1);
+    match mode {
+        QrMode::Byte => {
+            for &b in payload {
+                for i in (0..8).rev() {
+                    bits.push((b >> i) & 1);
+                }
+            }
+        }
+        QrMode::Alnum => {
+            let mut i = 0;
+            while i + 1 < payload.len() {
+                let a = QR_ALNUM
+                    .iter()
+                    .position(|&c| c == payload[i])
+                    .unwrap_or(0) as u32;
+                let b = QR_ALNUM
+                    .iter()
+                    .position(|&c| c == payload[i + 1])
+                    .unwrap_or(0) as u32;
+                let v = a * 45 + b;
+                for bit in (0..11).rev() {
+                    bits.push(((v >> bit) & 1) as u8);
+                }
+                i += 2;
+            }
+            if i < payload.len() {
+                let a = QR_ALNUM
+                    .iter()
+                    .position(|&c| c == payload[i])
+                    .unwrap_or(0) as u32;
+                for bit in (0..6).rev() {
+                    bits.push(((a >> bit) & 1) as u8);
+                }
+            }
+        }
+        QrMode::Numeric => {
+            let mut i = 0;
+            while i + 2 < payload.len() {
+                let v = (payload[i] - b'0') as u32 * 100
+                    + (payload[i + 1] - b'0') as u32 * 10
+                    + (payload[i + 2] - b'0') as u32;
+                for bit in (0..10).rev() {
+                    bits.push(((v >> bit) & 1) as u8);
+                }
+                i += 3;
+            }
+            let rem = payload.len() - i;
+            let mut v = 0u32;
+            for &d in &payload[i..] {
+                v = v * 10 + (d - b'0') as u32;
+            }
+            for bit in (0..match rem {
+                0 => 0,
+                1 => 4,
+                _ => 7,
+            })
+            .rev()
+            {
+                bits.push(((v >> bit) & 1) as u8);
+            }
         }
     }
     // Terminator: up to 4 zero bits, to the byte boundary, but never
@@ -276,28 +422,28 @@ fn qr_mask_flip(x: usize, y: usize, pattern: usize) -> bool {
 }
 
 pub fn qr(f: &BarcodeField, data: &[u8]) -> Result<Pattern, String> {
-    // The reference strips a leading MM, marker from ^BQ field data:
-    // corpus 11 renders the 17-byte HELLO WORLD 12345 (only v1-L can
-    // hold that) and corpus 16 the bare URL. The marker never reaches
-    // the symbol.
-    let data = match data {
-        [b'M', b'M', b',', rest @ ..] => rest,
-        _ => data,
-    };
+    // The reference's ^BQ data rule (measured corpus 11/16, see
+    // [`qr_segment`]): an `MM,` marker is stripped - together with the
+    // character that follows it - and the remainder is encoded in
+    // alphanumeric mode (uppercased, non-alphanumeric characters
+    // dropped). Without a marker, ISO mode selection applies: numeric
+    // for digits, alphanumeric when the payload is alphanumeric-capable
+    // (markedly shorter than byte at 5.5 bits/char), else byte.
+    let (mode, payload) = qr_segment(data);
     let level = qr_level(f.qr_ec);
     let mut version = 0;
     for v in 1..=10 {
-        if data.len() <= qr_capacity(level, v) {
+        if qr_mode_fits(mode, payload.len(), level, v) {
             version = v;
             break;
         }
     }
     if version == 0 {
-        return Err("QR: data exceeds version 10 byte-mode capacity".into());
+        return Err("QR: data exceeds version 10 capacity".into());
     }
     let size = 17 + 4 * version;
     let capacity = QR_DATA[level][version - 1] as usize;
-    let cws = qr_data_codewords(capacity, data, version);
+    let cws = qr_data_codewords(capacity, mode, &payload, version);
     let stream = qr_interleave(level, version, &cws)?;
 
     // Symbol grid; cell model mirrors the reference (0x01 = dark, 0x10 =
@@ -428,13 +574,19 @@ pub fn qr(f: &BarcodeField, data: &[u8]) -> Result<Pattern, String> {
         }
     }
 
-    // Mask (guide: explicit e 0-7, default 7) over data cells only.
+    // Mask over the data cells only (ISO/IEC 18004 8.8.1), the field's
+    // `^BQ e` value directly. The reference fixes mask 0 when e is
+    // absent (both corpus QRs carry format word 0x355F = Q, mask 0 -
+    // measured; the ISO/zint penalty optimum is mask 0 for corpus 11 but
+    // mask 4 for the kitchen-sink symbol, so the reference's pick is a
+    // fixed 0, not a penalty selection), so the parse default is 0 (was
+    // the guide's 7).
     let pattern = (f.qr_mask as usize).min(7);
     for y in 0..size {
         for x in 0..size {
-            if let Cell::Data(v) = g[ix(x, y)] {
+            if let Cell::Data(v) = g[y * size + x] {
                 let dark = v == 1;
-                g[ix(x, y)] = Cell::Data(u8::from(dark ^ qr_mask_flip(x, y, pattern)));
+                g[y * size + x] = Cell::Data(u8::from(dark ^ qr_mask_flip(x, y, pattern)));
             }
         }
     }
@@ -454,7 +606,7 @@ pub fn qr(f: &BarcodeField, data: &[u8]) -> Result<Pattern, String> {
         0
     };
     let bit_at = |g: &mut Vec<Cell>, x: usize, y: usize, bit: bool| {
-        g[ix(x, y)] = Cell::Data(u8::from(bit));
+        g[y * size + x] = Cell::Data(u8::from(bit));
     };
     for i in 0..6 {
         bit_at(&mut g, 8, i, (seq >> i) & 1 == 1); // vertical, below top-left finder
@@ -487,7 +639,7 @@ pub fn qr(f: &BarcodeField, data: &[u8]) -> Result<Pattern, String> {
     let mut grid = Grid::new(size, size);
     for y in 0..size {
         for x in 0..size {
-            let dark = match g[ix(x, y)] {
+            let dark = match g[y * size + x] {
                 Cell::Func(d) | Cell::Timing(d) => d,
                 Cell::Data(v) => v == 1,
                 Cell::Reserved => false, // replaced above; defensive
@@ -522,6 +674,54 @@ fn dm_codewords(data: &[u8], out: &mut Vec<u8>) {
             out.push(235);
             out.push(data[i] - 127);
             i += 1;
+        }
+    }
+}
+
+/// C40 basic-set value of a byte: 3 = space, 4..13 = 0-9, 14..39 = A-Z
+/// (ISO/IEC 16022 5.2.3). `None` for characters that need a shift set
+/// or ASCII - the encoder's C40 covers the basic set only.
+fn dm_basic_c40(b: u8) -> Option<u8> {
+    match b {
+        b' ' => Some(3),
+        b'0'..=b'9' => Some(b - b'0' + 4),
+        b'A'..=b'Z' => Some(b - b'A' + 14),
+        _ => None,
+    }
+}
+
+/// C40 encodation (ISO/IEC 16022 5.2.3): latch 230, three C40 values per
+/// codeword pair (1600*v1 + 40*v2 + v3 + 1), then the end-of-data rule of
+/// the reference (measured corpus 12 - labelary encodes HELLO DATA MATRIX
+/// with this exact tail): zero values left unlatch (254); one left emits
+/// 254 + the ASCII codeword; two left emit the (v1, v2, 0) pair then 254.
+fn dm_c40_codewords(data: &[u8], out: &mut Vec<u8>) {
+    out.push(230); // C40 latch
+    let vals: Vec<u8> = data.iter().map(|&b| dm_basic_c40(b).unwrap()).collect();
+    let mut i = 0;
+    while i + 2 < vals.len() {
+        let v = 1600u32 * u32::from(vals[i])
+            + 40 * u32::from(vals[i + 1])
+            + u32::from(vals[i + 2])
+            + 1;
+        out.push((v >> 8) as u8);
+        out.push((v & 0xFF) as u8);
+        i += 3;
+    }
+    match vals.len() - i {
+        0 => out.push(254), // unlatch to ASCII
+        1 => {
+            out.push(254);
+            out.push(data[i] + 1);
+        }
+        _ => {
+            // The reference's tail for two remaining characters: a
+            // triple with the third value 0 (a realign), then the
+            // unlatch (ISO/IEC 16022 5.2.5.2(b), measured).
+            let v = 1600u32 * u32::from(vals[i]) + 40 * u32::from(vals[i + 1]) + 1;
+            out.push((v >> 8) as u8);
+            out.push((v & 0xFF) as u8);
+            out.push(254);
         }
     }
 }
@@ -742,6 +942,18 @@ pub fn datamatrix(f: &BarcodeField, data: &[u8]) -> Result<Pattern, String> {
     let rect = f.dm_aspect == 2;
     let mut cws = Vec::with_capacity(data.len() + data.len() / 2 + 2);
     dm_codewords(data, &mut cws);
+    // C40 selection (ISO/IEC 16022 5.2.3): when the whole payload sits in
+    // the C40 basic set (digits, upper-case letters, space), encode C40
+    // when it shortens the stream - the reference's choice for upper-case
+    // text (corpus 12: HELLO DATA MATRIX in C40, measured). Everything
+    // else (lower-case, binary, punctuation) stays ASCII.
+    if data.iter().all(|&b| dm_basic_c40(b).is_some()) {
+        let mut c40 = Vec::with_capacity(data.len() * 2 / 3 + 4);
+        dm_c40_codewords(data, &mut c40);
+        if c40.len() < cws.len() {
+            cws = c40;
+        }
+    }
     let count = cws.len();
     let idx = dm_pick(count, rect)?;
     let h = SIZE_H[idx] as usize;
@@ -1154,15 +1366,19 @@ pub fn size_error(
     qr_ec: u8,
     _qr_mask: u8,
     pdf_security: u8,
-    len: usize,
+    data: &[u8],
 ) -> Option<String> {
+    let len = data.len();
     match symbology {
         b'Q' => {
+            // Same marker/mode transformation as the encoder, so the
+            // guard and the symbol agree on what actually encodes.
+            let (mode, payload) = qr_segment(data);
             let level = qr_level(qr_ec);
-            let cap = qr_capacity(level, 10);
-            if len > cap {
+            if !(1..=10).any(|v| qr_mode_fits(mode, payload.len(), level, v)) {
                 Some(format!(
-                    "QR: {len} bytes exceed the version 10 capacity ({cap})"
+                    "QR: {} characters exceed the version 10 capacity",
+                    payload.len()
                 ))
             } else {
                 None

@@ -19,10 +19,14 @@ use crate::textfmt::{draft_mut, parse_rotation, split_commas};
 /// The run-length bar pattern a 1D encoder produces. `width` is in dots
 /// (element width x the ^BY module width), `black` alternates starting
 /// black; the renderer paints horizontal bars of the field's height.
+///
+/// `height` overrides that height for a single bar (Planet's short bars):
+/// the bar is painted bottom-anchored at `field height - height`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bar {
     pub width: u32,
     pub black: bool,
+    pub height: Option<u32>,
 }
 
 /// What an encoder produces: 1D bar runs, or a 2D module map (1bpp,
@@ -47,7 +51,7 @@ pub fn encode(
     data: &[u8],
     module: u32,
     ratio: u32,
-    _height: u32,
+    height: u32,
     _line: u8,
 ) -> Result<Pattern, String> {
     match symbology {
@@ -56,7 +60,7 @@ pub fn encode(
         b'1' => bc1d::code11(data, module, ratio),
         b'2' => bc1d::i2of5(data, module, ratio),
         b'3' => bc1d::code39(data, module, ratio),
-        b'5' => bc1d::planet(data, module),
+        b'5' => bc1d::planet(data, module, height),
         b'8' => bc1d::ean8(data, module),
         b'9' => bc1d::upce(data, module),
         b'A' => bc1d::code93(data, module),
@@ -345,7 +349,7 @@ pub(crate) fn code_128(ctx: &mut ParseContext, params: &[u8]) {
         start: b'A',
         stop: b'A',
         qr_ec: b'Q',
-        qr_mask: 7,
+        qr_mask: 0,
         dm_quality: 0,
         dm_format: 6,
         dm_aspect: 1,
@@ -601,9 +605,11 @@ fn finish_2d(ctx: &mut ParseContext, symbology: u8, rotation: Option<Rotation>, 
 
 /// ^BQo,h,s,m,e (guide p.128): orientation, model 1/2 (default 2; model 1
 /// is encoded as model 2 with a warning), magnification (cell size,
-/// default ^BY module), EC level H/Q/M/L (default L - the reference
-/// renders absent EC at level L; measured corpus 11/16; invalid values
-/// warn and fall back to L too), mask 0..7 (default 7).
+/// default ^BY module), EC level H/Q/M/L (absent or invalid values
+/// default to Q - the reference renders both corpus QRs at level Q;
+/// measured format words on corpus 11/16), mask 0..7 (default 0 - the
+/// reference's fixed pick, measured on both corpus QRs; the guide's
+/// default 7 does not match the reference).
 pub(crate) fn qr_field(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
     let rotation = match parts.first().copied() {
@@ -644,10 +650,12 @@ pub(crate) fn qr_field(ctx: &mut ParseContext, params: &[u8]) {
                     ctx.diags,
                 );
             }
-            b'L'
+            b'Q'
         }
     };
-    let mask = u32_in(parts.get(4).copied(), "BQ", "mask", ctx.diags, 0, 7, 7) as u8;
+    // Mask default 0 - the reference fixes mask 0 (measured corpus
+    // 11/16), not the guide's 7.
+    let mask = u32_in(parts.get(4).copied(), "BQ", "mask", ctx.diags, 0, 7, 0) as u8;
     finish_2d(
         ctx,
         b'Q',
@@ -1043,7 +1051,7 @@ fn barcode_1d(ctx: &mut ParseContext, params: &[u8], cmd: &str, symbology: u8, s
         start,
         stop,
         qr_ec: b'Q',
-        qr_mask: 7,
+        qr_mask: 0,
         dm_quality: 0,
         dm_format: 6,
         dm_aspect: 1,
