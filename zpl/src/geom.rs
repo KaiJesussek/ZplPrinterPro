@@ -221,11 +221,15 @@ pub(crate) fn graphic_field(ctx: &mut ParseContext, params: &[u8]) {
     // `:Z64:` variant (the reference payloads) whose base64 body is a zlib
     // stream inflating to the raw bitmap. Both take the graphic count `c`
     // bytes; the A-format rule "any data after the count is satisfied is
-    // ignored" applies to both (extras past `c` are dropped).
+    // ignored" applies to both (extras past `c` are dropped). The `:Z64:`
+    // body may carry a trailing `:crc` (four hex digits) - the same
+    // trailer the ZB64 PNG path tolerates - stripped but not verified,
+    // since the CRC polynomial is unspecified.
     let c = c as usize;
     let d = d as usize;
     let decoded = if let Some(rest) = data.strip_prefix(b":Z64:") {
-        decode_base64(rest)
+        let body = strip_crc_trailer(rest);
+        decode_base64(body)
             .and_then(|raw| zlib_decompress(&raw))
             .filter(|raw| raw.len() >= c)
             .map(|raw| raw[..c].to_vec())
@@ -370,19 +374,27 @@ fn zb64_png_bitmap(data: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     } else {
         data
     };
-    // The appendix tags the encoded stream with `:crc` (four hex digits);
-    // the CRC polynomial is unspecified, so the trailer is stripped but
-    // not verified.
-    let body = if body.len() >= 5
-        && body[body.len() - 5] == b':'
-        && body[body.len() - 4..].iter().all(|b| b.is_ascii_hexdigit())
-    {
-        &body[..body.len() - 5]
-    } else {
-        body
-    };
+    // The appendix tags the encoded stream with a trailing `:crc` (four hex
+    // digits); the CRC polynomial is unspecified, so the trailer is stripped
+    // but not verified.
+    let body = strip_crc_trailer(body);
     let raw = crate::gfxdata::decode_base64(body)
         .ok_or_else(|| "malformed ZB64 data; field skipped".to_string())?;
     crate::gfxdata::png_to_bitmap(&raw)
         .ok_or_else(|| "malformed PNG data; field skipped".to_string())
+}
+
+/// Strip an optional trailing `:crc` (four hex digits) from a base64 body.
+/// Both the ZB64 PNG path (`:B64:`) and the A-format `:Z64:` path may carry
+/// the trailer; the CRC polynomial is unspecified, so it is dropped but not
+/// verified. `data` without the trailer is returned unchanged.
+fn strip_crc_trailer(data: &[u8]) -> &[u8] {
+    if data.len() >= 5
+        && data[data.len() - 5] == b':'
+        && data[data.len() - 4..].iter().all(|b| b.is_ascii_hexdigit())
+    {
+        &data[..data.len() - 5]
+    } else {
+        data
+    }
 }

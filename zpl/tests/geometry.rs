@@ -233,6 +233,26 @@ fn gf_a_z64_inflates_zlib_base64_payload() {
 }
 
 #[test]
+fn gf_a_z64_tolerates_trailing_crc() {
+    // The reference payloads (and zplgfa's encoder) may tag the base64 body
+    // with a trailing `:crc` (four hex digits). The CRC polynomial is
+    // unspecified, so the trailer is stripped but not verified - a payload
+    // with it must decode to the same bitmap as without.
+    let b64 = include_str!("fixtures/z64_example.b64").trim();
+    let with_crc = format!(
+        "^XA^FO0,0^GFA,33280,33280,80,:Z64:{b64}:a1b2^FS^XZ"
+    );
+    let plain = format!("^XA^FO0,0^GFA,33280,33280,80,:Z64:{b64}^FS^XZ");
+    let (a, da) = parse_one(with_crc.as_bytes());
+    let (p, dp) = parse_one(plain.as_bytes());
+    assert_eq!(da.items.len(), 0, "trailing-crc payload: {da:?}");
+    assert_eq!(dp.items.len(), 0, "plain payload: {dp:?}");
+    let g = graphic_field(&a, 0);
+    assert_eq!(g.data.len(), 33280);
+    assert_eq!(g.data, graphic_field(&p, 0).data, "crc stripped, bitmap identical");
+}
+
+#[test]
 fn gf_missing_size_params_ignores_command() {
     // Guide: b/c/d "command is ignored if a value is not specified".
     let (label, diags) = parse_one(b"^XA^GFA,,,^FS^XZ");
