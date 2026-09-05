@@ -40,7 +40,9 @@ pub fn try_run_service() -> bool {
     match service_dispatcher::start(SERVICE_NAME, ffi_service_main) {
         Ok(()) => true,
         Err(e) => {
-            eprintln!("zpl-server: not running under the Windows SCM ({e}); continuing in the foreground");
+            zpl_server::log!(
+                "zpl-server: not running under the Windows SCM ({e}); continuing in the foreground"
+            );
             false
         }
     }
@@ -51,7 +53,7 @@ fn my_service_main(_arguments: Vec<OsString>) {
     if let Err(e) = run_service() {
         // No console under the SCM, so this is visible only when the service
         // is run from a console (e.g. for local testing).
-        eprintln!("zpl-server: service terminated with an error: {e}");
+        zpl_server::log!("zpl-server: service terminated with an error: {e}");
     }
 }
 
@@ -99,7 +101,7 @@ fn run_service() -> Result<()> {
         // means the handler is gone, i.e. shutdown - both outcomes stop now.
         let _ = shutdown_rx.recv();
 
-        eprintln!("zpl-server: service stopping");
+        zpl_server::log!("zpl-server: service stopping");
         tcp.abort();
         http.abort();
         Ok(())

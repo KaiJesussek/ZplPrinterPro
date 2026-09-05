@@ -171,11 +171,18 @@ async fn render_direct_returns_png_without_archiving() {
     let resp = post_bytes(&state, "/api/render", b"no format here").await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let (_, body) = body_string(resp).await;
-    assert!(body.contains("^XA..^XZ"), "error explains the format requirement: {body}");
+    assert!(
+        body.contains("^XA..^XZ"),
+        "error explains the format requirement: {body}"
+    );
 
     // A malformed format warns but still renders (parse -> fallback).
     let resp = post_bytes(&state, "/api/render", b"^XA^BY0^FS^XZ").await;
-    assert_eq!(resp.status(), StatusCode::OK, "warn-only inputs still render");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "warn-only inputs still render"
+    );
 
     let _ = addr; // spawn binds an ephemeral port; the handle keeps it alive
 }

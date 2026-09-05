@@ -17,7 +17,9 @@ use zpl::diag::{Diagnostic, Diagnostics, Severity};
 use zpl::fonts::DefaultFontProvider;
 use zpl::render::{render, RenderOptions};
 use zpl::scanner::Scanner;
-use zpl::state::{FormatState, ParseContext, PendingBinary, PrinterConfig, PrinterMode, QueryRequest};
+use zpl::state::{
+    FormatState, ParseContext, PendingBinary, PrinterConfig, PrinterMode, QueryRequest,
+};
 
 use crate::archive::{unix_ms, LabelRow};
 use crate::hs::hs_response;
@@ -104,7 +106,7 @@ pub fn spawn_tcp(listener: TcpListener, state: Arc<AppState>) -> JoinHandle<()> 
                     });
                 }
                 Err(e) => {
-                    eprintln!("tcp: accept error: {e}; stopping accept loop");
+                    crate::log!("tcp: accept error: {e}; stopping accept loop");
                     break;
                 }
             }
@@ -134,7 +136,7 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
             Ok(Ok(0)) => break, // EOF: print on ^XZ already flushed, then quit
             Ok(Ok(n)) => n,
             Ok(Err(e)) => {
-                eprintln!("tcp: read error: {e}");
+                crate::log!("tcp: read error: {e}");
                 break;
             }
             Err(_) => break, // idle timeout
@@ -145,7 +147,7 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
         let chunk_start = input.len();
         input.extend_from_slice(chunk);
         if input.len() > MAX_STREAM_BYTES {
-            eprintln!("tcp: input cap ({MAX_STREAM_BYTES} bytes) exceeded; closing connection");
+            crate::log!("tcp: input cap ({MAX_STREAM_BYTES} bytes) exceeded; closing connection");
             break;
         }
 
@@ -201,7 +203,7 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
                             // layout stays intact). The window indices are
                             // NOT invalidated here (no clear) - later
                             // labels in the chunk slice valid windows.
-                            eprintln!("tcp: render failed: {e:?}; label not archived");
+                            crate::log!("tcp: render failed: {e:?}; label not archived");
                             continue;
                         }
                     }
@@ -234,7 +236,7 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
                         ps.label_length_dots = height;
                         ps.numbered = pl.label.numbered.clone();
                     }
-                    Err(e) => eprintln!("tcp: archive push failed: {e}"),
+                    Err(e) => crate::log!("tcp: archive push failed: {e}"),
                 }
                 drop(archive);
                 // Push the label event after the archive lock drops (the
@@ -262,7 +264,7 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
                             .unknown_commands
                             .fetch_add(1, Ordering::Relaxed);
                     }
-                    eprintln!("tcp: {}", d.message);
+                    crate::log!("tcp: {}", d.message);
                 }
                 // Drop the buffer for the next chunk; a label-less chunk
                 // (partial format still open) keeps its diagnostics so the
@@ -282,22 +284,20 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
                         QueryRequest::HostStatus => {
                             let out = hs_response(&ps, guard.images.len());
                             if out.is_none() {
-                                eprintln!(
-                                    "tcp: ~HS suppressed (paper_out|ribbon_out|head_open|rewind_full|over-temp)"
-                                );
+                                crate::log!("tcp: ~HS suppressed (paper_out|ribbon_out|head_open|rewind_full|over-temp)");
                             }
                             out
                         }
-                        QueryRequest::HeadQuery(qt) => match proto::respond_hq(qt, &ps) {
-                            Some(r) => Some(r),
-                            None => {
-                                eprintln!(
-                                    "tcp: unsupported ~HQ query '{}' ignored (socket kept open)",
-                                    String::from_utf8_lossy(qt)
-                                );
-                                None
+                        QueryRequest::HeadQuery(qt) => {
+                            match proto::respond_hq(qt, &ps) {
+                                Some(r) => Some(r),
+                                None => {
+                                    crate::log!("tcp: unsupported ~HQ query '{}' ignored (socket kept open)",
+                                String::from_utf8_lossy(qt));
+                                    None
+                                }
                             }
-                        },
+                        }
                         QueryRequest::ConfigDump(_) => Some(proto::respond_wd(&ps)),
                         QueryRequest::ModelId => Some(proto::respond_hi()),
                         QueryRequest::HostValue(req) => Some(proto::respond_hv(req, &ps.numbered)),
@@ -312,7 +312,7 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
         // Flush the chunk's query responses after the locks drop.
         for r in &responses {
             if let Err(e) = wr.write_all(r).await {
-                eprintln!("tcp: write error: {e}");
+                crate::log!("tcp: write error: {e}");
                 break;
             }
         }
@@ -341,7 +341,7 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
     // state via PrinterState).
     if persist.state.is_partial() {
         let msg = "connection closed with an unfinished format; label not archived";
-        eprintln!("tcp: {msg}");
+        crate::log!("tcp: {msg}");
         diags.push(Diagnostic::warning("^XA", msg));
         state.counters.warnings.fetch_add(1, Ordering::Relaxed);
     }
@@ -357,7 +357,7 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
             pending.declared,
             pending.already + pending.buf.len()
         );
-        eprintln!("tcp: {msg}");
+        crate::log!("tcp: {msg}");
         diags.push(Diagnostic::warning(mnemonic, msg));
         state.counters.warnings.fetch_add(1, Ordering::Relaxed);
     }

@@ -476,9 +476,9 @@ async fn empty_format_canaries_are_valid_rows_blank_renders_quiet_status() {
     assert_eq!(state.counters.warnings.load(Ordering::Relaxed), 0);
     assert_eq!(state.counters.unknown_commands.load(Ordering::Relaxed), 0);
     sock.shutdown().await.unwrap(); // clean EOF: labels already closed
-    // Deterministic close wait: the server pushes its (would-be)
-    // partial-format diagnostic before dropping the socket, so EOF on our
-    // read confirms that check already ran - no tight EOF-poll race.
+                                    // Deterministic close wait: the server pushes its (would-be)
+                                    // partial-format diagnostic before dropping the socket, so EOF on our
+                                    // read confirms that check already ran - no tight EOF-poll race.
     assert_closed(&mut sock, "session after a clean shutdown").await;
     assert_eq!(
         state.counters.warnings.load(Ordering::Relaxed),

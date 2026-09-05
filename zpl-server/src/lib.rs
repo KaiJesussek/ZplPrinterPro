@@ -4,6 +4,7 @@
 pub mod archive;
 pub mod hs;
 pub mod http;
+pub mod logging;
 pub mod proto;
 pub mod state;
 pub mod tcp;

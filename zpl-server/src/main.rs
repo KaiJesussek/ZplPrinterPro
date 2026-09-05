@@ -13,6 +13,7 @@ use tokio::task::JoinHandle;
 use zpl_server::archive::{Archive, DEFAULT_KEEP, DEFAULT_MAX_BYTES};
 use zpl_server::http::{spawn_http, spawn_persistence};
 use zpl_server::tcp::{spawn_tcp, AppState};
+
 #[cfg(windows)]
 mod service;
 
@@ -55,10 +56,8 @@ async fn start_server() -> std::io::Result<(JoinHandle<()>, JoinHandle<()>)> {
     let http = spawn_http(state.clone(), http_port).await?;
     spawn_persistence(state.clone());
 
-    eprintln!(
-        "zpl-server: tcp on {tcp_port}, http on {http_port} (archive at {archive_dir}, keep={keep}, max={} MiB); Ctrl-C to stop",
-        max_bytes / (1024 * 1024)
-    );
+    zpl_server::log!("zpl-server: tcp on {tcp_port}, http on {http_port} (archive at {archive_dir}, keep={keep}, max={} MiB); Ctrl-C to stop",
+        max_bytes / (1024 * 1024));
     Ok((tcp, http))
 }
 
@@ -66,7 +65,7 @@ async fn start_server() -> std::io::Result<(JoinHandle<()>, JoinHandle<()>)> {
 async fn async_main() -> std::io::Result<()> {
     let (tcp, http) = start_server().await?;
     tokio::signal::ctrl_c().await?;
-    eprintln!("zpl-server: shutting down");
+    zpl_server::log!("zpl-server: shutting down");
     tcp.abort();
     http.abort();
     Ok(())

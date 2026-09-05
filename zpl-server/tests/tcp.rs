@@ -206,7 +206,8 @@ async fn labels_across_read_chunks_attribute_diagnostics_to_their_own_label() {
         let rows = arc.rows();
         assert_eq!(rows.len(), 2);
         assert_eq!(
-            rows[0].row.diags, 1,
+            rows[0].row.diags,
+            1,
             "label 1's row carries only the ^FO warning it raised ({}), not the stray: {:?}",
             rows[0].messages.first().unwrap_or(&"<none>".into()),
             rows[0].messages
@@ -378,7 +379,11 @@ async fn binary_payload_split_across_reads_decodes_fully() {
         let arc = state.archive.lock().await;
         assert_eq!(arc.len(), 1, "exactly one label \u{2014} no phantom from ^ bait");
         let rows = arc.rows();
-        assert_eq!(rows[0].row.diags, 0, "split payload must be warning-free: {:?}", rows[0].messages);
+        assert_eq!(
+            rows[0].row.diags, 0,
+            "split payload must be warning-free: {:?}",
+            rows[0].messages
+        );
         assert_eq!(rows[0].messages.len(), 0);
     }
     // A wrong warning (truncation, phantom command, EOF partial) would
@@ -391,11 +396,17 @@ async fn binary_payload_split_across_reads_decodes_fully() {
     );
 
     let raw = std::fs::read(dir.join("labels/1.zpl")).unwrap();
-    assert_eq!(raw, label, "raw .zpl must be the exact sent bytes incl. the payload tail");
-    let ir: Label = serde_json::from_slice(&std::fs::read(dir.join("labels/1.json")).unwrap()).unwrap();
+    assert_eq!(
+        raw, label,
+        "raw .zpl must be the exact sent bytes incl. the payload tail"
+    );
+    let ir: Label =
+        serde_json::from_slice(&std::fs::read(dir.join("labels/1.json")).unwrap()).unwrap();
     assert_eq!(ir.fields.len(), 1, "one graphic field, no phantom fields");
     match &ir.fields[0] {
-        zpl::ir::Field::Graphic(g) => assert_eq!(g.data, payload, "decoded payload must be byte-exact"),
+        zpl::ir::Field::Graphic(g) => {
+            assert_eq!(g.data, payload, "decoded payload must be byte-exact")
+        }
         other => panic!("expected graphic field, got {other:?}"),
     }
     let png = std::fs::read(dir.join("labels/1.png")).unwrap();

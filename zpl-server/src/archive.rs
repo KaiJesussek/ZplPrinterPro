@@ -152,7 +152,7 @@ impl Archive {
         let before = self.rows.len();
         self.rows.retain(|e| on_disk.contains(&e.row.id));
         if self.rows.len() != before {
-            eprintln!(
+            crate::log!(
                 "archive: dropped {} indexed row(s) whose files are gone",
                 before - self.rows.len()
             );
@@ -172,13 +172,13 @@ impl Archive {
                     for ext in ["zpl", "json", "png"] {
                         let _ = fs::remove_file(labels_dir.join(format!("{id}.{ext}")));
                     }
-                    eprintln!("archive: deleted unreadable label files {id}");
+                    crate::log!("archive: deleted unreadable label files {id}");
                 }
             }
         }
         let stubbed = self.rows.len() - known.len();
         if stubbed > 0 {
-            eprintln!("archive: re-stubbed {stubbed} committed label(s) from files");
+            crate::log!("archive: re-stubbed {stubbed} committed label(s) from files");
         }
 
         for id in on_disk
@@ -188,7 +188,7 @@ impl Archive {
             for ext in ["zpl", "json", "png"] {
                 let _ = fs::remove_file(labels_dir.join(format!("{id}.{ext}")));
             }
-            eprintln!("archive: deleted {id} (files written without a commit)");
+            crate::log!("archive: deleted {id} (files written without a commit)");
         }
 
         self.rows.sort_by_key(|e| e.row.id);
@@ -265,9 +265,10 @@ impl Archive {
         }
         if removed > 0 {
             self.prunes += removed;
-            eprintln!(
+            crate::log!(
                 "archive: pruned {removed} label(s) (keep={}, max_bytes={}); oldest first",
-                self.keep, self.max_bytes
+                self.keep,
+                self.max_bytes
             );
         }
     }

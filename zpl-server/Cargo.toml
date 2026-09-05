@@ -15,6 +15,11 @@ tower-http = { version = "0.6", features = ["fs"] }
 # Windows-service support: only compiled on Windows. On every other target this
 # block is absent, so non-Windows builds are byte-for-byte unchanged.
 [target.'cfg(windows)'.dependencies]
+# Windows Event Log (Event Viewer): every diagnostic is written to stderr (console)
+# AND, on Windows, to the Application log under this source. Safe API (no `unsafe`
+# in our code), compiled out on every other OS.
+eventlog = "0.2"
+log = "0.4"
 windows-service = "0.8"
 
 [dev-dependencies]

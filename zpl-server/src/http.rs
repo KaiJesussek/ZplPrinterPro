@@ -651,7 +651,7 @@ pub async fn persist_now(state: &AppState) -> PersistOutcome {
                     Slot::Conditions => out.conditions = true,
                     Slot::Rows => out.rows = true,
                 },
-                Err(e) => eprintln!(
+                Err(e) => crate::log!(
                     "persist: writing {} failed: {e}",
                     slot.path(state).display()
                 ),
@@ -758,7 +758,7 @@ pub async fn spawn_http(state: Arc<AppState>, port: u16) -> std::io::Result<Join
     let app = router(state);
     let handle = tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
-            eprintln!("http: serve error: {e}");
+            crate::log!("http: serve error: {e}");
         }
     });
     Ok(handle)

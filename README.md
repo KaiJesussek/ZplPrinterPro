@@ -49,11 +49,49 @@ All optional; defaults shown.
 
 ### Windows service
 
+#### Building `zpl-server.exe` from Linux
+
+Cross-compile with a `cross`/mingw Docker image (the host toolchain alone can't
+target Windows). `--user <uid>:<gid>` should match your user so the shared
+`target/` cache isn't written as root:
+
+```bash
+docker run --rm --userns host --user 1000:1000 \
+  -e CARGO_TARGET_DIR=/target -e CARGO_HOME=/cargo \
+  -v "$HOME/.cargo:/cargo:z" -v "$PWD:/project:z" \
+  -v "$HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu:/rust:z,ro" \
+  -v "$PWD/target:/target:z" -w /project \
+  ghcr.io/cross-rs/x86_64-pc-windows-gnu:edge \
+  sh -c 'PATH=$PATH:/rust/bin cargo build --release -p zpl-server --target x86_64-pc-windows-gnu'
+```
+
+Output: `target/x86_64-pc-windows-gnu/release/zpl-server.exe` (drop `--release`
+for a debug build). A recent `x86_64-pc-windows-gnu` image is required; older
+`cross` defaults ship a mingw too old for the `GetHostNameW` import this
+binary needs.
+
 On Windows the same `zpl-server.exe` doubles as a Windows service. Started
 any other way (double-click, `cargo run`, console) it runs in the foreground
 exactly as shown above; when the Service Control Manager (SCM) launches it,
 it serves until the SCM stops it. The service branch is compiled out on every
 other OS, so Linux/foreground behavior is unchanged.
+
+On Windows, every log line the server writes to stderr is **also** written to
+the Windows Event Log - the *Application* log, source `zpl-server`. A Windows
+service has no console of its own, so Event Viewer is where those lines live
+when the exe runs under the Service Control Manager. Console output is
+unchanged and never suppressed; the Event Log is purely additive, and on every
+other OS the branch is compiled out entirely.
+
+The first log line registers the `zpl-server` source under
+`HKLM\SYSTEM\CurrentControlSet\Services\EventLog\Application`, which needs
+administrator rights. The SCM service runs as Local System and has them; a
+foreground run without them still writes the events, Event Viewer just shows
+the message inline rather than a formatted template. Inspect them with:
+
+```bat
+wevtutil qe Application /q:"*[System[Provider[@Name='zpl-server']]]" /c:20 /rd:true
+```
 
 Install and manage it with `sc.exe` (run as Administrator):
 

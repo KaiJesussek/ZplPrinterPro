@@ -230,7 +230,7 @@ impl AppState {
         if let Ok(bytes) = fs::read(persist_dir.join("state.json")) {
             match serde_json::from_slice::<Conditions>(&bytes) {
                 Ok(c) => conditions = c,
-                Err(e) => eprintln!(
+                Err(e) => crate::log!(
                     "state: ignoring unreadable {}: {e}",
                     persist_dir.join("state.json").display()
                 ),
@@ -241,7 +241,7 @@ impl AppState {
         if let Ok(bytes) = fs::read(persist_dir.join("memory.json")) {
             match serde_json::from_slice::<Memory>(&bytes) {
                 Ok(m) => memory = m,
-                Err(e) => eprintln!(
+                Err(e) => crate::log!(
                     "state: ignoring unreadable {}: {e}",
                     persist_dir.join("memory.json").display()
                 ),
