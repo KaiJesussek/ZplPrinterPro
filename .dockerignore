@@ -1,0 +1,15 @@
+.git
+.gitignore
+target/
+zpl/
+zpl-server/
+parity/
+.worktrees/
+zpl-archive/
+.superpowers/
+docs/
+Dockerfile
+docker-compose.yml
+*.md
+/release/*
+!release/zpl-server-linux-x64
