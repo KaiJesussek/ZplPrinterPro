@@ -134,9 +134,10 @@ pub(crate) fn graphic_ellipse(ctx: &mut ParseContext, params: &[u8]) {
 ///   are ignored until the total number of bytes needed ... is sent").
 ///   P is the ZB64 base64 encoding of a PNG (p.1602), printable ASCII
 ///   only - it rides the tokenizer; dimensions come from the PNG itself.
-///   C's decompression scheme is host-side and undocumented, so its
-///   payload is framed but not decoded (warn + skip). Others warn and
-///   skip.
+///   C's payload is a raw zlib stream (RFC 1950: 0x78 header + adler32),
+///   inflated to `c` graphic bytes - the same deflate the `:Z64:` A path
+///   uses, minus the base64/CRC framing; a malformed stream warns and skips.
+///   Others warn and skip.
 /// - `b` = binary byte count (bytes transmitted; "for ASCII download, the
 ///   parameter should match" c), `c` = graphic field count (total image
 ///   bytes = width x height; rows = c / d), `d` = bytes per row. All range
@@ -278,10 +279,11 @@ pub(crate) fn gf_binary_len(params: &[u8]) -> Option<(usize, usize)> {
 /// data segments plus the raw tail the driver took), validates the header
 /// exactly as the A path does, and lands the bitmap on the open field
 /// draft. Uncompressed B data *is* the bitmap (`b` should equal `c`;
-/// extras are ignored, a short payload warns and skips). C's
-/// decompression scheme is not documented by the guide ("compressed on
-/// the host side using Zebra's compression algorithm"), so C warns and
-/// skips - never a panic, never a partial draft.
+/// extras are ignored, a short payload warns and skips). C's payload is a
+/// raw zlib stream whose *compressed* length is `b` (smaller than `c`):
+/// inflate it first, then check the inflated size against `c` (extras
+/// ignored, a malformed/short stream warns and skips) - never a panic,
+/// never a partial draft.
 pub(crate) fn gf_binary_handler(ctx: &mut ParseContext, params: &[u8], tail: &[u8]) {
     let (segs, already) = head_segments(params, 4);
     let comp = segs
@@ -347,15 +349,32 @@ pub(crate) fn gf_binary_handler(ctx: &mut ParseContext, params: &[u8], tail: &[u
             ));
         }
         b'C' | b'c' => {
-            // The guide defines C's data as "compressed on the host side
-            // using Zebra's compression algorithm" but never specifies the
-            // scheme (~DY adds "used only by Zebra's BAR-ONE"); there is
-            // nothing to decompress against, so the payload is framed
-            // correctly and dropped with a warning.
-            ctx.diags.push(Diagnostic::warning(
-                "GF",
-                "compressed binary (C) is not supported; field skipped",
-            ));
+            // C's payload is a raw zlib stream (RFC 1950: 0x78 header,
+            // deflate body, adler32 trailer) - the same deflate the `:Z64:`
+            // A path uses, minus the base64/CRC framing. `b` is the
+            // *compressed* length (smaller than `c`), so inflate first and
+            // then check the *inflated* size against `c`; the declared `b`
+            // bytes are the stream, `c` the inflated bitmap count. Malformed
+            // zlib (bad header, truncated stream, inflates short of `c`)
+            // warns and skips - never a panic, never a partial draft.
+            match zlib_decompress(&bytes) {
+                Some(inflated) if inflated.len() >= c => {
+                    // Extras past the graphic count are ignored, mirroring
+                    // the A/B paths.
+                    if let Some(draft) = draft_mut(ctx) {
+                        draft.graphic = Some(GraphicKind::Inline);
+                        draft.inline_data = Some((inflated[..c].to_vec(), d as u32));
+                    }
+                }
+                _ => {
+                    ctx.diags.push(Diagnostic::warning(
+                        "GF",
+                        format!(
+                            "compressed binary (C) payload did not inflate to {c} graphic bytes; field skipped"
+                        ),
+                    ));
+                }
+            }
         }
         _ => {}
     }

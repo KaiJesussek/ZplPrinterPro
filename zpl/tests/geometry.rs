@@ -350,6 +350,48 @@ fn gf_binary_payload_accepts_caret_and_tilde_bytes() {
 }
 
 #[test]
+fn gf_c_inflates_raw_zlib_payload_to_c_bytes() {
+    // ^GF C's payload is a raw zlib stream (RFC 1950): 0x78 header,
+    // deflate body, adler32 trailer - the same deflate the `:Z64:` A path
+    // uses, minus the base64/CRC framing. `b` is the *compressed* length
+    // (253, smaller than `c`), so the decoder inflates first, then checks
+    // the inflated size against `c` (1792). The stream contains a `^` byte
+    // at offset 15, so the full production path - binary raw-take framing
+    // over `b` bytes, head_segments, zlib inflate, take-c-bytes - runs
+    // end to end. Vector from a real Zebra S4M label: inflates to exactly
+    // 1792 bytes, 406 nonzero ink bytes, first ink at offset 424.
+    let stream = include_bytes!("fixtures/gf_c_zlib.bin");
+    let mut src = b"^XA^FO0,0^GFC,253,1792,28,".to_vec();
+    src.extend_from_slice(stream);
+    src.extend_from_slice(b"^FS^XZ");
+    let (label, diags) = parse_one(&src);
+    assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
+    let g = graphic_field(&label, 0);
+    assert!(matches!(g.kind, GraphicKind::Inline));
+    assert_eq!(g.bytes_per_row, 28, "28 bytes per row (224 dots wide)");
+    assert_eq!(g.data.len(), 1792, "inflated to the declared graphic count (c)");
+    assert_eq!(
+        g.data.iter().filter(|&&b| b != 0).count(),
+        406,
+        "406 nonzero ink bytes"
+    );
+    assert_eq!(g.data[424], 0xe0, "first ink byte at offset 424 (row 15, col 4)");
+    assert_eq!(g.data[423], 0x00, "clear before first ink");
+}
+
+#[test]
+fn gf_c_malformed_zlib_warns_and_skips() {
+    // C whose payload is not a valid zlib stream (no 0x78 header): one
+    // warning, no field, no panic - a malformed inflate never lands a
+    // partial/empty bitmap on the draft.
+    let (label, diags) = parse_one(b"^XA^GFC,4,8,2,1234^FS^XZ");
+    let gf_warns = diags.items.iter().filter(|d| d.command == "GF").count();
+    assert_eq!(gf_warns, 1, "exactly one malformed-stream warning: {diags:?}");
+    assert!(diags.items.iter().all(|d| d.severity == Severity::Warning));
+    assert!(label.fields.is_empty(), "no field landed from a bad stream: {label:?}");
+}
+
+#[test]
 fn gf_binary_truncated_warns_and_parses_on() {
     // Declared byte count beyond the stream: one warning, no field, no
     // panic - and the input after the truncation point still parses
