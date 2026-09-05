@@ -47,6 +47,34 @@ All optional; defaults shown.
 | `ZPL_ARCHIVE_KEEP`    | `10000`            | Archived labels retained (newest)            |
 | `ZPL_ARCHIVE_MAX_MB`  | `1024`             | Archive size cap before oldest is pruned     |
 
+### Windows service
+
+On Windows the same `zpl-server.exe` doubles as a Windows service. Started
+any other way (double-click, `cargo run`, console) it runs in the foreground
+exactly as shown above; when the Service Control Manager (SCM) launches it,
+it serves until the SCM stops it. The service branch is compiled out on every
+other OS, so Linux/foreground behavior is unchanged.
+
+Install and manage it with `sc.exe` (run as Administrator):
+
+```bat
+sc create zpl-server binPath= "C:\path\to\zpl-server.exe" start= auto
+sc start zpl-server
+sc stop zpl-server
+```
+
+The service reads the **machine** environment, not your console user's - and
+services run from `C:\Windows\System32`, so the `ZPL_ARCHIVE_DIR` default
+(`./zpl-archive`) would otherwise land in `System32`. Set the archive dir
+machine-wide before starting (a reboot or a new session picks it up):
+
+```bat
+setx /M ZPL_ARCHIVE_DIR C:\zpl-archive
+```
+
+The other variables (`ZPL_TCP_PORT`, `ZPL_HTTP_PORT`, ...) behave the same in
+both modes. Foreground `cargo run -p zpl-server` is unaffected.
+
 ## Library usage
 
 Parse a format and rasterize it to a PNG:
