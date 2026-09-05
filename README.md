@@ -135,8 +135,8 @@ cargo test --workspace
 
 Rendering is verified against an external reference rasterizer of your
 choosing - any ZPL-to-image engine you trust: a commercial rasterizer,
-an open-source one, or a printer driver that can echo its raster. The
-reference's identity lives only in the gitignored `parity/fetch.sh`;
+an open-source one, or a printer driver that can echo its raster.
+The reference's fetch URL lives only in the gitignored `parity/fetch.sh`;
 the workflow below is engine-agnostic.
 
 1. **Corpus** - `parity/corpus/*.zpl` holds *our* labels: text, `^FB`
@@ -215,3 +215,33 @@ Nothing produced by the reference engine - images, dumps, metrics,
 notes - is committed. `parity/` is gitignored scratch, and the
 committed tests assert our documented values independently of any
 external engine.
+
+## Sources and references
+
+The implementation is anchored to the *ZPL II Programming Guide*; where
+the plan's sketches disagreed with the guide, the guide won. External
+projects and standards used to build and verify it:
+
+- **Zebra ZPL II Programming Guide** - the normative spec; every command
+  default, parameter range and byte layout is cited to its pages.
+- **tsredanovic/zplgrf** - reference for the `~DG`/`~DY` p.1761
+  compression scheme (the A-format decoder is differentially verified
+  against its encoder) and the four `:Z64:` A-format payloads whose
+  base64 bodies inflate to raw bitmap bytes (the zlib-decode vectors).
+- **BinaryKits** - the p.1761 A-format encoder behind the 20 000-case
+  differential that pins the compression semantics.
+- **Labelary** - the ZPL reference rasterizer used for the local parity
+  cross-check described above.
+- **Open-licensed fonts** (SIL OFL 1.1; license text committed beside
+  each in `zpl/tests/fixtures/`): Noto Sans Condensed (Regular and Bold)
+  for the built-in sans faces, OCR-B (jaycee723/ocr-b) and OCR-A (a
+  derivative of John Sauter's OCR-A) for the OCR letter faces, and
+  Noto Sans Symbols 2 for the `^GS` symbol set.
+- **Barcode and image standards** - ISO/IEC 15417 (Code 128), ISO/IEC
+  16388 (Code 39), ANSI/AIM BC5 (Code 93), and the AIM/ISO symbology
+  specs for PDF417, Data Matrix (ECC 200) and Aztec; RFC 1950/1951
+  (zlib/deflate) for the `^GF` A-format `:Z64:` compressed-bitmap payloads.
+- **Rust crates** - `ab_glyph` (font rasterization), `png` (PNG input and
+  output), `flate2` (`:Z64:` zlib inflation), `encoding_rs` (codepage
+  decoding), `rqrr` (QR decode-verification) and `proptest` (fuzz
+  invariants).

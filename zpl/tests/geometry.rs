@@ -211,6 +211,28 @@ fn gf_defaults_compression_to_a_and_tolerates_crlf() {
 }
 
 #[test]
+fn gf_a_z64_inflates_zlib_base64_payload() {
+    // The reference payloads ride the A-format as `:Z64:<base64>`: the body
+    // is a zlib stream (RFC 1950) whose decompressed bytes ARE the bitmap
+    // (not a PNG, not ASCII-hex). The full production path - scanner token,
+    // head_segments, `:Z64:` strip, base64, zlib, take-c-bytes - must land
+    // the inflated image on the field draft. Byte-exact against the
+    // reference vector: 33280 bytes at 80 per row, first ink at offset 2061,
+    // last at 32411.
+    let b64 = include_str!("fixtures/z64_example.b64");
+    let src = format!("^XA^FO0,0^GFA,33280,33280,80,:Z64:{b64}^FS^XZ");
+    let (label, diags) = parse_one(src.as_bytes());
+    assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
+    let g = graphic_field(&label, 0);
+    assert!(matches!(g.kind, GraphicKind::Inline));
+    assert_eq!(g.bytes_per_row, 80);
+    assert_eq!(g.data.len(), 33280);
+    assert_eq!(g.data[2061], 0x3f, "first ink byte");
+    assert_eq!(g.data[32411], 0x78, "last ink byte");
+    assert_eq!(g.data[2000], 0x00, "clear before first ink");
+}
+
+#[test]
 fn gf_missing_size_params_ignores_command() {
     // Guide: b/c/d "command is ignored if a value is not specified".
     let (label, diags) = parse_one(b"^XA^GFA,,,^FS^XZ");

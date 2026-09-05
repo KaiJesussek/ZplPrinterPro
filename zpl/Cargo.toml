@@ -6,6 +6,9 @@ edition = "2021"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 png = "0.17"
+# ^GF A-format `:Z64:` zlib payloads (RFC 1950) - already vendored
+# transitively via `png`; declared directly since the decoder reads it.
+flate2 = "1"
 ab_glyph = "0.2"
 encoding_rs = "0.8"
 

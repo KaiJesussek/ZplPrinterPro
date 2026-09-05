@@ -193,6 +193,21 @@ pub(crate) fn decode_base64(data: &[u8]) -> Option<Vec<u8>> {
     }
     Some(out)
 }
+/// Decode a zlib stream (RFC 1950: the 2-byte header, the DEFLATE body,
+/// the trailing Adler-32) to its raw payload via [`flate2`], the already-
+/// vendored inflater. `ZlibDecoder` verifies the header and the Adler-32
+/// trailer and rejects truncated or corrupt streams, so any malformed
+/// input returns `None` - never a panic, never a partial result. The
+/// `^GF` A-format `:Z64:` lead-in rides this to recover the bitmap bytes
+/// its zlib stream compresses (the reference payloads inflate to raw
+/// bitmap data, not a PNG).
+pub(crate) fn zlib_decompress(data: &[u8]) -> Option<Vec<u8>> {
+    use flate2::read::ZlibDecoder;
+    use std::io::Read;
+    let mut dec = ZlibDecoder::new(data);
+    let mut out = Vec::new();
+    dec.read_to_end(&mut out).is_ok().then_some(out)
+}
 
 /// Decode a PNG file into the emulator's 1bpp row-packed bitmap model
 /// (MSB-first, `1` = black, rows padded to whole bytes - the same layout
@@ -322,5 +337,33 @@ mod tests {
         }
         assert_eq!(bits, expect);
         assert_eq!(png_to_bitmap(b"not a png"), None);
+    }
+    // The four :Z64: payloads from the tsredanovic/zplgrf reference repo
+    // (public; zlib is a public standard), stored verbatim as fixtures - a
+    // hermetic differential against the standard (flate2) inflater: each
+    // must inflate to the exact byte count and carry the expected Adler-32
+    // of the decompressed bitmap.
+    #[test]
+    fn z64_repo_vectors_inflate_to_expected() {
+        // (expected inflated length, expected Adler-32 of the output, fixture)
+        let vectors: &[(u32, u32, &str)] = &[
+            (33280, 0xe5edaa96, include_str!("../tests/fixtures/z64_example.b64")),
+            (48000, 0x055f9be0, include_str!("../tests/fixtures/z64_pila2.b64")),
+            (48000, 0x523a5178, include_str!("../tests/fixtures/z64_prod1.b64")),
+            (48000, 0x6f048bcd, include_str!("../tests/fixtures/z64_prod2.b64")),
+        ];
+        for (idx, (c, adler, b64)) in vectors.iter().enumerate() {
+            let raw = decode_base64(b64.trim().as_bytes())
+                .unwrap_or_else(|| panic!("base64 decodes [{idx}]"));
+            let out = zlib_decompress(&raw)
+                .unwrap_or_else(|| panic!("zlib inflates [{idx}] (rawlen={})", raw.len()));
+            assert_eq!(out.len() as u32, *c, "inflated length [{idx}]");
+            let (mut a, mut bsum) = (1u32, 0u32);
+            for &x in &out {
+                a = (a + x as u32) % 65521;
+                bsum = (bsum + a) % 65521;
+            }
+            assert_eq!((bsum << 16) | a, *adler, "adler32 of the output [{idx}]");
+        }
     }
 }

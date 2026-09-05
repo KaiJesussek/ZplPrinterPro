@@ -4,7 +4,7 @@
 //! and they no-op outside a format, like every other field command.
 
 use crate::diag::{Diagnostic, Diagnostics};
-use crate::gfxdata::decode_graphic_data;
+use crate::gfxdata::{decode_base64, decode_graphic_data, zlib_decompress};
 use crate::ir::GraphicKind;
 use crate::state::{Geometry, ParseContext};
 use crate::textfmt::{draft_mut, head_segments, p_u32, split_commas, to_u32};
@@ -142,8 +142,10 @@ pub(crate) fn graphic_ellipse(ctx: &mut ParseContext, params: &[u8]) {
 ///   bytes = width x height; rows = c / d), `d` = bytes per row. All range
 ///   1..99999, out-of-range set to the nearest limit; a missing b/c/d is
 ///   "command is ignored" -> warning + skip.
-/// - `data` = ASCII hex, two digits per image byte; any data after the
-///   count (c) is satisfied is ignored - or the ZB64 PNG for a=P.
+/// - `data` = ASCII hex, two digits per image byte - or the `:Z64:`
+///   variant, a base64 zlib stream that inflates to the raw bitmap (the
+///   reference payloads use this); any data after the count (c) is
+///   satisfied is ignored. P is the ZB64 PNG instead.
 ///
 /// The decoded bitmap lands on the open field draft as
 /// `GraphicKind::Inline` with its bytes; position comes from `^FO`/`^FT`.
@@ -215,7 +217,22 @@ pub(crate) fn graphic_field(ctx: &mut ParseContext, params: &[u8]) {
         ));
         return;
     }
-    let Some(bytes) = decode_graphic_data(data, c as usize, d as usize) else {
+    // Two A-format encodings: the classic ASCII-hex nibble stream, and the
+    // `:Z64:` variant (the reference payloads) whose base64 body is a zlib
+    // stream inflating to the raw bitmap. Both take the graphic count `c`
+    // bytes; the A-format rule "any data after the count is satisfied is
+    // ignored" applies to both (extras past `c` are dropped).
+    let c = c as usize;
+    let d = d as usize;
+    let decoded = if let Some(rest) = data.strip_prefix(b":Z64:") {
+        decode_base64(rest)
+            .and_then(|raw| zlib_decompress(&raw))
+            .filter(|raw| raw.len() >= c)
+            .map(|raw| raw[..c].to_vec())
+    } else {
+        decode_graphic_data(data, c, d)
+    };
+    let Some(bytes) = decoded else {
         ctx.diags.push(Diagnostic::warning(
             "GF",
             "malformed graphic data; field skipped",
@@ -226,7 +243,7 @@ pub(crate) fn graphic_field(ctx: &mut ParseContext, params: &[u8]) {
     // malformed ^GF never fabricates an empty field.
     if let Some(draft) = draft_mut(ctx) {
         draft.graphic = Some(GraphicKind::Inline);
-        draft.inline_data = Some((bytes, d));
+        draft.inline_data = Some((bytes, d as u32));
     }
 }
 
