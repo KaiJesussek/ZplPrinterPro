@@ -676,6 +676,35 @@ async fn sse_stream_ends_when_a_subscriber_lags() {
     );
 }
 
+#[tokio::test]
+async fn root_and_static_assets_are_served_embedded() {
+    let dir = test_dir("static-ui");
+    let _keep = Cleanup(dir.clone());
+    let (_addr, state) = spawn(dir.clone()).await;
+
+    let resp = get(&state, "/").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()[header::CONTENT_TYPE],
+        "text/html; charset=utf-8",
+        "root must serve the embedded index.html"
+    );
+    let body = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&body).contains("<!DOCTYPE html>"));
+
+    let resp = get(&state, "/app.js").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    assert!(body.starts_with(b"'use strict';"));
+
+    let resp = get(&state, "/no-such-file.txt").await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
 /// spawn() with a custom retention override (small KEEP / MAX bytes).
 async fn spawn_limited(dir: PathBuf, keep: usize, max_bytes: u64) -> (SocketAddr, Arc<AppState>) {
     let state = Arc::new(AppState::new(

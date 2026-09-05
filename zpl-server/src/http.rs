@@ -44,7 +44,6 @@ use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
-use tower_http::services::ServeDir;
 
 use zpl::cmd::parse_stream_collect;
 use zpl::diag::Diagnostics;
@@ -63,11 +62,11 @@ use crate::state::{AppState, Conditions, Event};
 /// drive it with `tower::ServiceExt::oneshot`).
 ///
 /// The API routes are registered first; anything unmatched falls through
-/// to the static UI (`static/index.html` + `app.js` + `style.css`), so
-/// `/api/*` is never shadowed by the filesystem. `STATIC_DIR` is resolved
-/// at compile time, so the binary serves its UI regardless of CWD.
-const STATIC_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/static");
-
+/// to the web UI. The three static files are embedded at compile time
+/// (`include_bytes!`, the same pattern as the TTFs in `zpl::fonts`) so the
+/// UI is served from inside the binary - no filesystem dependency, which
+/// is what lets the Docker image and the release binaries serve it
+/// anywhere. `STATIC_DIR` (the old compile-time checkout path) is gone.
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/labels", get(list_labels))
@@ -81,8 +80,28 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/storage", get(get_storage))
         .route("/api/diagnostics", get(get_diagnostics))
         .route("/api/events", get(events_sse))
-        .fallback_service(ServeDir::new(STATIC_DIR))
+        .fallback(serve_static)
         .with_state(state)
+}
+
+/// Embedded web UI: `index.html`, `app.js`, `style.css`.
+const INDEX_HTML: &[u8] = include_bytes!("../static/index.html");
+const APP_JS: &[u8] = include_bytes!("../static/app.js");
+const STYLE_CSS: &[u8] = include_bytes!("../static/style.css");
+
+/// Static-file fallback: `/` and `/index.html` serve the UI, `/app.js`
+/// and `/style.css` their assets, anything else 404s.
+async fn serve_static(uri: axum::http::Uri) -> impl IntoResponse {
+    let (mime, body): (&str, &[u8]) = match uri.path().trim_start_matches('/') {
+        "" | "index.html" => ("text/html; charset=utf-8", INDEX_HTML),
+        "app.js" => ("text/javascript", APP_JS),
+        "style.css" => ("text/css", STYLE_CSS),
+        _ => return (StatusCode::NOT_FOUND, "not found").into_response(),
+    };
+    let mut resp = Response::new(axum::body::Body::from(body.to_vec()));
+    resp.headers_mut()
+        .insert(header::CONTENT_TYPE, mime.parse().unwrap());
+    resp
 }
 
 // ---------------------------------------------------------------------------
