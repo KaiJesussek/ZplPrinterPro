@@ -386,7 +386,10 @@ mod tests {
 
     #[test]
     fn national_set_matches_cp850() {
-        assert_eq!(decode_text(&[0x94, 0x84, 0x81], 5), "\u{00F6}\u{00E4}\u{00FC}");
+        assert_eq!(
+            decode_text(&[0x94, 0x84, 0x81], 5),
+            "\u{00F6}\u{00E4}\u{00FC}"
+        );
     }
 
     #[test]
@@ -398,7 +401,10 @@ mod tests {
 
     #[test]
     fn utf8_passthrough_and_lossy_replacement() {
-        assert_eq!(decode_text("Gr\u{00FC}\u{00DF}e".as_bytes(), 28), "Gr\u{00FC}\u{00DF}e");
+        assert_eq!(
+            decode_text("Gr\u{00FC}\u{00DF}e".as_bytes(), 28),
+            "Gr\u{00FC}\u{00DF}e"
+        );
         // Invalid UTF-8 degrades, never panics.
         assert!(decode_text(&[0xFF, 0xFE], 28).contains('\u{FFFD}'));
     }

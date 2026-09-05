@@ -96,7 +96,10 @@ fn downloaded_cell_metrics_follow_the_fonts_own_header() {
     let upem = face.units_per_em().expect("head unitsPerEm");
     assert!(upem > 0.0);
     let (ascent, descent) = (face.ascent_unscaled(), face.descent_unscaled());
-    assert!(descent < 0.0, "hhea descent of the fixture is below the baseline");
+    assert!(
+        descent < 0.0,
+        "hhea descent of the fixture is below the baseline"
+    );
 
     // The character block: the hhea vertical extent at the reference size.
     let cell = ((ascent - descent) * 100.0 / upem).round().max(1.0) as u32;
@@ -116,7 +119,12 @@ fn downloaded_cell_metrics_follow_the_fonts_own_header() {
     for c in 32u8..=126 {
         let gid = face.glyph_id(c as char);
         let adv = (face.h_advance_unscaled(gid) * 100.0 / upem).round() as u16;
-        assert_eq!(m.advances[(c - 32) as usize], adv, "advance of '{}'", c as char);
+        assert_eq!(
+            m.advances[(c - 32) as usize],
+            adv,
+            "advance of '{}'",
+            c as char
+        );
     }
     assert!(
         m.advances.iter().all(|&a| a > 0),
@@ -160,14 +168,12 @@ fn at_select_carries_cell_and_scaled_advance() {
     // quantization bound of one dot at any cell.
     let m = &font_data_from_ttf(FIXTURE_TTF).expect("metrics").metrics;
     let ref_adv = u32::from(m.advances[(b'H' - 32) as usize]);
-    let drawn_at = |cell: u32| {
-        (ref_adv as f32 * cell as f32 / m.cell_height.max(1) as f32).round() as i64
-    };
+    let drawn_at =
+        |cell: u32| (ref_adv as f32 * cell as f32 / m.cell_height.max(1) as f32).round() as i64;
     let face = FontVec::try_from_vec(FIXTURE_TTF.to_vec()).expect("fixture parses");
     let h_adv = face.h_advance_unscaled(face.glyph_id('H'));
     let block = face.ascent_unscaled() - face.descent_unscaled();
-    let direct_at =
-        |cell: u32| (h_adv * cell as f32 / block).round() as i64;
+    let direct_at = |cell: u32| (h_adv * cell as f32 / block).round() as i64;
     for cell in [50u32, 60, 100] {
         assert!(
             (drawn_at(cell) - direct_at(cell)).abs() <= 1,

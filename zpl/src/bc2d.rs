@@ -189,13 +189,25 @@ fn qr_count_bits(mode: QrMode, version: usize) -> usize {
     let wide = version >= 10;
     match mode {
         QrMode::Numeric => {
-            if wide { 12 } else { 10 }
+            if wide {
+                12
+            } else {
+                10
+            }
         }
         QrMode::Alnum => {
-            if wide { 13 } else { 9 }
+            if wide {
+                13
+            } else {
+                9
+            }
         }
         QrMode::Byte => {
-            if wide { 16 } else { 8 }
+            if wide {
+                16
+            } else {
+                8
+            }
         }
     }
 }
@@ -205,11 +217,14 @@ fn qr_count_bits(mode: QrMode, version: usize) -> usize {
 /// packs 2 chars per 11 bits (leftover 1 -> 6), byte is 8 per char.
 fn qr_payload_bits(mode: QrMode, len: usize) -> usize {
     match mode {
-        QrMode::Numeric => (len / 3) * 10 + match len % 3 {
-            0 => 0,
-            1 => 4,
-            _ => 7,
-        },
+        QrMode::Numeric => {
+            (len / 3) * 10
+                + match len % 3 {
+                    0 => 0,
+                    1 => 4,
+                    _ => 7,
+                }
+        }
         QrMode::Alnum => (len / 2) * 11 + (len % 2) * 6,
         QrMode::Byte => len * 8,
     }
@@ -275,10 +290,7 @@ fn qr_data_codewords(capacity: usize, mode: QrMode, payload: &[u8], version: usi
         QrMode::Alnum => {
             let mut i = 0;
             while i + 1 < payload.len() {
-                let a = QR_ALNUM
-                    .iter()
-                    .position(|&c| c == payload[i])
-                    .unwrap_or(0) as u32;
+                let a = QR_ALNUM.iter().position(|&c| c == payload[i]).unwrap_or(0) as u32;
                 let b = QR_ALNUM
                     .iter()
                     .position(|&c| c == payload[i + 1])
@@ -290,10 +302,7 @@ fn qr_data_codewords(capacity: usize, mode: QrMode, payload: &[u8], version: usi
                 i += 2;
             }
             if i < payload.len() {
-                let a = QR_ALNUM
-                    .iter()
-                    .position(|&c| c == payload[i])
-                    .unwrap_or(0) as u32;
+                let a = QR_ALNUM.iter().position(|&c| c == payload[i]).unwrap_or(0) as u32;
                 for bit in (0..6).rev() {
                     bits.push(((a >> bit) & 1) as u8);
                 }
@@ -320,7 +329,7 @@ fn qr_data_codewords(capacity: usize, mode: QrMode, payload: &[u8], version: usi
                 1 => 4,
                 _ => 7,
             })
-            .rev()
+                .rev()
             {
                 bits.push(((v >> bit) & 1) as u8);
             }
@@ -700,10 +709,8 @@ fn dm_c40_codewords(data: &[u8], out: &mut Vec<u8>) {
     let vals: Vec<u8> = data.iter().map(|&b| dm_basic_c40(b).unwrap()).collect();
     let mut i = 0;
     while i + 2 < vals.len() {
-        let v = 1600u32 * u32::from(vals[i])
-            + 40 * u32::from(vals[i + 1])
-            + u32::from(vals[i + 2])
-            + 1;
+        let v =
+            1600u32 * u32::from(vals[i]) + 40 * u32::from(vals[i + 1]) + u32::from(vals[i + 2]) + 1;
         out.push((v >> 8) as u8);
         out.push((v & 0xFF) as u8);
         i += 3;

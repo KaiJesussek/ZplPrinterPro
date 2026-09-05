@@ -1024,13 +1024,24 @@ fn b5_planet_bars() {
     let t: Option<u32> = None;
     let s = Some(12);
     // bit=1 -> short: 0=11000, 1=00011, 2=00101, 3=00110, 4=01001.
-    let expect: Vec<Option<u32>> = [&[0u8][..], &[1, 1, 0, 0, 0], &[0, 0, 0, 1, 1], &[0, 0, 1, 0, 1],
-        &[0, 0, 1, 1, 0], &[0, 1, 0, 0, 1], &[0u8][..]]
-        .concat()
-        .iter()
-        .map(|&bit| if bit == 1 { s } else { t })
-        .collect();
-    assert_eq!(bars.len(), expect.len() * 2 - 1, "5 bars per digit + 2 frames, spaces between");
+    let expect: Vec<Option<u32>> = [
+        &[0u8][..],
+        &[1, 1, 0, 0, 0],
+        &[0, 0, 0, 1, 1],
+        &[0, 0, 1, 0, 1],
+        &[0, 0, 1, 1, 0],
+        &[0, 1, 0, 0, 1],
+        &[0u8][..],
+    ]
+    .concat()
+    .iter()
+    .map(|&bit| if bit == 1 { s } else { t })
+    .collect();
+    assert_eq!(
+        bars.len(),
+        expect.len() * 2 - 1,
+        "5 bars per digit + 2 frames, spaces between"
+    );
     for (i, bar) in bars.iter().filter(|b| b.black).enumerate() {
         assert_eq!((bar.width, bar.height), (1, expect[i]), "dark bar {i}");
     }

@@ -6,11 +6,11 @@ mod common;
 use common::parse_one;
 use zpl::cmd::{parse_stream, parse_stream_collect};
 use zpl::diag::{Diagnostics, Severity};
-use zpl::scanner::Scanner;
-use zpl::state::{Memory, ParseContext};
 use zpl::ir::{
     BoxField, CircleField, DiagonalField, EllipseField, Field, GraphicField, GraphicKind, Label,
 };
+use zpl::scanner::Scanner;
+use zpl::state::{Memory, ParseContext};
 
 fn box_field(label: &Label, i: usize) -> &BoxField {
     match &label.fields[i] {
@@ -239,9 +239,7 @@ fn gf_a_z64_tolerates_trailing_crc() {
     // unspecified, so the trailer is stripped but not verified - a payload
     // with it must decode to the same bitmap as without.
     let b64 = include_str!("fixtures/z64_example.b64").trim();
-    let with_crc = format!(
-        "^XA^FO0,0^GFA,33280,33280,80,:Z64:{b64}:a1b2^FS^XZ"
-    );
+    let with_crc = format!("^XA^FO0,0^GFA,33280,33280,80,:Z64:{b64}:a1b2^FS^XZ");
     let plain = format!("^XA^FO0,0^GFA,33280,33280,80,:Z64:{b64}^FS^XZ");
     let (a, da) = parse_one(with_crc.as_bytes());
     let (p, dp) = parse_one(plain.as_bytes());
@@ -249,7 +247,11 @@ fn gf_a_z64_tolerates_trailing_crc() {
     assert_eq!(dp.items.len(), 0, "plain payload: {dp:?}");
     let g = graphic_field(&a, 0);
     assert_eq!(g.data.len(), 33280);
-    assert_eq!(g.data, graphic_field(&p, 0).data, "crc stripped, bitmap identical");
+    assert_eq!(
+        g.data,
+        graphic_field(&p, 0).data,
+        "crc stripped, bitmap identical"
+    );
 }
 
 #[test]
@@ -337,7 +339,11 @@ fn gf_binary_payload_accepts_caret_and_tilde_bytes() {
     src.extend_from_slice(b"^FS^FO20,20^FDafter^FS^XZ");
     let (label, diags) = parse_one(&src);
     assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
-    assert_eq!(label.fields.len(), 2, "binary field plus the trailing field");
+    assert_eq!(
+        label.fields.len(),
+        2,
+        "binary field plus the trailing field"
+    );
     let g = graphic_field(&label, 0);
     assert_eq!((g.x, g.y), (5, 5));
     assert!(matches!(g.kind, GraphicKind::Inline));
@@ -369,13 +375,20 @@ fn gf_c_inflates_raw_zlib_payload_to_c_bytes() {
     let g = graphic_field(&label, 0);
     assert!(matches!(g.kind, GraphicKind::Inline));
     assert_eq!(g.bytes_per_row, 28, "28 bytes per row (224 dots wide)");
-    assert_eq!(g.data.len(), 1792, "inflated to the declared graphic count (c)");
+    assert_eq!(
+        g.data.len(),
+        1792,
+        "inflated to the declared graphic count (c)"
+    );
     assert_eq!(
         g.data.iter().filter(|&&b| b != 0).count(),
         406,
         "406 nonzero ink bytes"
     );
-    assert_eq!(g.data[424], 0xe0, "first ink byte at offset 424 (row 15, col 4)");
+    assert_eq!(
+        g.data[424], 0xe0,
+        "first ink byte at offset 424 (row 15, col 4)"
+    );
     assert_eq!(g.data[423], 0x00, "clear before first ink");
 }
 
@@ -386,9 +399,15 @@ fn gf_c_malformed_zlib_warns_and_skips() {
     // partial/empty bitmap on the draft.
     let (label, diags) = parse_one(b"^XA^GFC,4,8,2,1234^FS^XZ");
     let gf_warns = diags.items.iter().filter(|d| d.command == "GF").count();
-    assert_eq!(gf_warns, 1, "exactly one malformed-stream warning: {diags:?}");
+    assert_eq!(
+        gf_warns, 1,
+        "exactly one malformed-stream warning: {diags:?}"
+    );
     assert!(diags.items.iter().all(|d| d.severity == Severity::Warning));
-    assert!(label.fields.is_empty(), "no field landed from a bad stream: {label:?}");
+    assert!(
+        label.fields.is_empty(),
+        "no field landed from a bad stream: {label:?}"
+    );
 }
 
 #[test]
@@ -450,7 +469,11 @@ fn gf_binary_payload_split_across_parse_calls_decodes_fully() {
     let mut ref_ctx = ParseContext::new(&mut diags_ref, &mut mem_ref);
     let mut ref_labels = Vec::new();
     parse_stream_collect(&mut Scanner::new(&src), &mut ref_ctx, &mut ref_labels);
-    assert_eq!(ref_labels.len(), 1, "single-chunk parse must close one label");
+    assert_eq!(
+        ref_labels.len(),
+        1,
+        "single-chunk parse must close one label"
+    );
     let ref_data = match &ref_labels[0].label.fields[0] {
         Field::Graphic(g) => g.data.clone(),
         other => panic!("expected graphic field, got {other:?}"),
@@ -470,8 +493,16 @@ fn gf_binary_payload_split_across_parse_calls_decodes_fully() {
     ctx.token_end = mid;
     parse_stream_collect(&mut Scanner::new(&src[mid..]), &mut ctx, &mut labels);
 
-    assert_eq!(labels.len(), 1, "one label, no phantom format from ^/~ bait");
-    assert_eq!(diags.items.len(), 0, "a payload spanning chunks is valid input: {diags:?}");
+    assert_eq!(
+        labels.len(),
+        1,
+        "one label, no phantom format from ^/~ bait"
+    );
+    assert_eq!(
+        diags.items.len(),
+        0,
+        "a payload spanning chunks is valid input: {diags:?}"
+    );
     assert_eq!(
         &src[labels[0].start..labels[0].end],
         &src[..],
@@ -479,7 +510,10 @@ fn gf_binary_payload_split_across_parse_calls_decodes_fully() {
     );
     match &labels[0].label.fields[0] {
         Field::Graphic(g) => {
-            assert_eq!(g.data, ref_data, "two-chunk decode must byte-match the single-chunk one");
+            assert_eq!(
+                g.data, ref_data,
+                "two-chunk decode must byte-match the single-chunk one"
+            );
             assert_eq!(g.bytes_per_row, 5);
         }
         other => panic!("expected graphic field, got {other:?}"),
@@ -491,7 +525,10 @@ fn gf_binary_payload_split_across_parse_calls_decodes_fully() {
     let mut diags2 = Diagnostics::default();
     let mut mem2 = Memory::default();
     let mut ctx2 = ParseContext::new(&mut diags2, &mut mem2);
-    parse_stream(&mut Scanner::new(&src[labels[0].start..labels[0].end]), &mut ctx2);
+    parse_stream(
+        &mut Scanner::new(&src[labels[0].start..labels[0].end]),
+        &mut ctx2,
+    );
     assert!(
         ctx2.diags.items.is_empty(),
         "no diagnostics on re-parse: {:?}",
@@ -500,7 +537,10 @@ fn gf_binary_payload_split_across_parse_calls_decodes_fully() {
     let label2 = ctx2.pending_label.expect("re-parsed format closes");
     match &label2.fields[0] {
         Field::Graphic(g) => {
-            assert_eq!(g.data, ref_data, "archived raw span must re-parse to the same decode");
+            assert_eq!(
+                g.data, ref_data,
+                "archived raw span must re-parse to the same decode"
+            );
             assert_eq!(g.bytes_per_row, 5);
         }
         other => panic!("expected graphic field, got {other:?}"),
@@ -555,8 +595,7 @@ fn tiny_gray_png() -> Vec<u8> {
 /// Minimal MIME base64 encoder for test fixtures (the crate's decoder is
 /// crate-internal; integration tests build the payload themselves).
 fn base64(data: &[u8]) -> String {
-    const TABLE: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
     for chunk in data.chunks(3) {
         let mut n = (chunk[0] as u32) << 16;

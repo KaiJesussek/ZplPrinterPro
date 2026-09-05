@@ -117,7 +117,15 @@ pub fn barcode_field(f: &BarcodeField) -> Pattern {
         // data; the encoders stay option-free.
         bc1d::prepare(f, &data)
     };
-    match encode(f.symbology, &data, module, ratio, height, f.line, (f.model as u16) | if f.ucc { 0x100 } else { 0 }) {
+    match encode(
+        f.symbology,
+        &data,
+        module,
+        ratio,
+        height,
+        f.line,
+        (f.model as u16) | if f.ucc { 0x100 } else { 0 },
+    ) {
         Ok(pattern) => pattern,
         Err(_) => Pattern::Bars(Vec::new()),
     }

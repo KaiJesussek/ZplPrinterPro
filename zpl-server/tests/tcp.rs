@@ -377,7 +377,11 @@ async fn binary_payload_split_across_reads_decodes_fully() {
     wait_labels(&state, 1).await;
     {
         let arc = state.archive.lock().await;
-        assert_eq!(arc.len(), 1, "exactly one label \u{2014} no phantom from ^ bait");
+        assert_eq!(
+            arc.len(),
+            1,
+            "exactly one label \u{2014} no phantom from ^ bait"
+        );
         let rows = arc.rows();
         assert_eq!(
             rows[0].row.diags, 0,

@@ -43,8 +43,10 @@ fn decode_qr(pat: &Pattern) -> Result<String, String> {
     // rqrr's grid detection sees the required white margin.
     let q = 4;
     let scale = 4usize;
-    let mut prepared =
-        rqrr::PreparedImage::prepare_from_bitmap((w + 2 * q) * scale, (h + 2 * q) * scale, |x, y| {
+    let mut prepared = rqrr::PreparedImage::prepare_from_bitmap(
+        (w + 2 * q) * scale,
+        (h + 2 * q) * scale,
+        |x, y| {
             let mx = x / scale;
             let my = y / scale;
             if mx < q || my < q || mx >= w + q || my >= h + q {
@@ -52,7 +54,8 @@ fn decode_qr(pat: &Pattern) -> Result<String, String> {
             }
             let i = (my - q) * w + (mx - q);
             data[i >> 3] & (0x80 >> (i & 7)) != 0
-        });
+        },
+    );
     let grids = prepared.detect_grids();
     for g in &grids {
         if let Ok((_meta, text)) = g.decode() {
@@ -100,8 +103,14 @@ fn qr_roundtrip_unicode_and_masks() {
         assert_eq!(decode_qr(&pat).unwrap(), "mask-check", "mask {mask}");
     }
     // Unicode text (UTF-8 bytes) round-trips verbatim.
-    let pat = modules_of(b"^CI28^BQN,2,2,Q", "H\u{00E9}llo W\u{00F6}rld \u{2705}".as_bytes());
-    assert_eq!(decode_qr(&pat).unwrap(), "H\u{00E9}llo W\u{00F6}rld \u{2705}");
+    let pat = modules_of(
+        b"^CI28^BQN,2,2,Q",
+        "H\u{00E9}llo W\u{00F6}rld \u{2705}".as_bytes(),
+    );
+    assert_eq!(
+        decode_qr(&pat).unwrap(),
+        "H\u{00E9}llo W\u{00F6}rld \u{2705}"
+    );
     // 44 characters at level Q, all alphanumeric-capable (digits +
     // upper-case) -> ISO alphanumeric mode -> version 3 (29 modules); a
     // byte-mode decoder still reads the same text back.
@@ -262,7 +271,11 @@ fn dm_largest_symbol_144x144_never_panics() {
     let Pattern::Modules { width, height, .. } = &pat else {
         panic!()
     };
-    assert_eq!((*width, *height), (144, 144), "144x144 symbol (no quiet zone)");
+    assert_eq!(
+        (*width, *height),
+        (144, 144),
+        "144x144 symbol (no quiet zone)"
+    );
 }
 
 #[test]
@@ -270,7 +283,10 @@ fn dm_extended_bytes_use_upper_shift() {
     // Non-ASCII text costs 2 codewords per UTF-8 byte (upper-shift
     // escape 235 + value). "ooooo" = 10 UTF-8 bytes -> 20 codewords ->
     // 20x20 symbol (22 data codewords).
-    let pat = modules_of(b"^CI28^BXN,1,200", "\u{00F6}\u{00F6}\u{00F6}\u{00F6}\u{00F6}".as_bytes());
+    let pat = modules_of(
+        b"^CI28^BXN,1,200",
+        "\u{00F6}\u{00F6}\u{00F6}\u{00F6}\u{00F6}".as_bytes(),
+    );
     let Pattern::Modules { width, .. } = &pat else {
         panic!()
     };
@@ -294,7 +310,7 @@ fn pdf417_hello_layout() {
     };
     assert_eq!(*width, 17 * 2 + 69 + 4, "2 cols + quiet zone"); // 107
     assert_eq!(*height, 5 * 3, "5 rows \u{00D7} row height 3"); // ^B7 h = 3
-                                                         // Start pattern 0x1FEA8 (17 modules): 11111111010101000.
+                                                                // Start pattern 0x1FEA8 (17 modules): 11111111010101000.
     let start: Vec<bool> = (0..17).map(|i| (0x1FEA8u32 >> (16 - i)) & 1 == 1).collect();
     for (i, &d) in start.iter().enumerate() {
         let x = 2 + i; // after the 2-module quiet zone

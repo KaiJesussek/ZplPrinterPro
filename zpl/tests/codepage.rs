@@ -196,21 +196,53 @@ fn country_sets_remap_their_keys() {
         // ^CI2 U.K.: '#' (0x23) prints pound.
         (2, b"\x23", "\u{00A3}"),
         // ^CI4 Denmark/Norway.
-        (4, b"\x5B\x5C\x5D\x7B\x7C\x7D", "\u{00C6}\u{00D8}\u{00C5}\u{00E6}\u{00F8}\u{00E5}"),
+        (
+            4,
+            b"\x5B\x5C\x5D\x7B\x7C\x7D",
+            "\u{00C6}\u{00D8}\u{00C5}\u{00E6}\u{00F8}\u{00E5}",
+        ),
         // ^CI5 Sweden/Finland.
-        (5, b"\x40\x5B\x5C\x5D\x7B\x7C\x7D", "\u{00C4}\u{00C4}\u{00D6}\u{00C5}\u{00E4}\u{00F6}\u{00E5}"),
+        (
+            5,
+            b"\x40\x5B\x5C\x5D\x7B\x7C\x7D",
+            "\u{00C4}\u{00C4}\u{00D6}\u{00C5}\u{00E4}\u{00F6}\u{00E5}",
+        ),
         // ^CI6 Germany.
-        (6, b"\x40\x5B\x5C\x5D\x7B\x7C\x7D", "\u{00C4}\u{00C4}\u{00D6}\u{00DC}\u{00E4}\u{00F6}\u{00FC}"),
+        (
+            6,
+            b"\x40\x5B\x5C\x5D\x7B\x7C\x7D",
+            "\u{00C4}\u{00C4}\u{00D6}\u{00DC}\u{00E4}\u{00F6}\u{00FC}",
+        ),
         // ^CI7 France 1.
-        (7, b"\x40\x5B\x5C\x5D\x7B\x7C\x7D", "\u{00E0}\u{00B0}\u{00E7}\u{00A7}\u{00E9}\u{00F9}\u{00E8}"),
+        (
+            7,
+            b"\x40\x5B\x5C\x5D\x7B\x7C\x7D",
+            "\u{00E0}\u{00B0}\u{00E7}\u{00A7}\u{00E9}\u{00F9}\u{00E8}",
+        ),
         // ^CI8 France 2 (diaeresis replaced by c-cedilla at 0x7E).
-        (8, b"\x40\x5B\x5C\x5D\x7B\x7C\x7D", "\u{00E0}\u{00B0}\u{00E7}\u{00A7}\u{00E9}\u{00F9}\u{00E8}"),
+        (
+            8,
+            b"\x40\x5B\x5C\x5D\x7B\x7C\x7D",
+            "\u{00E0}\u{00B0}\u{00E7}\u{00A7}\u{00E9}\u{00F9}\u{00E8}",
+        ),
         // ^CI9 Italy.
-        (9, b"\x5B\x5C\x5D\x7B\x7C\x7D", "\u{00B0}\u{00E7}\u{00E9}\u{00E0}\u{00F2}\u{00E8}"),
+        (
+            9,
+            b"\x5B\x5C\x5D\x7B\x7C\x7D",
+            "\u{00B0}\u{00E7}\u{00E9}\u{00E0}\u{00F2}\u{00E8}",
+        ),
         // ^CI10 Spain.
-        (10, b"\x5B\x5C\x5D\x7B\x7C\x7D", "\u{00A1}\u{00D1}\u{00BF}\u{00E1}\u{00ED}\u{00F3}"),
+        (
+            10,
+            b"\x5B\x5C\x5D\x7B\x7C\x7D",
+            "\u{00A1}\u{00D1}\u{00BF}\u{00E1}\u{00ED}\u{00F3}",
+        ),
         // ^CI11 Miscellaneous: U.K.'s pound plus the German accented row.
-        (11, b"\x23\x40\x5B\x5C\x5D\x7B\x7C\x7D", "\u{00A3}\u{00C4}\u{00C4}\u{00D6}\u{00DC}\u{00E4}\u{00F6}\u{00FC}"),
+        (
+            11,
+            b"\x23\x40\x5B\x5C\x5D\x7B\x7C\x7D",
+            "\u{00A3}\u{00C4}\u{00C4}\u{00D6}\u{00DC}\u{00E4}\u{00F6}\u{00FC}",
+        ),
         // ^CI12 Japan: only the backslash key changes (yen).
         (12, b"\x5C", "\u{00A5}"),
         // ^CI13 plain 850 keeps the base characters.
@@ -237,14 +269,38 @@ fn country_sets_full_rows() {
     let full = [0x23u8, 0x24, 0x40, 0x5B, 0x5C, 0x5D, 0x7B, 0x7C, 0x7D, 0x7E];
     assert_eq!(decode_text(&full, 1), "#$@[\\]{|}~");
     assert_eq!(decode_text(&full, 2), "\u{00A3}$@[\\]{|}~");
-    assert_eq!(decode_text(&full, 4), "#$@\u{00C6}\u{00D8}\u{00C5}\u{00E6}\u{00F8}\u{00E5}~");
-    assert_eq!(decode_text(&full, 5), "#$\u{00C4}\u{00C4}\u{00D6}\u{00C5}\u{00E4}\u{00F6}\u{00E5}~");
-    assert_eq!(decode_text(&full, 6), "#$\u{00C4}\u{00C4}\u{00D6}\u{00DC}\u{00E4}\u{00F6}\u{00FC}\u{00DF}");
-    assert_eq!(decode_text(&full, 7), "#$\u{00E0}\u{00B0}\u{00E7}\u{00A7}\u{00E9}\u{00F9}\u{00E8}\u{00A8}");
-    assert_eq!(decode_text(&full, 8), "#$\u{00E0}\u{00B0}\u{00E7}\u{00A7}\u{00E9}\u{00F9}\u{00E8}\u{00E7}");
-    assert_eq!(decode_text(&full, 9), "#$@\u{00B0}\u{00E7}\u{00E9}\u{00E0}\u{00F2}\u{00E8}\u{00EC}");
-    assert_eq!(decode_text(&full, 10), "#$@\u{00A1}\u{00D1}\u{00BF}\u{00E1}\u{00ED}\u{00F3}\u{00FA}");
-    assert_eq!(decode_text(&full, 11), "\u{00A3}$\u{00C4}\u{00C4}\u{00D6}\u{00DC}\u{00E4}\u{00F6}\u{00FC}\u{00DF}");
+    assert_eq!(
+        decode_text(&full, 4),
+        "#$@\u{00C6}\u{00D8}\u{00C5}\u{00E6}\u{00F8}\u{00E5}~"
+    );
+    assert_eq!(
+        decode_text(&full, 5),
+        "#$\u{00C4}\u{00C4}\u{00D6}\u{00C5}\u{00E4}\u{00F6}\u{00E5}~"
+    );
+    assert_eq!(
+        decode_text(&full, 6),
+        "#$\u{00C4}\u{00C4}\u{00D6}\u{00DC}\u{00E4}\u{00F6}\u{00FC}\u{00DF}"
+    );
+    assert_eq!(
+        decode_text(&full, 7),
+        "#$\u{00E0}\u{00B0}\u{00E7}\u{00A7}\u{00E9}\u{00F9}\u{00E8}\u{00A8}"
+    );
+    assert_eq!(
+        decode_text(&full, 8),
+        "#$\u{00E0}\u{00B0}\u{00E7}\u{00A7}\u{00E9}\u{00F9}\u{00E8}\u{00E7}"
+    );
+    assert_eq!(
+        decode_text(&full, 9),
+        "#$@\u{00B0}\u{00E7}\u{00E9}\u{00E0}\u{00F2}\u{00E8}\u{00EC}"
+    );
+    assert_eq!(
+        decode_text(&full, 10),
+        "#$@\u{00A1}\u{00D1}\u{00BF}\u{00E1}\u{00ED}\u{00F3}\u{00FA}"
+    );
+    assert_eq!(
+        decode_text(&full, 11),
+        "\u{00A3}$\u{00C4}\u{00C4}\u{00D6}\u{00DC}\u{00E4}\u{00F6}\u{00FC}\u{00DF}"
+    );
     assert_eq!(decode_text(&full, 12), "#$@[\u{00A5}]{|}~");
     assert_eq!(decode_text(&full, 13), "#$@[\\]{|}~");
 }

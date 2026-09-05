@@ -23,22 +23,164 @@ const FIXTURE_TTF: &[u8] = include_bytes!("fixtures/DejaVuSansCondensed.ttf");
 /// tables in `zpl/src/fonts.rs`; a change to either side is a review
 /// event.
 const GUIDE_CELLS: &[(u8, u32, CapModel)] = &[
-    (b'A', 9, CapModel::Matrix { base: 7, divisor: 12, pad: 0, lp: 0 }),
-    (b'B', 11, CapModel::Matrix { base: 11, divisor: 11, pad: 0, lp: 0 }),
-    (b'C', 18, CapModel::Matrix { base: 14, divisor: 18, pad: 0, lp: 0 }),
-    (b'D', 18, CapModel::Matrix { base: 14, divisor: 18, pad: 0, lp: 0 }),
-    (b'E', 28, CapModel::Matrix { base: 20, divisor: 28, pad: 3, lp: 0 }),
-    (b'F', 26, CapModel::Snap { base: 21, divisor: 30 }),
-    (b'G', 60, CapModel::Matrix { base: 48, divisor: 60, pad: 0, lp: 6 }),
-    (b'H', 21, CapModel::Matrix { base: 21, divisor: 21, pad: 0, lp: 0 }),
-    (zpl::fonts::SYMBOL_KEY, 24, CapModel::Matrix { base: 15, divisor: 24, pad: 0, lp: 0 }),
-    (b'P', 20, CapModel::Matrix { base: 12, divisor: 20, pad: 3, lp: 1 }),
-    (b'Q', 28, CapModel::Matrix { base: 17, divisor: 28, pad: 4, lp: 2 }),
-    (b'R', 35, CapModel::Matrix { base: 21, divisor: 35, pad: 5, lp: 2 }),
-    (b'S', 40, CapModel::Matrix { base: 25, divisor: 40, pad: 6, lp: 3 }),
-    (b'T', 48, CapModel::Matrix { base: 30, divisor: 48, pad: 7, lp: 3 }),
-    (b'U', 59, CapModel::Matrix { base: 37, divisor: 59, pad: 9, lp: 4 }),
-    (b'V', 80, CapModel::Matrix { base: 50, divisor: 80, pad: 12, lp: 4 }),
+    (
+        b'A',
+        9,
+        CapModel::Matrix {
+            base: 7,
+            divisor: 12,
+            pad: 0,
+            lp: 0,
+        },
+    ),
+    (
+        b'B',
+        11,
+        CapModel::Matrix {
+            base: 11,
+            divisor: 11,
+            pad: 0,
+            lp: 0,
+        },
+    ),
+    (
+        b'C',
+        18,
+        CapModel::Matrix {
+            base: 14,
+            divisor: 18,
+            pad: 0,
+            lp: 0,
+        },
+    ),
+    (
+        b'D',
+        18,
+        CapModel::Matrix {
+            base: 14,
+            divisor: 18,
+            pad: 0,
+            lp: 0,
+        },
+    ),
+    (
+        b'E',
+        28,
+        CapModel::Matrix {
+            base: 20,
+            divisor: 28,
+            pad: 3,
+            lp: 0,
+        },
+    ),
+    (
+        b'F',
+        26,
+        CapModel::Snap {
+            base: 21,
+            divisor: 30,
+        },
+    ),
+    (
+        b'G',
+        60,
+        CapModel::Matrix {
+            base: 48,
+            divisor: 60,
+            pad: 0,
+            lp: 6,
+        },
+    ),
+    (
+        b'H',
+        21,
+        CapModel::Matrix {
+            base: 21,
+            divisor: 21,
+            pad: 0,
+            lp: 0,
+        },
+    ),
+    (
+        zpl::fonts::SYMBOL_KEY,
+        24,
+        CapModel::Matrix {
+            base: 15,
+            divisor: 24,
+            pad: 0,
+            lp: 0,
+        },
+    ),
+    (
+        b'P',
+        20,
+        CapModel::Matrix {
+            base: 12,
+            divisor: 20,
+            pad: 3,
+            lp: 1,
+        },
+    ),
+    (
+        b'Q',
+        28,
+        CapModel::Matrix {
+            base: 17,
+            divisor: 28,
+            pad: 4,
+            lp: 2,
+        },
+    ),
+    (
+        b'R',
+        35,
+        CapModel::Matrix {
+            base: 21,
+            divisor: 35,
+            pad: 5,
+            lp: 2,
+        },
+    ),
+    (
+        b'S',
+        40,
+        CapModel::Matrix {
+            base: 25,
+            divisor: 40,
+            pad: 6,
+            lp: 3,
+        },
+    ),
+    (
+        b'T',
+        48,
+        CapModel::Matrix {
+            base: 30,
+            divisor: 48,
+            pad: 7,
+            lp: 3,
+        },
+    ),
+    (
+        b'U',
+        59,
+        CapModel::Matrix {
+            base: 37,
+            divisor: 59,
+            pad: 9,
+            lp: 4,
+        },
+    ),
+    (
+        b'V',
+        80,
+        CapModel::Matrix {
+            base: 50,
+            divisor: 80,
+            pad: 12,
+            lp: 4,
+        },
+    ),
     (b'0', 15, CapModel::Ratio { percent: 75 }),
 ];
 

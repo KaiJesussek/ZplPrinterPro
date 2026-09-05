@@ -316,11 +316,7 @@ const BUNDLED_FACES: &[(u8, &str, &[u8])] = &[
         "Noto Sans Condensed",
         include_bytes!("../tests/fixtures/NotoSans-Condensed.ttf"),
     ),
-    (
-        b'E',
-        "OCR-B",
-        include_bytes!("../tests/fixtures/OCR-B.ttf"),
-    ),
+    (b'E', "OCR-B", include_bytes!("../tests/fixtures/OCR-B.ttf")),
     (
         b'F',
         "Noto Sans Condensed",
@@ -402,7 +398,12 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32, f32)] = &[
     (
         b'A',
         9,
-        CapModel::Matrix { base: 7, divisor: 12, pad: 0, lp: 0 },
+        CapModel::Matrix {
+            base: 7,
+            divisor: 12,
+            pad: 0,
+            lp: 0,
+        },
         1.468,
         1.927,
         1.0,
@@ -410,7 +411,12 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32, f32)] = &[
     (
         b'B',
         11,
-        CapModel::Matrix { base: 11, divisor: 11, pad: 0, lp: 0 },
+        CapModel::Matrix {
+            base: 11,
+            divisor: 11,
+            pad: 0,
+            lp: 0,
+        },
         1.219,
         1.850,
         1.0,
@@ -418,7 +424,12 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32, f32)] = &[
     (
         b'C',
         18,
-        CapModel::Matrix { base: 14, divisor: 18, pad: 0, lp: 0 },
+        CapModel::Matrix {
+            base: 14,
+            divisor: 18,
+            pad: 0,
+            lp: 0,
+        },
         1.303,
         1.779,
         1.0,
@@ -426,7 +437,12 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32, f32)] = &[
     (
         b'D',
         18,
-        CapModel::Matrix { base: 14, divisor: 18, pad: 0, lp: 0 },
+        CapModel::Matrix {
+            base: 14,
+            divisor: 18,
+            pad: 0,
+            lp: 0,
+        },
         1.645,
         1.656,
         1.0,
@@ -434,7 +450,12 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32, f32)] = &[
     (
         b'E',
         28,
-        CapModel::Matrix { base: 20, divisor: 28, pad: 3, lp: 0 },
+        CapModel::Matrix {
+            base: 20,
+            divisor: 28,
+            pad: 3,
+            lp: 0,
+        },
         1.347,
         2.074,
         1.0,
@@ -442,7 +463,10 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32, f32)] = &[
     (
         b'F',
         26,
-        CapModel::Snap { base: 21, divisor: 30 },
+        CapModel::Snap {
+            base: 21,
+            divisor: 30,
+        },
         1.084,
         1.677,
         1.0,
@@ -450,7 +474,12 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32, f32)] = &[
     (
         b'G',
         60,
-        CapModel::Matrix { base: 48, divisor: 60, pad: 0, lp: 6 },
+        CapModel::Matrix {
+            base: 48,
+            divisor: 60,
+            pad: 0,
+            lp: 6,
+        },
         1.441,
         1.673,
         0.585,
@@ -458,7 +487,12 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32, f32)] = &[
     (
         b'H',
         21,
-        CapModel::Matrix { base: 21, divisor: 21, pad: 0, lp: 0 },
+        CapModel::Matrix {
+            base: 21,
+            divisor: 21,
+            pad: 0,
+            lp: 0,
+        },
         1.578,
         2.116,
         1.0,
@@ -466,7 +500,12 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32, f32)] = &[
     (
         SYMBOL_KEY,
         24,
-        CapModel::Matrix { base: 15, divisor: 24, pad: 0, lp: 0 },
+        CapModel::Matrix {
+            base: 15,
+            divisor: 24,
+            pad: 0,
+            lp: 0,
+        },
         1.0,
         1.0,
         1.0,
@@ -474,7 +513,12 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32, f32)] = &[
     (
         b'P',
         20,
-        CapModel::Matrix { base: 12, divisor: 20, pad: 3, lp: 1 },
+        CapModel::Matrix {
+            base: 12,
+            divisor: 20,
+            pad: 3,
+            lp: 1,
+        },
         0.739,
         1.051,
         1.0,
@@ -482,7 +526,12 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32, f32)] = &[
     (
         b'Q',
         28,
-        CapModel::Matrix { base: 17, divisor: 28, pad: 4, lp: 2 },
+        CapModel::Matrix {
+            base: 17,
+            divisor: 28,
+            pad: 4,
+            lp: 2,
+        },
         0.715,
         1.021,
         1.0,
@@ -490,7 +539,12 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32, f32)] = &[
     (
         b'R',
         35,
-        CapModel::Matrix { base: 21, divisor: 35, pad: 5, lp: 2 },
+        CapModel::Matrix {
+            base: 21,
+            divisor: 35,
+            pad: 5,
+            lp: 2,
+        },
         0.715,
         1.021,
         1.0,
@@ -498,7 +552,12 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32, f32)] = &[
     (
         b'S',
         40,
-        CapModel::Matrix { base: 25, divisor: 40, pad: 6, lp: 3 },
+        CapModel::Matrix {
+            base: 25,
+            divisor: 40,
+            pad: 6,
+            lp: 3,
+        },
         0.715,
         1.021,
         1.0,
@@ -506,7 +565,12 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32, f32)] = &[
     (
         b'T',
         48,
-        CapModel::Matrix { base: 30, divisor: 48, pad: 7, lp: 3 },
+        CapModel::Matrix {
+            base: 30,
+            divisor: 48,
+            pad: 7,
+            lp: 3,
+        },
         0.715,
         1.021,
         1.0,
@@ -514,7 +578,12 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32, f32)] = &[
     (
         b'U',
         59,
-        CapModel::Matrix { base: 37, divisor: 59, pad: 9, lp: 4 },
+        CapModel::Matrix {
+            base: 37,
+            divisor: 59,
+            pad: 9,
+            lp: 4,
+        },
         0.715,
         1.021,
         1.0,
@@ -522,19 +591,17 @@ const GUIDE_CELLS: &[(u8, u32, CapModel, f32, f32, f32)] = &[
     (
         b'V',
         80,
-        CapModel::Matrix { base: 50, divisor: 80, pad: 12, lp: 4 },
+        CapModel::Matrix {
+            base: 50,
+            divisor: 80,
+            pad: 12,
+            lp: 4,
+        },
         0.691,
         0.991,
         1.0,
     ),
-    (
-        b'0',
-        15,
-        CapModel::Ratio { percent: 75 },
-        0.917,
-        1.0,
-        1.0,
-    ),
+    (b'0', 15, CapModel::Ratio { percent: 75 }, 0.917, 1.0, 1.0),
 ];
 
 /// Measure the printable-ASCII advance table for `face` at `ppem` (pixels
@@ -575,19 +642,66 @@ pub(crate) fn cap_units(face: &FontVec, upem: f32) -> f32 {
 pub const FONT0_TENTHS: &[(char, u16)] = &[
     (' ', 324),
     ('-', 780),
-    ('0', 500), ('1', 433), ('2', 500), ('3', 474), ('8', 500),
+    ('0', 500),
+    ('1', 433),
+    ('2', 500),
+    ('3', 474),
+    ('8', 500),
     (':', 250),
-    ('B', 500), ('C', 621), ('F', 540), ('G', 580), ('H', 580), ('K', 518),
-    ('M', 725), ('N', 600), ('P', 525), ('R', 575), ('S', 554), ('T', 540),
-    ('U', 540), ('W', 780), ('Z', 500),
-    ('a', 474), ('b', 500), ('c', 480), ('d', 500), ('e', 505),
-    ('f', 270), ('g', 521), ('h', 472), ('i', 267), ('j', 270),
-    ('k', 437), ('l', 241), ('m', 580), ('n', 460), ('o', 480),
-    ('p', 479), ('r', 312), ('s', 437), ('t', 354), ('u', 500),
-    ('v', 567), ('w', 688), ('x', 479), ('y', 367),
-    (',', 283), ('.', 283), ('I', 283), ('(', 300), (')', 300),
-    ('\u{00A3}', 459), ('\u{00C2}', 450), ('\u{00E4}', 360), ('\u{00E9}', 500), ('\u{00F1}', 500),
-    ('\u{00F6}', 500), ('\u{00FB}', 480), ('\u{0192}', 550), ('\u{251C}', 339), ('\u{255D}', 299),
+    ('B', 500),
+    ('C', 621),
+    ('F', 540),
+    ('G', 580),
+    ('H', 580),
+    ('K', 518),
+    ('M', 725),
+    ('N', 600),
+    ('P', 525),
+    ('R', 575),
+    ('S', 554),
+    ('T', 540),
+    ('U', 540),
+    ('W', 780),
+    ('Z', 500),
+    ('a', 474),
+    ('b', 500),
+    ('c', 480),
+    ('d', 500),
+    ('e', 505),
+    ('f', 270),
+    ('g', 521),
+    ('h', 472),
+    ('i', 267),
+    ('j', 270),
+    ('k', 437),
+    ('l', 241),
+    ('m', 580),
+    ('n', 460),
+    ('o', 480),
+    ('p', 479),
+    ('r', 312),
+    ('s', 437),
+    ('t', 354),
+    ('u', 500),
+    ('v', 567),
+    ('w', 688),
+    ('x', 479),
+    ('y', 367),
+    (',', 283),
+    ('.', 283),
+    ('I', 283),
+    ('(', 300),
+    (')', 300),
+    ('\u{00A3}', 459),
+    ('\u{00C2}', 450),
+    ('\u{00E4}', 360),
+    ('\u{00E9}', 500),
+    ('\u{00F1}', 500),
+    ('\u{00F6}', 500),
+    ('\u{00FB}', 480),
+    ('\u{0192}', 550),
+    ('\u{251C}', 339),
+    ('\u{255D}', 299),
     ('\u{20AC}', 550),
 ];
 
@@ -653,10 +767,12 @@ impl DefaultFontProvider {
                     .find(|&&(c, _, _)| c == letter)
                     .map(|&(_, _, b)| b)
                     .expect("every guide letter has a bundled face");
-                let face = FontVec::try_from_vec(bytes.to_vec())
-                    .expect("bundled font failed to parse");
+                let face =
+                    FontVec::try_from_vec(bytes.to_vec()).expect("bundled font failed to parse");
                 let baseline = cap_rows_for(cap, cell).saturating_sub(1).max(1);
-                builtin_metric(&face, letter, cell, baseline, cap, adv_fit, x_scale, width_pow)
+                builtin_metric(
+                    &face, letter, cell, baseline, cap, adv_fit, x_scale, width_pow,
+                )
             })
             .collect();
         DefaultFontProvider { metrics }
@@ -671,7 +787,9 @@ impl FontProvider for DefaultFontProvider {
             // resolves them (module docs). Not our job, never ours.
             FontSpec::Downloaded(_) => return None,
         };
-        let idx = GUIDE_CELLS.iter().position(|&(c, _, _, _, _, _)| c == letter)?;
+        let idx = GUIDE_CELLS
+            .iter()
+            .position(|&(c, _, _, _, _, _)| c == letter)?;
         let bytes = BUNDLED_FACES
             .iter()
             .find(|&&(c, _, _)| c == letter)

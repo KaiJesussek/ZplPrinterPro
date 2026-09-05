@@ -674,7 +674,10 @@ fn pq_replicates_gate_serial_trajectory() {
         &mut diags,
         &mut memory,
     );
-    assert_eq!(label.copies, 4, "q is the total quantity, not q \u{00D7} (r+1)");
+    assert_eq!(
+        label.copies, 4,
+        "q is the total quantity, not q \u{00D7} (r+1)"
+    );
     assert_eq!(text_field(&label, 0).data, "001");
     let mut scanner = zpl::scanner::Scanner::new(b"^XA^FO10,10^SN001,1,Y^FS^XZ");
     zpl::cmd::parse_stream(&mut scanner, &mut ctx);
@@ -682,7 +685,11 @@ fn pq_replicates_gate_serial_trajectory() {
         .pending_label
         .take()
         .expect("second format never closed");
-    assert_eq!(text_field(&label2, 0).data, "003", "001 + 4/2 serials \u{00D7} 1");
+    assert_eq!(
+        text_field(&label2, 0).data,
+        "003",
+        "001 + 4/2 serials \u{00D7} 1"
+    );
 
     // r=3, q=8 with step 2: 8 labels = 2 serials x 4 replicates -> 2
     // advances of step 2.
@@ -699,7 +706,11 @@ fn pq_replicates_gate_serial_trajectory() {
         .pending_label
         .take()
         .expect("second format never closed");
-    assert_eq!(text_field(&label2, 0).data, "005", "001 + 8/4 serials \u{00D7} 2");
+    assert_eq!(
+        text_field(&label2, 0).data,
+        "005",
+        "001 + 8/4 serials \u{00D7} 2"
+    );
 
     // r=3, q=2: a 2-label batch never completes a serial's 4 replicates ->
     // the counter does not advance (documented v1 reading of "when all

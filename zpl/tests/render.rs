@@ -1009,9 +1009,8 @@ fn reverse_field_ft_box_rotated() {
 /// outside is unchanged AND still white (nothing black escapes the box),
 /// the box paints black somewhere, and the glyph erases to white inside.
 fn assert_reverse_box_bounds(nb: &Bitmap, rb: &Bitmap, x0: i64, y0: i64, x1: i64, y1: i64) {
-    let in_box = |x: u32, y: u32| {
-        (x as i64) >= x0 && (x as i64) < x1 && (y as i64) >= y0 && (y as i64) < y1
-    };
+    let in_box =
+        |x: u32, y: u32| (x as i64) >= x0 && (x as i64) < x1 && (y as i64) >= y0 && (y as i64) < y1;
     let (mut box_black, mut glyph_white) = (false, false);
     for y in 0..rb.height {
         for x in 0..rb.width {
@@ -1043,7 +1042,11 @@ fn reverse_field_ft_box_r180() {
     // With o = (40, 40) the box is exactly x [21, 41), y [36, 56) - and
     // every glyph dot (rotated x = -gx, y = baseline-gy) lands inside it.
     let (cell, baseline) = font0_hv(20);
-    assert_eq!((cell, baseline), (20, 14), "20-dot cell, cap-anchored baseline");
+    assert_eq!(
+        (cell, baseline),
+        (20, 14),
+        "20-dot cell, cap-anchored baseline"
+    );
     let adv = font0_adv(20, 'X');
     let normal = render_text(b"^XA^PW80^LL80^FW180^FT40,40^A0,20,20^FDX^FS^XZ");
     let rev = render_text(b"^XA^PW80^LL80^FW180^FT40,40^FR^A0,20,20^FDX^FS^XZ");
@@ -1065,7 +1068,11 @@ fn reverse_field_ft_box_r270() {
     // x [25, 45), y [21, 41) - the glyph's rotated dots
     // (x = gy-baseline, y = -gx) all fall inside.
     let (cell, baseline) = font0_hv(20);
-    assert_eq!((cell, baseline), (20, 14), "20-dot cell, cap-anchored baseline");
+    assert_eq!(
+        (cell, baseline),
+        (20, 14),
+        "20-dot cell, cap-anchored baseline"
+    );
     let adv = font0_adv(20, 'X');
     let normal = render_text(b"^XA^PW80^LL80^FW270^FT40,40^A0,20,20^FDX^FS^XZ");
     let rev = render_text(b"^XA^PW80^LL80^FW270^FT40,40^FR^A0,20,20^FDX^FS^XZ");
@@ -1247,7 +1254,10 @@ fn barcode_first_bar_at_field_origin() {
 
     // First bar is 4 dots wide (elements 2,1,1,2,3,2 at module 2) and the
     // full 60 dots tall; the space element after it is white.
-    assert!(out.bitmap.get(quiet, 0) && out.bitmap.get(quiet + 3, 59), "first bar");
+    assert!(
+        out.bitmap.get(quiet, 0) && out.bitmap.get(quiet + 3, 59),
+        "first bar"
+    );
     assert!(!out.bitmap.get(quiet + 4, 0), "first space element");
     // Row 60 is the bar-height boundary: nothing below (f=:N - no line).
     assert!(
@@ -1580,7 +1590,10 @@ fn t04_fb_block_geometry_24() {
     let (w, h, px) = run(left);
     assert!(w > 240 && h >= 90, "{}x{}", w, h);
     let cols: Vec<u32> = (20..240).filter(|&x| col_dark(&px, w, x, 20, 44)).collect();
-    assert!((20..=22).contains(cols.first().unwrap()), "block first ink near the field origin");
+    assert!(
+        (20..=22).contains(cols.first().unwrap()),
+        "block first ink near the field origin"
+    );
     assert!(
         *cols.last().unwrap() <= 239,
         "wrapped line fits the box (last ink {}, uncorrected table overruns)",
@@ -1588,7 +1601,9 @@ fn t04_fb_block_geometry_24() {
     );
     // Right block: flush-right placement inside the same box width.
     let (w, _h, px) = run(right);
-    let l1: Vec<u32> = (300..520).filter(|&x| col_dark(&px, w, x, 20, 60)).collect();
+    let l1: Vec<u32> = (300..520)
+        .filter(|&x| col_dark(&px, w, x, 20, 60))
+        .collect();
     assert!(
         l1.first().unwrap() > &290 && l1.first().unwrap() <= &343,
         "right block inks inside the box (first ink {})",

@@ -341,9 +341,19 @@ fn paint_line(
             let u0 = char_x.min(MAX_CONTENT as i64);
             let gid = face.glyph_id(ch);
             // Skip glyphs whose cell misses the canvas before rasterizing.
-            let on_canvas =
-                dest_bounds(bmp, ox, oy, b.rotation, fw, fh, u0, y_top, adv, draw_cell as i64)
-                    .is_some();
+            let on_canvas = dest_bounds(
+                bmp,
+                ox,
+                oy,
+                b.rotation,
+                fw,
+                fh,
+                u0,
+                y_top,
+                adv,
+                draw_cell as i64,
+            )
+            .is_some();
             if gid != GlyphId(0) && on_canvas {
                 // Bitmap-style interpret lines ink from the cell edge:
                 // position the outline so its ink starts at `u0`.
@@ -360,17 +370,24 @@ fn paint_line(
                 let glyph = gid.with_scale_and_position(px_scale, point(u0f, 0.0));
                 if let Some(outlined) = face.outline_glyph(glyph) {
                     let pbox = outlined.px_bounds();
-                    scan_bitmap_ink(&mut face, gid, px_scale, point(u0f, 0.0), &pbox, |gx, gy_up| {
-                        // Mirror of text.rs's pixels: baseline-relative, y up.
-                        let gx = gx - u0;
-                        let gy = paint_baseline as i64 + gy_up;
-                        if gx < 0 || gx >= adv || gy < 0 || gy >= draw_cell as i64 {
-                            return;
-                        }
-                        let (bx, by) = rotate(u0 + gx, y_top + gy, b.rotation, fw, fh);
-                        // Negative destinations are dropped by set().
-                        bmp.set((bx + ox) as u32, (by + oy) as u32, true);
-                    });
+                    scan_bitmap_ink(
+                        &mut face,
+                        gid,
+                        px_scale,
+                        point(u0f, 0.0),
+                        &pbox,
+                        |gx, gy_up| {
+                            // Mirror of text.rs's pixels: baseline-relative, y up.
+                            let gx = gx - u0;
+                            let gy = paint_baseline as i64 + gy_up;
+                            if gx < 0 || gx >= adv || gy < 0 || gy >= draw_cell as i64 {
+                                return;
+                            }
+                            let (bx, by) = rotate(u0 + gx, y_top + gy, b.rotation, fw, fh);
+                            // Negative destinations are dropped by set().
+                            bmp.set((bx + ox) as u32, (by + oy) as u32, true);
+                        },
+                    );
                 }
             }
         }
@@ -500,10 +517,24 @@ pub(crate) fn paint(
         };
         if b.line == b'Y' {
             let h = if b.height == 0 { 10 } else { b.height };
-            paint_line(bmp, b, &fd, &g, h as i64, cell, bar_w, ox, oy, opts, warnings);
+            paint_line(
+                bmp, b, &fd, &g, h as i64, cell, bar_w, ox, oy, opts, warnings,
+            );
         }
         if b.interpret {
-            paint_line(bmp, b, &fd, &g, -(cell as i64), cell, bar_w, ox, oy, opts, warnings);
+            paint_line(
+                bmp,
+                b,
+                &fd,
+                &g,
+                -(cell as i64),
+                cell,
+                bar_w,
+                ox,
+                oy,
+                opts,
+                warnings,
+            );
         }
     }
 }

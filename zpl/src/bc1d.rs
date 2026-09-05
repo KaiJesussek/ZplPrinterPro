@@ -916,7 +916,11 @@ pub(crate) fn planet(data: &[u8], module: u32, height: u32) -> Result<Pattern, S
         black: true,
         height: None,
     }); // leading frame
-    for digit in data.iter().copied().chain(std::iter::once(b'0' + check as u8)) {
+    for digit in data
+        .iter()
+        .copied()
+        .chain(std::iter::once(b'0' + check as u8))
+    {
         for &short in &PLANET[(digit - b'0') as usize] {
             bars.push(Bar {
                 width: space,

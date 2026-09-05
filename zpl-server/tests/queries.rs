@@ -147,7 +147,10 @@ async fn hv_truncates_by_bytes_not_chars() {
         .unwrap()
         .unwrap();
     assert_eq!(n, 1, "exactly one byte for n=1");
-    assert_eq!(buf[0], 0xC3, "the first UTF-8 byte of \u{00E9} (0xE9 \u{2192} U+00E9)");
+    assert_eq!(
+        buf[0], 0xC3,
+        "the first UTF-8 byte of \u{00E9} (0xE9 \u{2192} U+00E9)"
+    );
     drop(sock);
 }
 

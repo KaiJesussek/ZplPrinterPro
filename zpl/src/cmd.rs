@@ -1825,7 +1825,10 @@ mod tests {
             !ctx.memory.formats.contains_key("F.ZPL"),
             "download aborted: captured bytes dropped"
         );
-        let label = ctx.pending_label.as_ref().expect("the new format completed");
+        let label = ctx
+            .pending_label
+            .as_ref()
+            .expect("the new format completed");
         assert_eq!(label.fields.len(), 1);
     }
 
@@ -1852,7 +1855,10 @@ mod tests {
         // A closed format leaves its label pending; a new ^XA must drop
         // the stale one even when the new format never closes (EOF).
         // Before the fix, label 1 leaked into the partial format 2.
-        parse_stream(&mut Scanner::new(b"^XA^GB10,10,2,B^XZ^XA^FO10,10"), &mut ctx);
+        parse_stream(
+            &mut Scanner::new(b"^XA^GB10,10,2,B^XZ^XA^FO10,10"),
+            &mut ctx,
+        );
         assert!(ctx.pending_label.is_none(), "stale label dropped at ^XA");
         assert!(ctx.state.is_partial(), "the second format is open");
     }
@@ -1885,7 +1891,10 @@ mod tests {
         let mut diags2 = Diagnostics::default();
         let mut mem2 = Memory::default();
         let mut ctx2 = ParseContext::new(&mut diags2, &mut mem2);
-        parse_stream(&mut Scanner::new(&src[labels[0].start..labels[0].end]), &mut ctx2);
+        parse_stream(
+            &mut Scanner::new(&src[labels[0].start..labels[0].end]),
+            &mut ctx2,
+        );
         assert!(ctx2.diags.items.is_empty(), "no diagnostics on re-parse");
         let label2 = ctx2.pending_label.expect("re-parsed format closes");
         match &label2.fields[0] {

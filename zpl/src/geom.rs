@@ -268,10 +268,7 @@ pub(crate) fn gf_binary_len(params: &[u8]) -> Option<(usize, usize)> {
     if !matches!(comp, b'B' | b'b' | b'C' | b'c') {
         return None;
     }
-    let declared = segs
-        .get(1)
-        .and_then(|p| to_u32(p))?
-        .clamp(1, MAX_GF_PARAM) as usize;
+    let declared = segs.get(1).and_then(|p| to_u32(p))?.clamp(1, MAX_GF_PARAM) as usize;
     Some((declared, already.len()))
 }
 

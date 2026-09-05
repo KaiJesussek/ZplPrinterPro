@@ -29,11 +29,11 @@ pub(crate) fn decode_graphic_data(data: &[u8], t: usize, w: usize) -> Option<Vec
     let mut out = Vec::with_capacity(t);
     let mut i = 0;
     let mut hi: Option<u8> = None; // pending low nibble of an open byte
-    // Nibble slots consumed in the current row; resets when a row reaches
-    // its full width (2w nibbles). The reference-verified fill semantics
-    // (20k-case differential against the p.1761 compression scheme)
-    // hinge on this counter: ','/'!' always pad the CURRENT row to 2w,
-    // closing a pending low nibble with the fill digit first.
+                                   // Nibble slots consumed in the current row; resets when a row reaches
+                                   // its full width (2w nibbles). The reference-verified fill semantics
+                                   // (20k-case differential against the p.1761 compression scheme)
+                                   // hinge on this counter: ','/'!' always pad the CURRENT row to 2w,
+                                   // closing a pending low nibble with the fill digit first.
     let mut row = 0usize;
     let nibble = |out: &mut Vec<u8>, hi: &mut Option<u8>, row: &mut usize, v: u8| {
         match *hi {
@@ -305,9 +305,18 @@ mod tests {
         let data = b"hello, binary world!";
         // 24 bytes: padded, unpadded, and whitespace-laced forms decode
         // to the same bytes.
-        assert_eq!(decode_base64(b"aGVsbG8sIGJpbmFyeSB3b3JsZCE=").as_deref(), Some(data.as_slice()));
-        assert_eq!(decode_base64(b"aGVsbG8sIGJpbmFyeSB3b3JsZCE").as_deref(), Some(data.as_slice()));
-        assert_eq!(decode_base64(b"aGVsbG8s\nIGJpbmFyeSB3b3JsZCE=").as_deref(), Some(data.as_slice()));
+        assert_eq!(
+            decode_base64(b"aGVsbG8sIGJpbmFyeSB3b3JsZCE=").as_deref(),
+            Some(data.as_slice())
+        );
+        assert_eq!(
+            decode_base64(b"aGVsbG8sIGJpbmFyeSB3b3JsZCE").as_deref(),
+            Some(data.as_slice())
+        );
+        assert_eq!(
+            decode_base64(b"aGVsbG8s\nIGJpbmFyeSB3b3JsZCE=").as_deref(),
+            Some(data.as_slice())
+        );
         assert_eq!(decode_base64(b"aG!sbG8"), None); // '!' is not base64
     }
 
@@ -347,10 +356,26 @@ mod tests {
     fn z64_repo_vectors_inflate_to_expected() {
         // (expected inflated length, expected Adler-32 of the output, fixture)
         let vectors: &[(u32, u32, &str)] = &[
-            (33280, 0xe5edaa96, include_str!("../tests/fixtures/z64_example.b64")),
-            (48000, 0x055f9be0, include_str!("../tests/fixtures/z64_pila2.b64")),
-            (48000, 0x523a5178, include_str!("../tests/fixtures/z64_prod1.b64")),
-            (48000, 0x6f048bcd, include_str!("../tests/fixtures/z64_prod2.b64")),
+            (
+                33280,
+                0xe5edaa96,
+                include_str!("../tests/fixtures/z64_example.b64"),
+            ),
+            (
+                48000,
+                0x055f9be0,
+                include_str!("../tests/fixtures/z64_pila2.b64"),
+            ),
+            (
+                48000,
+                0x523a5178,
+                include_str!("../tests/fixtures/z64_prod1.b64"),
+            ),
+            (
+                48000,
+                0x6f048bcd,
+                include_str!("../tests/fixtures/z64_prod2.b64"),
+            ),
         ];
         for (idx, (c, adler, b64)) in vectors.iter().enumerate() {
             let raw = decode_base64(b64.trim().as_bytes())

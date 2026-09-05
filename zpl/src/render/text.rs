@@ -193,8 +193,8 @@ impl Advancer<'_> {
         if self.fixed > 0 {
             return self.fixed;
         }
-        let cell =
-            ((self.metrics.cell_height as f32 * self.eff).round()).clamp(1.0, MAX_GLYPH_CELL as f32) as u32;
+        let cell = ((self.metrics.cell_height as f32 * self.eff).round())
+            .clamp(1.0, MAX_GLYPH_CELL as f32) as u32;
         u64::from(advance_at(self.metrics, c, cell))
     }
 }
@@ -320,7 +320,11 @@ pub(crate) fn font_width_dots(t: &TextField, m: &FontMetrics, dpi: u32) -> u64 {
         let cell = ((m.cell_height as f32 * eff).round()).clamp(1.0, MAX_GLYPH_CELL as f32) as u32;
         if let Some(t) = m.tenths {
             // widest advance of the font-0 table at the drawn cell
-            let widest = t.iter().map(|&(_, v)| (u32::from(v) * cell + 500) / 1000).max().unwrap_or(1);
+            let widest = t
+                .iter()
+                .map(|&(_, v)| (u32::from(v) * cell + 500) / 1000)
+                .max()
+                .unwrap_or(1);
             return u64::from(widest.max(1));
         }
         let widest = m.advances.iter().copied().max().unwrap_or(1).max(1);
@@ -513,11 +517,7 @@ pub(crate) fn paint_text(
     // matrix faces' top pad is a position offset, not a scale term: the
     // face must fit the cap alone or the pad would enlarge the glyph.
     let pad_rows = matrix_pad(&fd.metrics.cap, l.cell as u32);
-    let scale = font_scale(
-        &face,
-        l.baseline as u32 - pad_rows,
-        &fd.metrics,
-    );
+    let scale = font_scale(&face, l.baseline as u32 - pad_rows, &fd.metrics);
     // Bitmap faces stretch horizontally by their calibrated x-scale (the
     // reference matrices print wider than the source face); the scalable
     // font 0 and downloaded TrueType keep the face's own proportions.
@@ -578,17 +578,15 @@ pub(crate) fn paint_text(
     // at a constant `(cell+8)/16`. Keep the constant for the other caps
     // (no per-glyph ref geometry yet). `ponytail:` drop the constant
     // once the remaining faces have probe refs.
-    let pad = if t.block.is_some()
-        && matches!(fd.metrics.cap, CapModel::Ratio { .. })
-        && l.cell == 24
-    {
-        // `^FB` blocks at 24 ink one dot left of `^FT` text at the same
-        // size (ref: block Z@21, a@21, j@21 vs ^FT H@22, B@22) - the
-        // block adds its own 1-dot inset on top of the field origin.
-        1
-    } else {
-        left_pad(&fd.metrics.cap, l.cell as u32) as i64
-    };
+    let pad =
+        if t.block.is_some() && matches!(fd.metrics.cap, CapModel::Ratio { .. }) && l.cell == 24 {
+            // `^FB` blocks at 24 ink one dot left of `^FT` text at the same
+            // size (ref: block Z@21, a@21, j@21 vs ^FT H@22, B@22) - the
+            // block adds its own 1-dot inset on top of the field origin.
+            1
+        } else {
+            left_pad(&fd.metrics.cap, l.cell as u32) as i64
+        };
     // The matrix top pad puts the cap *below* the cell top: the anchor
     // climbs by the pad rows the scale no longer carries.
     let paint_baseline = paint_baseline
@@ -832,7 +830,9 @@ pub(crate) fn scan_bitmap_ink<F>(
         },
         point(pos.x * 2.0, pos.y * 2.0),
     );
-    let Some(out) = face.outline_glyph(glyph) else { return };
+    let Some(out) = face.outline_glyph(glyph) else {
+        return;
+    };
     // Which half of each dot the 2x pixel grid starts in (0 or 1): the
     // 2x grid is anchored at `floor(2*b.min)`, one dot at `floor(b.min) +
     // i` spans 2x pixels `2i - f` and `2i - f + 1` with `f =
@@ -975,10 +975,8 @@ fn paint_glyph(
 
 #[cfg(test)]
 mod tests {
-    use crate::ir::TextBlock;
     use super::*;
-
-
+    use crate::ir::TextBlock;
 
     /// A zebra-0-shaped table: reference cell 15, ratio cap, uniform
     /// 8-dot advances, a (hollow) tenths table present.
@@ -1001,10 +999,24 @@ mod tests {
     #[test]
     fn fb24_corrections_apply_only_inside_blocks() {
         let m = zebra0_metrics();
-        let block = Advancer { metrics: &m, eff: 24.0 / 15.0, fixed: 0, fb24: true };
-        assert_eq!(block.dots('x'), 8, "correction table wins inside a 24-dot block");
+        let block = Advancer {
+            metrics: &m,
+            eff: 24.0 / 15.0,
+            fixed: 0,
+            fb24: true,
+        };
+        assert_eq!(
+            block.dots('x'),
+            8,
+            "correction table wins inside a 24-dot block"
+        );
         assert_eq!(block.dots('d'), 11);
-        let plain = Advancer { metrics: &m, eff: 24.0 / 15.0, fixed: 0, fb24: false };
+        let plain = Advancer {
+            metrics: &m,
+            eff: 24.0 / 15.0,
+            fixed: 0,
+            fb24: false,
+        };
         assert_eq!(plain.dots('x'), 13, "outside blocks the base table scales");
     }
 
@@ -1046,26 +1058,29 @@ mod tests {
             re_eval: false,
         };
         let fl = layout(&t, &m, 203).expect("block lays out");
-        assert_eq!(fl.starts, vec![0, 10, 10],
-            "L1/L2 include the trailing space (50+10 and 40+10) into the 60 box; L3 is flush bare");
+        assert_eq!(
+            fl.starts,
+            vec![0, 10, 10],
+            "L1/L2 include the trailing space (50+10 and 40+10) into the 60 box; L3 is flush bare"
+        );
     }
 
-/// A table where a middle slot is missing (0) and the space slot is
+    /// A table where a middle slot is missing (0) and the space slot is
     /// nonzero: missing characters advance like a space.
     fn metrics_with_missing() -> FontMetrics {
         let mut advances = vec![0u16; 95];
         advances[0] = 12; // ' ' advance
         advances[b'X' as usize - 32] = 20;
-        		FontMetrics {
-			cell_height: 15,
-			baseline: 11,
-			advances,
-			tenths: None,
-			cap: CapModel::Ratio { percent: 75 },
-			x_scale: 1.0,
-			width_pow: 1.0,
-		}
-	}
+        FontMetrics {
+            cell_height: 15,
+            baseline: 11,
+            advances,
+            tenths: None,
+            cap: CapModel::Ratio { percent: 75 },
+            x_scale: 1.0,
+            width_pow: 1.0,
+        }
+    }
 
     #[test]
     fn advance_lookup_missing_char_uses_space() {
@@ -1081,15 +1096,15 @@ mod tests {
             "out-of-table char prints as space"
         );
         // A fully-zero table still cannot panic and collapses to 0.
-        		let empty = FontMetrics {
-			cell_height: 15,
-			baseline: 11,
-			advances: vec![0; 95],
-			tenths: None,
-			cap: CapModel::Ratio { percent: 75 },
-			x_scale: 1.0,
-			width_pow: 1.0,
-		};
+        let empty = FontMetrics {
+            cell_height: 15,
+            baseline: 11,
+            advances: vec![0; 95],
+            tenths: None,
+            cap: CapModel::Ratio { percent: 75 },
+            x_scale: 1.0,
+            width_pow: 1.0,
+        };
         assert_eq!(ref_advance(&empty, 'X'), 0);
     }
 
@@ -1108,15 +1123,15 @@ mod tests {
             (60, 44),
             (80, 59),
         ] {
-            			let m = FontMetrics {
-				cell_height: 15,
-				baseline: 11,
-				advances: vec![0; 95],
-				cap: CapModel::Ratio { percent: 75 },
-				x_scale: 1.0,
-			width_pow: 1.0,
-			tenths: None,
-			};
+            let m = FontMetrics {
+                cell_height: 15,
+                baseline: 11,
+                advances: vec![0; 95],
+                cap: CapModel::Ratio { percent: 75 },
+                x_scale: 1.0,
+                width_pow: 1.0,
+                tenths: None,
+            };
             assert_eq!(
                 baseline_for_cell(&m.cap, cell),
                 baseline,
@@ -1124,17 +1139,24 @@ mod tests {
             );
         }
         // Font F's bitmap snap: 21 rows per 30-dot band.
-        		let f = FontMetrics {
-			cell_height: 26,
-			baseline: 21,
-			advances: vec![0; 95],
-			cap: CapModel::Snap { base: 21, divisor: 30 },
-			x_scale: 1.0,
-			width_pow: 1.0,
-			tenths: None,
-		};
+        let f = FontMetrics {
+            cell_height: 26,
+            baseline: 21,
+            advances: vec![0; 95],
+            cap: CapModel::Snap {
+                base: 21,
+                divisor: 30,
+            },
+            x_scale: 1.0,
+            width_pow: 1.0,
+            tenths: None,
+        };
         for &(cell, baseline) in &[(10, 20), (30, 20), (31, 41), (40, 41), (80, 62)] {
-            assert_eq!(baseline_for_cell(&f.cap, cell), baseline, "font F at {cell}");
+            assert_eq!(
+                baseline_for_cell(&f.cap, cell),
+                baseline,
+                "font F at {cell}"
+            );
         }
     }
 
@@ -1151,4 +1173,3 @@ mod tests {
         assert_eq!(adv.dots(' '), 40);
     }
 }
-
