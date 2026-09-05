@@ -174,7 +174,7 @@ engine as documented behavior with tests, never as reference-derived
 | 04 text-ft-rotated | 2768 | 1.11% | ink-shape floor |
 | 05 text-cp850 | 5306 | 2.13% | ink-shape floor |
 | 06 text-utf8 | 1494 | 0.60% | ink-shape floor |
-| 07 text-fb | 7888 | 3.16% | `^FB` block space placement |
+| 07 text-fb | 7888 | 3.16% | font-0 glyph shape (justify verified) |
 | 08 bc128 | 631 | 0.25% | interpret-line ink |
 | 09 bc-uccd | 2867 | 1.15% | interpret-line ink |
 | 10 bc39 | 0 | 0 | byte-exact |
@@ -183,7 +183,7 @@ engine as documented behavior with tests, never as reference-derived
 | 13 gb | 0 | 0 | byte-exact |
 | 14 gfa | 672 | 0.27% | graphic decode corner |
 | 15 serial | 404 | 0.16% | ink-shape floor |
-| 16 kitchen-sink | 8313 | 2.50% | mixed (`^FB` + ink floor) |
+| 16 kitchen-sink | 8313 | 2.50% | mixed (`^FB` ink floor) |
 | 17 font0-sizes | 4982 | 1.50% | ink-shape floor |
 | 18 fontA-sizes | 12577 | 3.78% | ink-shape floor |
 | 20-29 font probes | 427-11069 | 0.23-3.17% | ink-shape floor |
@@ -203,13 +203,13 @@ Residual classes:
   line (font 0 at 15% of the bar height, centered under the symbol)
   carry that same glyph-ink floor on the line; the bars and 2D modules
   themselves are exact.
-- **Two no-public-spec areas.** `^FB` justified-line space placement:
-  the guide specifies line wrapping but not the reference's
-  position-dependent space widths, so those are pinned empirically
-  from the reference rasters. Downloaded fonts (`^A@` with `~DY`):
-  the reference engine does not process downloads at all - the guide's
-  model is implemented and unit-tested, with hardware validation
-  pending. Neither can be oracle-pinned like the rest.
+- **No-public-spec areas.** `^FB` justification is verified against the
+  reference rasters (the right-justified block's extents are
+  pixel-exact; the left block's wrap points and left edge match, and its
+  residual is the font-0 glyph-shape floor above). Downloaded fonts
+  (`^A@` with `~DY`): the reference engine does not process downloads at
+  all - the guide's model is implemented and unit-tested, with hardware
+  validation pending. Neither can be oracle-pinned like the rest.
 
 Nothing produced by the reference engine - images, dumps, metrics,
 notes - is committed. `parity/` is gitignored scratch, and the
