@@ -174,7 +174,7 @@ engine as documented behavior with tests, never as reference-derived
 | 04 text-ft-rotated | 2768 | 1.11% | ink-shape floor |
 | 05 text-cp850 | 5306 | 2.13% | ink-shape floor |
 | 06 text-utf8 | 1494 | 0.60% | ink-shape floor |
-| 07 text-fb | 10780 | 4.32% | `^FB` block space placement |
+| 07 text-fb | 7888 | 3.16% | `^FB` block space placement |
 | 08 bc128 | 631 | 0.25% | interpret-line ink |
 | 09 bc-uccd | 2867 | 1.15% | interpret-line ink |
 | 10 bc39 | 0 | 0 | byte-exact |
@@ -187,7 +187,7 @@ engine as documented behavior with tests, never as reference-derived
 | 17 font0-sizes | 4982 | 1.50% | ink-shape floor |
 | 18 fontA-sizes | 12577 | 3.78% | ink-shape floor |
 | 20-29 font probes | 427-11069 | 0.23-3.17% | ink-shape floor |
-| 21 viewer-sample | 65513 | 6.46% | ink-shape floor |
+| 21 viewer-sample | 59453 | 5.86% | font-0/A large-h glyph-shape floor |
 | 30 msi-mod11 | 727 | 0.44% | interpret-line ink |
 | 31 planet | 562 | 0.34% | interpret-line ink |
 
