@@ -9,6 +9,7 @@
 <body>
 <header>
   <h1>ZPL Printer</h1>
+  <button id="logout" type="button" hidden>Log out</button>
   <div id="state-panel" aria-label="Printer conditions"></div>
   <span id="diag-badge" title="Diagnostics">loading&hellip;</span>
   <details id="storage-box">
@@ -19,6 +20,17 @@
     </table>
   </details>
 </header>
+<div id="login" hidden>
+  <div id="login-card">
+    <h2>Sign in</h2>
+    <p class="hint">This server requires a token.</p>
+    <form id="login-form">
+      <input type="password" id="login-token" placeholder="API token" autocomplete="current-password">
+      <button type="submit">Log in</button>
+    </form>
+    <p id="login-status" class="hint" hidden></p>
+  </div>
+</div>
 <main>
   <section id="play-pane">
     <h2>Direct ZPL</h2>

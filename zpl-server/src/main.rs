@@ -56,7 +56,8 @@ async fn start_server() -> std::io::Result<(JoinHandle<()>, JoinHandle<()>)> {
     let http = spawn_http(state.clone(), http_port).await?;
     spawn_persistence(state.clone());
 
-    zpl_server::log!("zpl-server: tcp on {tcp_port}, http on {http_port} (archive at {archive_dir}, keep={keep}, max={} MiB); Ctrl-C to stop",
+    let auth = state.auth_token.as_deref().map(|_| "on").unwrap_or("off");
+    zpl_server::log!("zpl-server: tcp on {tcp_port}, http on {http_port} (archive at {archive_dir}, keep={keep}, max={} MiB, api auth={auth}); Ctrl-C to stop",
         max_bytes / (1024 * 1024));
     Ok((tcp, http))
 }

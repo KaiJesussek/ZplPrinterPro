@@ -33,9 +33,10 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::{FromRequest, Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, Request, StatusCode};
+use axum::middleware::Next;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -66,9 +67,14 @@ use crate::state::{AppState, Conditions, Event};
 /// (`include_bytes!`, the same pattern as the TTFs in `zpl::fonts`) so the
 /// UI is served from inside the binary - no filesystem dependency, which
 /// is what lets the Docker image and the release binaries serve it
-/// anywhere. `STATIC_DIR` (the old compile-time checkout path) is gone.
+/// anywhere.
+///
+/// Auth: the `/api` service sits behind the bearer-token gate (a no-op
+/// when the server booted without `ZPL_AUTH_TOKEN`); the static UI is the
+/// router fallback and stays public - the SPA handles the 401 by showing
+/// its login form.
 pub fn router(state: Arc<AppState>) -> Router {
-    Router::new()
+    let api = Router::new()
         .route("/api/labels", get(list_labels))
         .route("/api/labels/{id}", get(label_get))
         .route("/api/labels/{id}/rerender", post(rerender))
@@ -80,8 +86,79 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/storage", get(get_storage))
         .route("/api/diagnostics", get(get_diagnostics))
         .route("/api/events", get(events_sse))
+        // Bearer-token gate: applies to every route above, not to the
+        // router-level fallback (the static UI).
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ))
+        .with_state(state.clone());
+
+    Router::new()
+        .merge(api)
         .fallback(serve_static)
         .with_state(state)
+}
+
+/// Bearer-token gate for the whole `/api` subtree (the raw ZPL TCP port
+/// never goes through it). No-op when `auth_token` is `None` (the server
+/// booted without `ZPL_AUTH_TOKEN`). Two accepted forms:
+/// `Authorization: Bearer <token>`, or a `?token=<token>` query param -
+/// `EventSource` and `<img src>` cannot set headers, so the browser UI and
+/// its label thumbnails need the query form. The 401 body carries
+/// `"needs_token": true`, the marker the UI uses to show its login form.
+async fn auth_middleware(
+    State(state): State<Arc<AppState>>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let Some(expected) = &state.auth_token else {
+        return next.run(req).await;
+    };
+    let given = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| {
+            v.strip_prefix("Bearer ")
+                .or_else(|| v.strip_prefix("bearer "))
+        })
+        .or_else(|| req.uri().query().and_then(query_token));
+
+    let authorized = given.is_some_and(|g| !g.is_empty() && ct_eq(g, expected));
+    if !authorized {
+        let mut resp = (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "unauthorized", "needs_token": true })),
+        )
+            .into_response();
+        resp.headers_mut()
+            .insert(header::WWW_AUTHENTICATE, "Bearer".parse().unwrap());
+        return resp;
+    }
+    next.run(req).await
+}
+
+/// Pull the value of `token=` out of a URL query string (no percent-decode:
+/// tokens come from a text field and never contain reserved chars).
+fn query_token(query: &str) -> Option<&str> {
+    query.split('&').find_map(|kv| {
+        let (k, v) = kv.split_once('=')?;
+        (k == "token").then_some(v)
+    })
+}
+
+/// Constant-time-ish string equality for the token comparison (no early
+/// exit on the first differing byte).
+fn ct_eq(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.as_bytes()
+        .iter()
+        .zip(b.as_bytes())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 /// Embedded web UI: `index.html`, `app.js`, `style.css`.

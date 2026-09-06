@@ -12,8 +12,19 @@
 // ---------- helpers ----------
 const $ = (sel) => document.querySelector(sel);
 
+// Single choke point for the API: adds the bearer token as an
+// `Authorization` header and flips the UI into its sign-in state on a 401.
+// The token helpers it calls are declared further down (after the auth
+// section); `showLogin` is a hoisted function, `authHeaders` is a const
+// arrow assigned before any boot() fetch actually runs, so both are live.
+async function apiFetch(path, init) {
+  const r = await fetch(path, authHeaders(init));
+  if (r.status === 401) showLogin('The token was rejected');
+  return r;
+}
+
 async function getJSON(url) {
-  const r = await fetch(url);
+  const r = await apiFetch(url);
   if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
   return r.json();
 }
@@ -83,7 +94,7 @@ function buildStatePanel() {
     input.addEventListener('change', () => {
       const body = {};
       body[c.key] = input.type === 'checkbox' ? input.checked : input.value;
-      fetch('/api/printer-state', {
+      apiFetch('/api/printer-state', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -175,7 +186,7 @@ function makeRow(row) {
   card.className = 'label-row';
   card.title = `#${row.id} \u2014 ${row.width}\u00d7${row.height} dots, ${fmtBytes(row.bytes)}`;
   card.innerHTML =
-    `<img src="/api/labels/${row.id}.png" loading="lazy" alt="label ${row.id}">` +
+    `<img src="${authedUrl('/api/labels/' + row.id + '.png')}" loading="lazy" alt="label ${row.id}">` +
     `<div class="meta">` +
     `<span class="lid">#${row.id}</span>` +
     `<span class="ts">${new Date(row.ts_ms).toLocaleString()}</span>` +
@@ -224,7 +235,7 @@ async function fetchZplText(r) {
 async function openDetail(id) {
   const [d, zpl] = await Promise.all([
     getJSON(`/api/labels/${id}`),
-    fetch(`/api/labels/${id}.zpl`).then(fetchZplText),
+    apiFetch(`/api/labels/${id}.zpl`).then(fetchZplText),
   ]);
   detailPane.hidden = false;
   $('#detail-id').textContent = `#${id}`;
@@ -240,7 +251,7 @@ async function openDetail(id) {
     diagList.appendChild(p);
   }
   overlayOn.checked = false;
-  detailImg.src = `/api/labels/${id}.png`;
+  detailImg.src = authedUrl(`/api/labels/${id}.png`);
 }
 
 // Field overlay: draw a bounding box per IR field on a canvas over the
@@ -309,18 +320,28 @@ detailImg.addEventListener('load', drawOverlay);
 overlayOn.addEventListener('change', drawOverlay);
 
 // ---------- live updates (SSE) ----------
-const es = new EventSource('/api/events');
-// The server ends the stream when a subscriber lags (the browser then
-// reconnects automatically); repaint the list and panels from GETs on
-// every (re)connect so nothing is lost while the stream was stale.
-es.addEventListener('open', () => {
-  loadList().catch((e) => console.error(e));
-  loadDiagnostics().catch((e) => console.error(e));
-  loadStorage().catch((e) => console.error(e));
-});
-es.addEventListener('label', (e) => {
-  try { prependRow(JSON.parse(e.data)); } catch (err) { console.error('bad label event', err); }
-});
+// EventSource can't set headers, so the token rides in the query string.
+function connectEvents() {
+  es = new EventSource(authedUrl('/api/events'));
+  // The server ends the stream when a subscriber lags (the browser then
+  // reconnects automatically); repaint the list and panels from GETs on
+  // every (re)connect so nothing is lost while the stream was stale.
+  es.addEventListener('open', () => {
+    loadList().catch((e) => console.error(e));
+    loadDiagnostics().catch((e) => console.error(e));
+    loadStorage().catch((e) => console.error(e));
+  });
+  es.addEventListener('label', (e) => {
+    try { prependRow(JSON.parse(e.data)); } catch (err) { console.error('bad label event', err); }
+  });
+  es.addEventListener('error', () => {
+    // A 401 (bad/expired token) closes the stream; show the login form.
+    if (token) showLogin();
+  });
+  es.addEventListener('state', (e) => {
+    try { setStateValues(JSON.parse(e.data)); } catch (err) { console.error('bad state event', err); }
+  });
+}
 
 // ---------- direct ZPL playground ----------
 // POST /api/render: parse + render arbitrary ZPL text, PNG inline. The
@@ -341,7 +362,7 @@ async function playRender() {
   playGo.disabled = true;
   playStatus.textContent = 'rendering...';
   try {
-    const r = await fetch('/api/render', {
+    const r = await apiFetch('/api/render', {
       method: 'POST',
       headers: { 'content-type': 'text/plain' },
       body: new TextEncoder().encode(text), // binary-unsafe textarea: bytes survive
@@ -369,13 +390,70 @@ playGo.addEventListener('click', playRender);
 playZpl.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') playRender();
 });
-es.addEventListener('state', (e) => {
-  try { setStateValues(JSON.parse(e.data)); } catch (err) { console.error('bad state event', err); }
+
+// ---------- auth + boot ----------
+// The API is optionally gated by a bearer token (env ZPL_AUTH_TOKEN on the
+// server). We keep the token in localStorage and send it two ways: as an
+// `Authorization: Bearer` header on fetch, and as a `?token=` query param on
+// everything that can't set headers (EventSource, <img src>). No token
+// configured server-side means these are no-ops and the UI works as before.
+let token = localStorage.getItem('zpl-token') || '';
+let es = null;
+
+function authedUrl(path) {
+  if (!token) return path;
+  const sep = path.includes('?') ? '&' : '?';
+  return path + sep + 'token=' + encodeURIComponent(token);
+}
+
+// Build a fetch init with the Bearer token folded into the headers (the
+// query-param form is reserved for EventSource and img src, via authedUrl).
+function authHeaders(init) {
+  const headers = Object.assign({}, init && init.headers);
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  return Object.assign({}, init, { headers });
+}
+
+function showLogin(err) {
+  $('#login').hidden = false;
+  const status = $('#login-status');
+  status.hidden = !err;
+  status.textContent = err ? 'Wrong token - try again.' : '';
+  const out = $('#logout');
+  out.hidden = true;
+  // Stop the live stream while locked out; boot() resumes it on success.
+  if (es) { es.close(); es = null; }
+}
+
+function hideLogin() {
+  $('#login').hidden = true;
+  $('#logout').hidden = false;
+}
+
+$('#login-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  token = $('#login-token').value.trim();
+  if (!token) return;
+  localStorage.setItem('zpl-token', token);
+  hideLogin();
+  boot();
 });
 
-// ---------- boot ----------
-buildStatePanel();
-getJSON('/api/printer-state').then(setStateValues).catch((e) => console.error(e));
-loadDiagnostics().catch((e) => console.error(e));
-loadStorage().catch((e) => console.error(e));
-loadList().catch((e) => console.error(e));
+$('#logout').addEventListener('click', () => {
+  token = '';
+  localStorage.removeItem('zpl-token');
+  if (es) { es.close(); es = null; }
+  location.reload();
+});
+
+// Re-runnable: called at first boot and again after a successful login.
+function boot() {
+  buildStatePanel();
+  getJSON('/api/printer-state').then(setStateValues).catch((e) => console.error(e));
+  loadDiagnostics().catch((e) => console.error(e));
+  loadStorage().catch((e) => console.error(e));
+  loadList().catch((e) => console.error(e));
+  if (!es) connectEvents();
+}
+
+boot();

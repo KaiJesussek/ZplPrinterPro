@@ -212,6 +212,12 @@ pub struct AppState {
     /// Where `memory.json` / `state.json` / `index.json` live (the archive
     /// dir; debounced by `http::spawn_persistence`).
     pub persist_dir: PathBuf,
+    /// Optional API bearer token (env `ZPL_AUTH_TOKEN`, read at boot;
+    /// `None` / empty = the web API is unauthenticated). Checked by the
+    /// router's auth middleware: `Authorization: Bearer <token>` header or
+    /// a `?token=<token>` query param (EventSource and img-src can't set
+    /// headers). The raw ZPL TCP port is never touched by this.
+    pub auth_token: Option<String>,
 }
 
 /// SSE buffer per subscriber; a slow client that lags behind is dropped
@@ -260,6 +266,9 @@ impl AppState {
             printer_state: Mutex::new(printer),
             events,
             persist_dir,
+            auth_token: std::env::var("ZPL_AUTH_TOKEN")
+                .ok()
+                .filter(|t| !t.trim().is_empty()),
         }
     }
 }

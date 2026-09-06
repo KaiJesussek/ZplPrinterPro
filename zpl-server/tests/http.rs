@@ -70,6 +70,20 @@ async fn spawn(dir: PathBuf) -> (SocketAddr, Arc<AppState>) {
     (addr, state)
 }
 
+/// `spawn()` with bearer-token auth turned on. Sets `auth_token` directly on
+/// the state rather than via `ZPL_AUTH_TOKEN` (the field is `pub`, and the
+/// test crate runs in edition 2021 where `std::env::set_var` is `unsafe`
+/// - this workspace forbids `unsafe_code`).
+async fn spawn_with_token(dir: PathBuf, token: &str) -> (SocketAddr, Arc<AppState>) {
+    let mut state = AppState::new(Archive::open(dir).unwrap());
+    state.auth_token = Some(token.to_owned());
+    let state = Arc::new(state);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    spawn_tcp(listener, state.clone());
+    (addr, state)
+}
+
 /// Drive one request through the router; returns the raw response.
 async fn request(state: &Arc<AppState>, req: Request<Body>) -> axum::response::Response {
     router(state.clone())
@@ -714,4 +728,103 @@ async fn spawn_limited(dir: PathBuf, keep: usize, max_bytes: u64) -> (SocketAddr
     let addr = listener.local_addr().unwrap();
     spawn_tcp(listener, state.clone());
     (addr, state)
+}
+
+/// Auth-on: every /api/* route rejects requests with no token.
+#[tokio::test]
+async fn auth_on_rejects_unauthenticated() {
+    let dir = test_dir("auth-none");
+    let _keep = Cleanup(dir.clone());
+    let (addr, state) = spawn_with_token(dir.clone(), "sekret").await;
+    let _ = addr;
+
+    let resp = get(&state, "/api/labels").await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        resp.headers().get(header::WWW_AUTHENTICATE).unwrap(),
+        "Bearer",
+    );
+    let (status, body) = body_string(resp).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(
+        body.contains("needs_token"),
+        "401 carries the UI's login marker: {body}"
+    );
+}
+
+/// Auth-on: wrong tokens are rejected in both accepted forms.
+#[tokio::test]
+async fn auth_on_rejects_wrong_token() {
+    let dir = test_dir("auth-wrong");
+    let _keep = Cleanup(dir.clone());
+    let (addr, state) = spawn_with_token(dir.clone(), "sekret").await;
+    let _ = addr;
+
+    // Wrong Bearer header.
+    let resp = request(
+        &state,
+        Request::builder()
+            .uri("/api/labels")
+            .header(header::AUTHORIZATION, "Bearer wrong")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    drop(resp);
+
+    // Wrong ?token= query param.
+    let (status, body) = body_string(get(&state, "/api/labels?token=wrong").await).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(body.contains("needs_token"), "{body}");
+}
+
+/// Auth-on: the correct token is accepted in both accepted forms.
+#[tokio::test]
+async fn auth_on_accepts_correct_token() {
+    let dir = test_dir("auth-ok");
+    let _keep = Cleanup(dir.clone());
+    let (addr, state) = spawn_with_token(dir.clone(), "sekret").await;
+    let _ = addr;
+
+    // Bearer header.
+    let resp = request(
+        &state,
+        Request::builder()
+            .uri("/api/labels")
+            .header(header::AUTHORIZATION, "Bearer sekret")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK, "correct Bearer token");
+    drop(resp);
+
+    // ?token= query param (the EventSource/<img> form).
+    let (status, body) = body_string(get(&state, "/api/labels?token=sekret").await).await;
+    assert_eq!(status, StatusCode::OK, "correct query token");
+    assert_eq!(body, "[]", "fresh archive lists no labels");
+}
+
+/// Auth-on: the static UI (the router fallback) stays public so the browser
+/// can reach the login form; only /api/* is gated.
+#[tokio::test]
+async fn auth_on_ui_stays_public() {
+    let dir = test_dir("auth-ui");
+    let _keep = Cleanup(dir.clone());
+    let (addr, state) = spawn_with_token(dir.clone(), "sekret").await;
+    let _ = addr;
+
+    // The API is gated...
+    assert_eq!(
+        get(&state, "/api/labels").await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    // ...but the UI and its assets serve without a token.
+    for path in ["/", "/app.js", "/style.css"] {
+        let (status, body) = body_string(get(&state, path).await).await;
+        assert_eq!(status, StatusCode::OK, "{path} must stay public");
+        assert!(!body.contains("needs_token"), "{path} leaked the 401");
+    }
 }
