@@ -192,6 +192,50 @@ cargo test --workspace
   pin the guide's tables and byte layouts so a regression against a
   documented value fails loudly.
 
+### Code coverage
+
+Measured with `llvm-cov` over the full `cargo test --workspace` suite:
+build with `-C instrument-coverage`, merge the raw profiles, then
+report against the instrumented test binaries.
+
+| Crate | Lines | Covered | Line | Functions | Covered | Func |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `zpl` | 8100 | 7583 | 93.6% | 624 | 611 | 97.9% |
+| `zpl-server` | 1202 | 941 | 78.3% | 142 | 89 | 62.7% |
+| **Total** | **9302** | **8524** | **91.6%** | **766** | **700** | **91.4%** |
+
+Regenerate with (the scratch `CARGO_TARGET_DIR` keeps the instrumented
+build separate from the normal `target/`; `$(pwd)` makes the profile
+path absolute because cargo runs test binaries with the package root as
+their working directory):
+
+```sh
+mkdir -p target/cov
+CARGO_TARGET_DIR=target/cov-build CARGO_INCREMENTAL=0 \
+  RUSTFLAGS="-C instrument-coverage" \
+  LLVM_PROFILE_FILE="$(pwd)/target/cov/%p-%m.profraw" \
+  cargo test --workspace
+llvm-profdata merge -sparse target/cov/*.profraw -o target/cov/merged.profdata
+objects=""
+for b in target/cov-build/debug/deps/zpl*; do
+  [ -x "$b" ] && objects="$objects --object=$b"
+done
+llvm-cov report --instr-profile=target/cov/merged.profdata \
+  --ignore-filename-regex='(/.cargo/registry|/rustc/|/library/)' $objects
+```
+
+Where the gaps are:
+
+- `zpl-server/src/main.rs` is 0% - the binary's boot path is never
+  exercised; the test suites drive `spawn_tcp`/`router` in-process
+  instead.
+- `archive.rs` (68.6%) - prune/reconcile and error-path branches;
+  `http.rs` (80.1%) - API validation/error branches.
+- `zpl` weak spots: `memory.rs` (86.1%), `bc2d.rs` (88.1%, PDF417/Aztec
+  corner cases), `diag.rs` (81.0%).
+- Guide-pinned surfaces are at or near full: `config.rs` and
+  `scanner.rs` 99.2%, `ir.rs`/`state.rs`/`proto.rs`/`hs.rs` 100%.
+
 ## Parity runbook
 
 > Repository policy: **nothing reference-derived is ever committed.**
