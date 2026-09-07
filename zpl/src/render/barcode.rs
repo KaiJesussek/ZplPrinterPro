@@ -9,15 +9,17 @@
 //!   interpretation line` is a separate parameter, p.94; the UCC/EAN
 //!   section's Figure 12 "Printing the Interpretation Line" shows the line
 //!   in its own band under the symbol).
-//! * **Interpret line font** - guide ^BC p.94: "The interpretation line
-//!   can be printed in any font by placing the font command before the
-//!   barcode command." `BarcodeField` therefore carries the field's `^A`
-//!   font (Task 14 captured it at parse); size follows the same `^A` rules
-//!   as text (height -> cell scale, width -> fixed advance). `f=Y` prints
-//!   the line below the bars, `g=Y` (`interpret`) above them (both may be
-//!   set). The line shows the decoded field data (^FH applied), starting
-//!   at the field origin - the UCC/EAN mode prints parens/spaces in the
-//!   line exactly as the guide describes.
+//! * **Interpret line** - `f=Y` prints the decoded field data (^FH
+//!   applied) below the bars, `g=Y` (`interpret`) above them (both may be
+//!   set). The default render is built-in font 0 at a cell of **12 dots
+//!   per module**, capped at 120 (measured on the reference: module 2 ->
+//!   24-dot cell, module 5 -> 60, module 10+ -> 120; independent of the
+//!   bar height - the reference scales with `^BY w`, not `h`), centered
+//!   on the symbol. The line sits 6 dots past the bar block edge. The
+//!   reference also honors an explicit `^A ... ^BC` font request
+//!   (cell = `^A` height, face = `^A` font) when it follows `^BY`; that
+//!   ordering quirk (`^A` before `^BY` is dropped) is not modeled - the
+//!   built-in font-0 default is, which every corpus case uses.
 //! * **Quiet zone** - guide "Basic Format for Bar Codes" (Fonts and
 //!   Barcodes, p.1586): "The size of the quiet zone depends on the size of
 //!   bar widths (usually 10 times the width of the narrow bar)" - Code
@@ -29,12 +31,15 @@
 //!   the quiet zone (Task 16).
 //! * **Rotation** - `^FW`/`^BC o` rotate the field content about the ^FO
 //!   origin, the same transform as text (`^FW` p.208: `R` = "rotated 90
-//!   degrees (clockwise)", ...). Bars, modules AND the interpret line are
-//!   one R0 content plane mapped through the field rotation
-//!   (R90: `(u,v) -> (fh-1-v, u)`, ...). The line below the bars therefore
-//!   lands on the left of an R90 symbol, glyphs rotated with the plane -
-//!   text and barcode rotate identically. An interpretation line above the
-//!   bars (`g=Y`) sits at negative content `v` and rotates to the right.
+//!   degrees (clockwise)", ...). The R0 content plane is the **bar box**
+//!   `[0,fw) x [0,h)` anchored at the ^FO origin; the interpret line hangs
+//!   OUTSIDE it at `v` in `[h, h+cell)` (`f=Y`) or `[-cell, 0)`
+//!   (`g=Y`), mapped through the same rotation (R90: `(u,v) ->
+//!   (fh-1-v, u)` with `fh = h`). The line below the bars therefore lands
+//!   on the left of an R90 symbol and on the right of a B270 symbol, the
+//!   bars stay anchored at the origin for every rotation, and a `g=Y`
+//!   line (above) rotates to the right - measured dot-for-dot on the
+//!   reference (rotated 1D probes and the corpus 08 "ZEBRA" label).
 //!
 //! # Safety
 //!
@@ -60,12 +65,19 @@ const MAX_CONTENT: u64 = 1 << 50;
 
 /// The R0 content box of a painted barcode, in field-relative coordinates.
 /// The rotation constants match text.rs's transform: the box maps
-/// `u in [0, fw), v in [0, fh)` to the post-rotation plane.
+/// `u in [0, fw), v in [0, fh)` to the post-rotation plane. `fh` is the
+/// BAR box height only - the interpret line hangs OUTSIDE the box (below
+/// the bars at `v in [h, h+cell)`, above them at `[-cell, 0)`), so
+/// rotations keep the bars origin-anchored and the line lands on the
+/// rotated "below" side (left for R90, right for B270 - measured on the
+/// reference; the label-level far-corner transforms (`^POI`/`^PM`) also
+/// anchor on the bar box, verified against the reference).
 pub(crate) struct Extent {
     /// Content width: quiet zones + symbol, or the module map, or the
     /// interpret line's advance (whichever is wider).
     pub fw: u32,
-    /// Content height: bar height + line cell (or the module map height).
+    /// Content height: the bar height, or the module map height (+ the
+    /// QR's bottom blank band).
     pub fh: u32,
 }
 
@@ -79,17 +91,18 @@ fn cmax(v: u128) -> u32 {
     v.min(u32::MAX as u128) as u32
 }
 
-/// The interpret-line cell height in dots. The reference renders the line
-/// in font 0 at a size proportional to the BAR height, ignoring the
-/// field's `^A` font state (measured, case 21: ^CFA,15 before the sample's
-/// ^BC still prints a font-0 line - serif digits, ~40-dot cell for a
-/// 270-dot bar - and corpus 08: a 100-dot bar gets a ~15-dot cell): the
-/// line cell is `15%` of the bar height, clamped to a sane band. The
-/// reference digit advance at that cell runs ~30 dots; the line is
-/// centered on the symbol (see [`paint_line`]).
+/// The interpret-line cell height in dots. The reference renders the
+/// default line in built-in font 0 at a size proportional to the MODULE
+/// width (^BY w), not the bar height (measured: module 1..9 scale the
+/// glyph one-to-one, module 10+ hold; bar heights 10..800 at a fixed
+/// module render identically; `^CF` is ignored, and the line is centered
+/// on the symbol - see [`paint_line`]): the cell is **12 dots per
+/// module**, capped at 120. An explicit `^A` font request sizes the line
+/// instead (cell = `^A` height), but the reference drops it when placed
+/// before `^BY`; that quirk is not modeled (see the module docs).
 fn line_cell(b: &BarcodeField) -> u32 {
-    let h = if b.height == 0 { 10 } else { b.height };
-    (h * 15 / 100).clamp(15, 60)
+    let m = if b.module == 0 { 2 } else { b.module };
+    m.saturating_mul(12).clamp(1, 120)
 }
 
 /// Total width of the interpret line at the font-0 line cell (proportional
@@ -103,8 +116,10 @@ fn line_width(b: &BarcodeField, fd: &FontData, cell: u32) -> u32 {
     cmax(total)
 }
 
-/// Measure the R0 content box of a barcode field.
-fn extent(b: &BarcodeField, pat: &Pattern, lc: u32, tw: u32) -> Extent {
+/// Measure the R0 content box of a barcode field. The box is the BAR
+/// block (fw x bar-height) anchored at the field origin - interpret lines
+/// hang outside it (see the module docs and [`Extent`]).
+fn extent(b: &BarcodeField, pat: &Pattern, tw: u32) -> Extent {
     // ^BY/^BC defaults, mirror of bc::barcode_field (hand-built IR can
     // carry 0s that the parser never leaves behind).
     let module = if b.module == 0 { 2 } else { b.module };
@@ -116,14 +131,9 @@ fn extent(b: &BarcodeField, pat: &Pattern, lc: u32, tw: u32) -> Extent {
             // quiet zone; the label margin is the quiet zone).
             let quiet = 0u128;
             let pat_w: u128 = bars.iter().map(|x| x.width as u128).sum();
-            // Each printed interpretation line adds its own cell: `f=Y` puts
-            // one below the bars (`v` in [h, h+lc)) and `g=Y` one above them
-            // (negative `v`), so the content box spans [-lc, h+lc) - the box
-            // height counts the two cells separately.
-            let fh = height as u128 + u128::from(lc);
             Extent {
                 fw: cmax((2 * quiet + pat_w).max(u128::from(tw))),
-                fh: cmax(fh),
+                fh: cmax(height as u128),
             }
         }
         // The reference anchors the QR symbol `^BY` height below the
@@ -280,8 +290,9 @@ fn paint_line(
         warnings.push("font has unusable vertical metrics; interpretation line skipped".into());
         return;
     }
-    // The line cell is the built-in [`line_cell`] height (15% of the bar
-    // height); the field font's ^A size rules do not apply.
+    // The line cell is the built-in [`line_cell`] height (12 dots per
+    // module, capped); the field font's ^A size rules do not apply to the
+    // default line (see the module docs).
     let eff = 1.0;
     let baseline = draw_baseline(&fd.metrics, eff, cell);
     // Bitmap-snap fonts can ink past the cell (font A renders 15-row
@@ -414,17 +425,18 @@ pub(crate) fn paint(
     } else {
         None
     };
-    let (lc_span, tw) = if line {
-        let lc = line_cell(b);
-        // Each printed interpretation line adds its own cell: `f=Y` below
-        // the bars, `g=Y` above them - the content box spans [-lc, h+lc).
-        let span = (u32::from(b.line == b'Y') + u32::from(b.interpret)) * lc;
-        let tw = fd.as_ref().map(|f| line_width(b, f, lc)).unwrap_or(0);
-        (span, tw)
+    // The interpret line hangs outside the bar box (below/above the
+    // bars), so the box is the bar block itself - only the line's WIDTH
+    // feeds the extent (a line wider than the symbol widens the R0 box;
+    // it is still centered on the bars - see [`paint_line`]).
+    let tw = if line {
+        fd.as_ref()
+            .map(|f| line_width(b, f, line_cell(b)))
+            .unwrap_or(0)
     } else {
-        (0, 0)
+        0
     };
-    let g = extent(b, pat, lc_span, tw);
+    let g = extent(b, pat, tw);
     let (ox, oy) = place(
         opts.mode,
         bmp.width as i64,
@@ -515,10 +527,25 @@ pub(crate) fn paint(
             Pattern::Bars(bars) => bars.iter().map(|x| x.width as i64).sum(),
             Pattern::Modules { .. } => g.fw as i64,
         };
+        // The line's ink starts ~6 dots past the bar block, in every
+        // rotation (measured on the reference: R0 line ink at bar+6,
+        // R90/B270 at origin-6/+6, R180 at -6; constant across modules
+        // and `^A` heights) - the cell box hangs 6 dots off the bars.
+        const LINE_GAP: i64 = 6;
         if b.line == b'Y' {
             let h = if b.height == 0 { 10 } else { b.height };
             paint_line(
-                bmp, b, &fd, &g, h as i64, cell, bar_w, ox, oy, opts, warnings,
+                bmp,
+                b,
+                &fd,
+                &g,
+                h as i64 + LINE_GAP,
+                cell,
+                bar_w,
+                ox,
+                oy,
+                opts,
+                warnings,
             );
         }
         if b.interpret {
@@ -527,7 +554,7 @@ pub(crate) fn paint(
                 b,
                 &fd,
                 &g,
-                -(cell as i64),
+                -(cell as i64) - LINE_GAP,
                 cell,
                 bar_w,
                 ox,

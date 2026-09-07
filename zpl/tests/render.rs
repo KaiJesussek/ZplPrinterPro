@@ -1319,11 +1319,12 @@ fn barcode_rotation_90() {
 /// Interpret line below (`^BC f=Y`): the guide's `h = barcode height (in
 /// dots)` is the BAR height only - the interpretation line is added BELOW
 /// the bars, outside the height parameter. The line prints in the built-in
-/// font 0 at the reference's size (15% of the bar height, min 15 dots) and
-/// is CENTERED on the symbol (measured on the reference: the sample's
-/// "12345678" line and corpus 08's "ZEBRA" both sit centered under the
-/// bars). The default `N` mode encodes the digits literally in Start B,
-/// so "12345678" = 123 modules x 2 = 246 dots wide.
+/// font 0 at the reference's size (12 dots per module: ^BY2 -> cell 24),
+/// its ink starts 6 dots past the bar bottom (the reference's measured
+/// gap), and it is CENTERED on the symbol (measured on the reference: the
+/// sample's "12345678" line and corpus 08's "ZEBRA" both sit centered
+/// under the bars). The default `N` mode encodes the digits literally in
+/// Start B, so "12345678" = 123 modules x 2 = 246 dots wide.
 #[test]
 fn barcode_interpret_line_below_bars() {
     let src = b"^XA^PW300^LL140^FO0,0^BY2,3,60^BCN,60,Y,N^FD12345678^FS^XZ";
@@ -1338,30 +1339,75 @@ fn barcode_interpret_line_below_bars() {
         out.bitmap.get(0, 0) && out.bitmap.get(3, 59),
         "bars span 0..60"
     );
-    // Line ink appears exactly below the bars, centered on the 246-dot
-    // symbol: 8 digits at the font-0 15-dot cell advance ~60 dots total,
-    // so the line spans roughly x 93..158, rows 60..75.
+    // Line ink starts ~6 dots past the bar bottom (rows 66..84 at the
+    // font-0 24-dot cell), centered on the 246-dot symbol.
     assert!(
-        (60..78).any(|y| (90..165).any(|x| out.bitmap.get(x, y))),
-        "line ink sits below the bar height, centered"
+        (66..70).any(|y| (90..165).any(|x| out.bitmap.get(x, y))),
+        "line ink sits 6 dots below the bar height, centered"
     );
-    // Nothing beneath the line's ink; the line stays clear of the symbol
-    // edges (it is centered, not left-bounded at the field origin).
+    // The 6-dot gap between bars and ink is white; nothing beneath the
+    // ink; the line stays clear of the symbol edges (it is centered, not
+    // left-bounded at the field origin).
     assert!(
-        !(0..300).any(|x| (80..140).any(|y| out.bitmap.get(x, y))),
+        !(0..300).any(|x| (61..65).any(|y| out.bitmap.get(x, y))),
+        "6-dot gap between bars and line ink"
+    );
+    assert!(
+        !(0..300).any(|x| (86..140).any(|y| out.bitmap.get(x, y))),
         "no ink below the interpretation line"
     );
     assert!(
         !(0..300).any(|x| (60..80).any(|y| out.bitmap.get(x, y)))
-            || (90..160).any(|x| (60..78).any(|y| out.bitmap.get(x, y))),
+            || (90..160).any(|x| (66..84).any(|y| out.bitmap.get(x, y))),
         "line ink is centered (within the middle third of the symbol)"
+    );
+}
+
+/// The rotated-barcode bug (user report): with an interpretation line
+/// (`f=Y`) the R0 content box used to include the line's cell, so a
+/// rotation shifted the first bar inward by the line cell (15 dots at
+/// 15% of a 100-dot bar) - the reference anchors the BAR box at the ^FO
+/// origin for every rotation and hangs the line outside it, on the
+/// rotated "below" side (left for R90, right for B270, above for R180).
+/// The line cell is 12 dots per module: ^BY2 -> 24, so the line spans
+/// cols [-24, 0) relative to the origin and its ink sits ~6 dots past
+/// the bar box.
+#[test]
+fn barcode_rotated_interpret_line_hangs_outside_bars() {
+    // R90 at (30,30), h=100, module 2: bars run right from the origin to
+    // col 130; the line hangs LEFT (cols < 30).
+    let (_, out) = render_bc(b"^XA^PW240^LL240^FO30,30^BY2,2,100^BCR,100,Y,N^FD0 degrees^FS^XZ");
+    let bmp = &out.bitmap;
+    // Bars anchored at the origin: first bar col 30, and the bar box
+    // occupies exactly [30,130) - the old bug started it at col 45.
+    // R90 maps pattern-u to rows and bar-height v to columns: the first
+    // (2-module) bar is rows 30..34 across the full bar-height columns
+    // [30,130). The old bug shifted the whole block right by the line
+    // cell (15), leaving cols 30..44 blank at those rows.
+    assert!(
+        (30..44).all(|x| bmp.get(x, 31)),
+        "first bar spans the origin columns (R90); the old bug left 30..44 blank"
+    );
+    // Line ink hangs LEFT of the origin (cols < 30), inside the cell
+    // band [-24, 0), vertically centered on the pattern's row range.
+    let ink: Vec<(i64, i64)> = (0..240)
+        .flat_map(|y| (0..240).map(move |x| (x, y)))
+        .filter(|&(x, y)| x < 30 && y >= 30 && bmp.get(x as u32, y as u32))
+        .collect();
+    assert!(!ink.is_empty(), "interpret line ink left of the origin");
+    let rows: Vec<i64> = ink.iter().map(|&(_, y)| y).collect();
+    let (r0, r1) = (*rows.iter().min().unwrap(), *rows.iter().max().unwrap());
+    let pattern_mid = 30 + 190 / 2; // "0 degrees" pattern is ~190 rows
+    assert!(
+        (r0..=r1).contains(&pattern_mid) || r0 <= pattern_mid + 12 && r1 >= pattern_mid - 12,
+        "line vertically centered on the pattern (rows {r0}..{r1}, pattern mid {pattern_mid})"
     );
 }
 
 /// Interpret line above (`^BC g=Y`): the line prints ABOVE the bars,
 /// extending the field above its ^FO origin; the bars are unchanged. The
-/// line is the built-in font-0 line at 15% of the bar height (60 -> min
-/// 15), so it occupies rows 0..15 above the origin, centered.
+/// line is the built-in font-0 line at 12 dots per module (^BY2 -> 24),
+/// so it occupies rows -24..0 above the origin, centered.
 #[test]
 fn barcode_interpret_line_above_bars() {
     let plain = b"^XA^PW300^LL140^FO0,15^BY2,3,60^BCN,60,N,N^FD12345678^FS^XZ";
@@ -1391,16 +1437,17 @@ fn barcode_interpret_line_above_bars() {
 /// interpretation line adds its own cell, so the content spans
 /// [-lc, h+lc) relative to the origin and the auto-sized label must cover
 /// h + 2*lc - the below line would be clipped if only one cell were
-/// counted. The line cell is the built-in font-0 line at 15% of the bar
-/// height (60 -> min 15), centered on the symbol; the auto height must be
-/// 15 + 60 + 15 = 90.
+/// counted. The line cell is the built-in font-0 line at 12 dots per
+/// module (^BY2 -> 24), centered on the symbol; the origin sits 15 dots
+/// down, the g-line cell extends 24 above it, so the auto height must be
+/// max(0, 15-24) + 60 + 2*24 = 108.
 #[test]
 fn barcode_both_interpret_lines_auto_height() {
     let (label, out) = render_bc(b"^XA^PW300^FO0,15^BY2,3,60^BCN,60,Y,Y^FD12345678^FS^XZ");
     let f = single_barcode(&label);
     assert_eq!((f.line, f.interpret), (b'Y', true));
     let bmp = &out.bitmap;
-    assert_eq!(bmp.height, 90, "auto height covers both line cells + bars");
+    assert_eq!(bmp.height, 108, "auto height covers both line cells + bars");
     assert!(
         (0..15).any(|y| (90..165).any(|x| bmp.get(x, y))),
         "above line ink"
@@ -1410,51 +1457,54 @@ fn barcode_both_interpret_lines_auto_height() {
         "bars span the full 60-dot height from the origin"
     );
     assert!(
-        (75..90).any(|y| (90..165).any(|x| bmp.get(x, y))),
+        (75..108).any(|y| (90..165).any(|x| bmp.get(x, y))),
         "below line ink (not clipped)"
     );
 }
 
 /// ^POI (label rotated 180 deg): a barcode with BOTH interpretation lines
 /// flips as a unit - above line, bars, and below line all survive in
-/// flipped order (above stays above the bars; the footprint box covers
-/// the full [-lc, h+lc) span, so the far-corner math sees all the ink).
+/// flipped order (above stays above the bars; the ^POI far-corner math
+/// anchors on the BAR box - the lines hang outside it, and the reference
+/// mirrors the bar box the same way, so bars land exactly where a
+/// no-line barcode would).
 #[test]
 fn barcode_poi_keeps_both_interpret_lines() {
     // ^FO30,20: mode-N "12345678" = Start B, 123 modules at module 2 =
     // 246 dots wide, no interior quiet zone (reference) -> fw = 246;
-    // fh = 60 + 2*15 = 90 (line cells are 15% of the bar height, min 15).
-    // ^POI moves the field to the far corner (300-30-246, 300-20-90) =
-    // (24, 190); the content plane renders from there unchanged: bars on
-    // rows [190,250) at cols [24,270), the above line at rows [175,190),
-    // the below line at rows [250,265).
+    // fh = 60 (the bar box; line cells of 24 hang outside it).
+    // ^POI moves the field to the far corner (300-30-246, 300-20-60) =
+    // (24, 220); the content plane renders from there unchanged: bars on
+    // rows [220,280) at cols [24,270), the above line's ink at rows
+    // [190,210) (its cell hangs 30 above the bar top), the below line's
+    // ink at rows [286,300) (clipped by the 300-dot label).
     let (label, out) =
         render_bc(b"^XA^PW300^LL300^POI^FO30,20^BY2,3,60^BCN,60,Y,Y^FD12345678^FS^XZ");
     let f = single_barcode(&label);
     assert_eq!(f.rotation, Rotation::R0);
     assert!(out.warnings.is_empty(), "clean: {:?}", out.warnings);
     let bmp = &out.bitmap;
-    // First bar (u in [0,4)) at the far-corner origin.
-    assert!(bmp.get(24, 190) && bmp.get(27, 249), "bars flipped intact");
+    // First bar (u in [0,4)) at the far-corner bar-box origin.
+    assert!(bmp.get(24, 220) && bmp.get(27, 279), "bars flipped intact");
     assert!(
         !(0..24).any(|x| (0..300).any(|y| bmp.get(x, y))),
         "nothing left of the flipped field"
     );
     assert!(
-        (175..190).any(|y| (118..190).any(|x| bmp.get(x, y))),
+        (191..219).any(|y| (118..190).any(|x| bmp.get(x, y))),
         "above line survived the flip (centered font-0 line)"
     );
     assert!(
-        (250..265).any(|y| (118..190).any(|x| bmp.get(x, y))),
+        (286..300).any(|y| (118..190).any(|x| bmp.get(x, y))),
         "below line survived the flip"
     );
     assert!(
-        !(0..175).any(|y| (0..300).any(|x| bmp.get(x, y))),
+        !(0..190).any(|y| (0..300).any(|x| bmp.get(x, y))),
         "nothing above the flipped field"
     );
     assert!(
-        !(265..300).any(|y| (0..300).any(|x| bmp.get(x, y))),
-        "nothing below the flipped field"
+        (290..300).any(|y| (118..190).any(|x| bmp.get(x, y))),
+        "below line runs to the label edge (clipped, not lost)"
     );
 }
 
