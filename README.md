@@ -29,11 +29,15 @@ This starts the server on the defaults below and prints a banner with
 the effective settings. Send a label:
 
 ```sh
-printf '^XA^FO50,50^A0N,30,30^FDHello, ZPL!^FS^XZ' | nc 127.0.0.1 9100
+printf '^XA^FO50,50^A0N,30,30^FDHello, ZPL!^FS^XZ' | nc -N 127.0.0.1 9100
 ```
 
-The raw session is parsed, the label is archived (`.zpl` + `.png`),
-and the web UI is served at <http://localhost:8080>.
+`-N` shuts the socket down after stdin EOF, so the session ends when
+the label stream does. Without it (or with a plain `echo | nc`), the
+client keeps the connection open - the label prints fine but the
+session lingers until the 30s idle timeout closes it. The raw session
+is parsed, the label is archived (`.zpl` + `.png`), and the web UI is
+served at <http://localhost:8080>.
 
 ### Environment variables
 
