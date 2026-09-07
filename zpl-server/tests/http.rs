@@ -828,3 +828,316 @@ async fn auth_on_ui_stays_public() {
         assert!(!body.contains("needs_token"), "{path} leaked the 401");
     }
 }
+
+/// `limit=0` is a 400 (the cap must be > 0) - the list endpoints' other
+/// validation case, distinct from a non-numeric limit.
+#[tokio::test]
+async fn list_limit_zero_is_rejected() {
+    let dir = test_dir("limit0");
+    let _keep = Cleanup(dir.clone());
+    let (_addr, state) = spawn(dir.clone()).await;
+
+    let (status, _) = body_string(get(&state, "/api/labels?limit=0").await).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "limit=0 must 400 (a cap of zero rows is meaningless)"
+    );
+}
+
+/// The list endpoint's pagination corner: `limit` caps the newest-first
+/// walk and `since` skips rows below its ts_ms floor - exercised with both
+/// set so neither filter short-circuits the other.
+#[tokio::test]
+async fn list_since_and_limit_compose() {
+    let dir = test_dir("listfilters");
+    let _keep = Cleanup(dir.clone());
+    let (addr, state) = spawn(dir.clone()).await;
+
+    // Two labels with distinct timestamps (separate sessions, 50 ms apart -
+    // ts_ms is millisecond-granular, so a 5 ms gap is not guaranteed).
+    send_label(addr, b"^XA^GB20,20,2,B^XZ").await;
+    wait_labels(&state, 1).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    send_label(addr, b"^XA^GB20,20,2,B^XZ").await;
+    wait_labels(&state, 2).await;
+
+    let (_, body) = body_string(get(&state, "/api/labels").await).await;
+    let all: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+    assert_eq!(all.len(), 2);
+
+    // since = just past the first label's ts: only the second survives the
+    // floor (the floor is inclusive - `ts == since` passes).
+    let ts1 = all[1]["ts_ms"].as_u64().unwrap(); // list is newest-first
+    let (_, body) =
+        body_string(get(&state, format!("/api/labels?since={}", ts1 + 1).as_str()).await).await;
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+    assert_eq!(rows.len(), 1, "since keeps only rows at/after the floor");
+    assert_eq!(
+        rows[0]["id"].as_u64().unwrap(),
+        all[0]["id"].as_u64().unwrap()
+    );
+
+    // since runs BEFORE the limit cap: the walk skips old rows, then the
+    // cap applies to the remainder.
+    let (_, body) = body_string(
+        get(
+            &state,
+            format!("/api/labels?since={}&limit=5", ts1 + 1).as_str(),
+        )
+        .await,
+    )
+    .await;
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+    assert_eq!(rows.len(), 1);
+}
+
+/// 500 paths: the internal-error constructor (AppError::internal) is only
+/// reachable when an archive file read fails with a real IO error - a
+/// directory squatting on the label's filename is EISDIR, not NotFound.
+#[tokio::test]
+async fn corroded_archive_file_reads_are_500() {
+    let dir = test_dir("internal");
+    let _keep = Cleanup(dir.clone());
+    let (addr, state) = spawn(dir.clone()).await;
+    send_label(addr, b"^XA^GB20,20,2,B^XZ").await;
+    wait_labels(&state, 1).await;
+
+    // Replace label 1's .zpl with a directory: fs::read fails EISDIR.
+    let labels = dir.join("labels");
+    std::fs::remove_file(labels.join("1.zpl")).unwrap();
+    std::fs::create_dir(labels.join("1.zpl")).unwrap();
+    let resp = get(&state, "/api/labels/1.zpl").await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "a read error is a 500, not a 404"
+    );
+    assert!(body_string(resp).await.1.contains("reading label"));
+    drop(std::fs::remove_dir_all(labels.join("1.zpl")));
+
+    // Same for the IR read on the detail endpoint.
+    std::fs::remove_file(labels.join("1.json")).unwrap();
+    std::fs::create_dir(labels.join("1.json")).unwrap();
+    let resp = get(&state, "/api/labels/1").await;
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    drop(std::fs::remove_dir_all(labels.join("1.json")));
+}
+
+/// The direct-render 400 body carries the parse diagnostics when the input
+/// has non-empty messages (the plain "^XA..^XZ" hint is only the detail-less
+/// fallback).
+#[tokio::test]
+async fn render_direct_reports_parse_diagnostics_in_400() {
+    let dir = test_dir("render-diag");
+    let _keep = Cleanup(dir.clone());
+    let (_addr, state) = spawn(dir.clone()).await;
+
+    // ^QX is an unknown command: it raises a diagnostic but no complete
+    // format, so the 400 must quote the message.
+    let resp = post_bytes(&state, "/api/render", b"^QX bogus").await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let (_, body) = body_string(resp).await;
+    assert!(
+        body.contains("^QX") || body.contains("unknown"),
+        "the diagnostic message is quoted: {body}"
+    );
+}
+
+/// PUT with every patchable field present: each Option arm of the merge
+/// must apply its value (the existing tests only touch paper_out).
+#[tokio::test]
+async fn put_printer_state_applies_all_fields() {
+    let dir = test_dir("putall");
+    let _keep = Cleanup(dir.clone());
+    let (_addr, state) = spawn(dir.clone()).await;
+
+    let (status, body) = body_string(
+        put_json(
+            &state,
+            "/api/printer-state",
+            r#"{
+                "paper_out": true, "ribbon_out": true, "head_open": true,
+                "rewind_full": true, "head_temp": "Warm", "pause": true,
+                "comm_diag": true, "media_type": "Continuous",
+                "print_mode": "ThermalTransfer", "static_ram": true
+            }"#,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    for (key, expected) in [
+        ("paper_out", serde_json::json!(true)),
+        ("ribbon_out", serde_json::json!(true)),
+        ("head_open", serde_json::json!(true)),
+        ("rewind_full", serde_json::json!(true)),
+        ("head_temp", serde_json::json!("Warm")),
+        ("pause", serde_json::json!(true)),
+        ("comm_diag", serde_json::json!(true)),
+        ("media_type", serde_json::json!("Continuous")),
+        ("print_mode", serde_json::json!("ThermalTransfer")),
+        ("static_ram", serde_json::json!(true)),
+    ] {
+        assert_eq!(v[key], expected, "{key} merged from the patch");
+    }
+}
+
+/// GET /api/storage reports fonts and formats maps too (the existing test
+/// only exercises the images map).
+#[tokio::test]
+async fn storage_reports_fonts_and_formats() {
+    let dir = test_dir("storagemore");
+    let _keep = Cleanup(dir.clone());
+    let (_addr, state) = spawn(dir.clone()).await;
+
+    state
+        .memory
+        .lock()
+        .await
+        .fonts
+        .insert("F.TTF".into(), vec![1, 2, 3, 4]);
+    state
+        .memory
+        .lock()
+        .await
+        .formats
+        .insert("FMT".into(), vec![5, 6]);
+    state.memory.lock().await.images.insert(
+        "LOGO.GRF".into(),
+        Image {
+            width: 8,
+            height: 8,
+            data: vec![0u8; 8],
+        },
+    );
+
+    let (_, body) = body_string(get(&state, "/api/storage").await).await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["counts"]["images"], 1);
+    assert_eq!(v["fonts"]["F.TTF"], 4, "font size is its byte length");
+    assert_eq!(v["formats"]["FMT"], 2);
+    assert_eq!(v["images"]["LOGO.GRF"]["width"], 8);
+}
+
+/// The persistence debounce: changing state must hit disk (memory.json /
+/// state.json / index.json) after one tick - the fingerprint path that the
+/// explicit persist_now tests bypass.
+#[tokio::test]
+async fn spawn_persistence_writes_changes_after_tick() {
+    let dir = test_dir("debounce");
+    let _keep = Cleanup(dir.clone());
+    let (addr, state) = spawn(dir.clone()).await;
+
+    let handle = zpl_server::http::spawn_persistence(state.clone());
+    // Nothing changed yet: a tick must NOT write.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(
+        !dir.join("memory.json").exists(),
+        "no write before a change"
+    );
+
+    // Change memory - every map that the fingerprint folds over (fonts and
+    // formats too, not just images), then wait a tick.
+    state.memory.lock().await.images.insert(
+        "LOGO.GRF".into(),
+        Image {
+            width: 8,
+            height: 8,
+            data: vec![0u8; 8],
+        },
+    );
+    state
+        .memory
+        .lock()
+        .await
+        .fonts
+        .insert("A.TTF".into(), vec![1, 2, 3]);
+    state
+        .memory
+        .lock()
+        .await
+        .formats
+        .insert("FMT".into(), vec![9]);
+    send_label(addr, b"^XA^GB20,20,2,B^XZ").await;
+    wait_labels(&state, 1).await;
+    put_json(&state, "/api/printer-state", r#"{"paper_out":true}"#).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    handle.abort();
+
+    assert!(dir.join("memory.json").exists(), "memory persisted");
+    assert!(dir.join("state.json").exists(), "conditions persisted");
+    assert!(dir.join("index.json").exists(), "rows persisted");
+    let ps: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("state.json")).unwrap()).unwrap();
+    assert_eq!(ps["paper_out"], true);
+}
+
+/// `dpi=0` on the direct-render endpoint is a 400 (the cap that validates
+/// the playback dpi - the same guard the rerender endpoint has is enforced
+/// here on `POST /api/render`).
+#[tokio::test]
+async fn render_direct_rejects_dpi_zero() {
+    let dir = test_dir("renderdpi0");
+    let _keep = Cleanup(dir.clone());
+    let (_addr, state) = spawn(dir.clone()).await;
+
+    let (status, _) =
+        body_string(post_bytes(&state, "/api/render?dpi=0", b"^XA^GB20,20,2,B^XZ").await).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "dpi=0 must be rejected");
+}
+
+/// A persist write failure is logged and retried, not silently dropped: a
+/// directory squatting on the target path makes write_atomic fail.
+#[tokio::test]
+async fn persist_failure_is_retried_not_forgotten() {
+    let dir = test_dir("persisterr");
+    let _keep = Cleanup(dir.clone());
+    let (_addr, state) = spawn(dir.clone()).await;
+
+    // A directory at memory.json makes its write_atomic fail; the others
+    // still land.
+    let mem_target = dir.join("memory.json");
+    std::fs::create_dir(&mem_target).unwrap();
+    put_json(&state, "/api/printer-state", r#"{"paper_out":true}"#).await;
+    let out = zpl_server::http::persist_now(&state).await;
+    assert!(!out.memory, "failed memory write reported");
+    assert!(out.conditions, "conditions still written");
+    assert!(out.rows, "rows still written");
+
+    // Remove the blocker: the same call now succeeds (nothing was forgotten).
+    std::fs::remove_dir(&mem_target).unwrap();
+    let out = zpl_server::http::persist_now(&state).await;
+    assert!(out.memory);
+}
+
+/// AppState::new falls back to defaults when the persisted condition /
+/// memory files are present but unreadable (corrupt JSON), never a boot
+/// failure - the "ignoring unreadable" log branches.
+#[tokio::test]
+async fn corrupt_persisted_state_falls_back_to_defaults() {
+    let dir = test_dir("corrupt");
+    let _keep = Cleanup(dir.clone());
+    let (_addr, _state) = spawn(dir.clone()).await; // creates the archive dir
+
+    // The files exist but are garbage JSON.
+    std::fs::write(dir.join("state.json"), b"{not json").unwrap();
+    std::fs::write(dir.join("memory.json"), b"[1,2").unwrap();
+
+    let state = Arc::new(AppState::new(
+        zpl_server::archive::Archive::open(dir.clone()).unwrap(),
+    ));
+    assert!(!state.printer_state.lock().await.conditions.paper_out);
+    assert!(
+        !state
+            .printer_state
+            .lock()
+            .await
+            .conditions
+            .media_type
+            .eq(&zpl_server::state::MediaType::Continuous),
+        "default media type stays"
+    );
+    assert!(state.memory.lock().await.images.is_empty());
+}

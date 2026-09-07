@@ -447,3 +447,74 @@ async fn eof_mid_binary_payload_warns_once_and_stores_nothing() {
     assert_eq!(arc.len(), 0, "a truncated download must not be archived");
     let _ = dir;
 }
+
+/// The input cap: a session that feeds more than MAX_STREAM_BYTES without
+/// ever closing a format is cut off, not parsed (the "input cap exceeded"
+/// log branch). 64 MiB is the cap; send it in one chunk so the check trips
+/// inside a single read.
+#[tokio::test]
+async fn oversized_stream_is_cut_off_not_parsed() {
+    let dir = test_dir("cap");
+    let _keep = Cleanup(dir.clone());
+    let (addr, state) = spawn(dir.clone()).await;
+
+    let mut sock = TcpStream::connect(addr).await.unwrap();
+    // 64 MiB + epsilon of ^XB (a field-opener with no format) - never a
+    // complete ^XA..^XZ, so nothing can archive on EOF either.
+    let big = vec![b'^'; 1];
+    let n = 64 << 20;
+    let mut sent = 0usize;
+    let chunk = vec![b'X'; 8192];
+    while sent < n {
+        sock.write_all(&chunk).await.unwrap();
+        sent += chunk.len();
+    }
+    sock.write_all(&big).await.unwrap();
+    sock.shutdown().await.unwrap();
+
+    // The session must end (EOF after the server breaks) without archiving.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let state = state;
+    while state.counters.bytes.load(Ordering::Relaxed) < (n + 1) as u64 {
+        assert!(Instant::now() < deadline, "feed never fully read");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // Give the loop a moment to hit the cap and exit.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(state.archive.lock().await.len(), 0, "nothing archived");
+}
+
+/// The archive-push failure log: when a directory squats on the label's
+/// .zpl path, push fails and the session logs it without archiving.
+#[tokio::test]
+async fn push_failure_is_logged_not_panicked() {
+    let dir = test_dir("pushlog");
+    let _keep = Cleanup(dir.clone());
+    let (addr, state) = spawn(dir.clone()).await;
+
+    // A directory at labels/1.zpl makes write_atomic's rename fail (1.zpl
+    // is a dir, rename onto it errors) - the push error branch in the
+    // session, distinct from the archive-level push tests.
+    let labels = dir.join("labels");
+    std::fs::create_dir(labels.join("1.zpl")).unwrap();
+
+    let mut sock = TcpStream::connect(addr).await.unwrap();
+    sock.write_all(b"^XA^GB50,50,2,B^XZ").await.unwrap();
+    sock.shutdown().await.unwrap();
+
+    // Wait for the session to attempt the push (label count stays 0; the
+    // error is logged, not stored).
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while state.counters.labels.load(Ordering::Relaxed) != 0
+        && state.counters.warnings.load(Ordering::Relaxed) == 0
+    {
+        assert!(Instant::now() < deadline, "session never completed");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        state.archive.lock().await.len(),
+        0,
+        "failed push archived nothing"
+    );
+}

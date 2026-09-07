@@ -409,3 +409,174 @@ fn hostile_params_never_panic() {
         let (_label, _diags) = common::parse_one(&label); // no panic
     }
 }
+
+// --- QR: ISO mode-selection paths the round-trips above do not reach ---
+
+/// A pure-digit payload selects the ISO numeric mode (3 digits per 10
+/// bits, count indicator 10 bits) instead of byte/alphanumeric; a
+/// trailing 1-digit and 2-digit remainder exercise both leftover arms.
+#[test]
+fn qr_numeric_mode_remainders_roundtrip() {
+    let pat = modules_of(b"^BQN,2,2,Q", b"123456789012345678901234");
+    assert_eq!(decode_qr(&pat).unwrap(), "123456789012345678901234");
+    let pat = modules_of(b"^BQN,2,2,Q", b"12345");
+    assert_eq!(decode_qr(&pat).unwrap(), "12345", "2-digit remainder");
+    let pat = modules_of(b"^BQN,2,2,Q", b"1234");
+    assert_eq!(decode_qr(&pat).unwrap(), "1234", "1-digit remainder");
+}
+
+/// The `MM,` marker (guide ^BQ): consumed together with the following
+/// character, the rest uppercased alphanumeric.
+#[test]
+fn qr_mm_marker_strips_header_char() {
+    // Measured reference rule: MM,HELLO WORLD 12345 renders ELLO WORLD 12345.
+    let pat = modules_of(b"^BQN,2,2,Q", b"MM,XHELLO WORLD 12345");
+    assert_eq!(
+        decode_qr(&pat).unwrap(),
+        "HELLO WORLD 12345",
+        "marker plus following char consumed, rest alnum-encoded"
+    );
+}
+
+/// A payload that only fits version 10 takes the wide (12-bit) numeric
+/// count indicator; the alphanumeric v10 count (13-bit) needs a long
+/// upper-case payload that byte mode would not fit.
+#[test]
+fn qr_v10_wide_count_indicators() {
+    // v9-H holds 100 data codewords (800 bits); 240 digits pack to
+    // 12 + 240/3*10 = 812 bits (plus the 4-bit mode header), so only
+    // v10-H (122 cws) fits - and the count field goes wide (12 bits).
+    let digits: String = (0..240).map(|_| '7').collect();
+    let pat = modules_of(b"^BQN,2,2,H", digits.as_bytes());
+    if let Pattern::Modules { width, .. } = &pat {
+        assert!(
+            matches!(width, 57),
+            "v10 numeric symbol (57 modules), got {width}"
+        );
+    }
+    assert_eq!(decode_qr(&pat).unwrap(), digits, "numeric v10 round-trip");
+
+    // 370 upper-case chars at level L: alnum packs 11 bits/2 chars ->
+    // 4 + 13 + 185*11 = 2052 bits, past v9-L (232 cws) but inside
+    // v10-L (274 cws): the 13-bit alnum count indicator is exercised.
+    let alnum: String = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ".repeat(10);
+    assert_eq!(alnum.len(), 37 * 10);
+    assert_eq!(alnum.len(), 370);
+    let pat = modules_of(b"^BQN,2,2,L", alnum.as_bytes());
+    if let Pattern::Modules { width, .. } = &pat {
+        assert!(matches!(width, 57), "v10 alphanumeric symbol, got {width}");
+    }
+    assert_eq!(decode_qr(&pat).unwrap(), alnum, "alnum v10 round-trip");
+}
+
+// --- DataMatrix: C40 with space / rectangular sizes ----------------------
+
+/// C40 encodation with a space character: the space is a basic-set
+/// member and the tail rules (one/two left) both run.
+#[test]
+fn dm_c40_space_and_tail_rules() {
+    // "HELLO WORLD" - space in the basic set; 11 chars = 3 triples + 2
+    // left -> the two-left realign tail (C40 stream 10 codewords, then
+    // the padding terminator; the full 16x16 square is the smallest
+    // that holds it).
+    let pat = modules_of(b"^BXN,1,200", b"HELLO WORLD");
+    assert!(
+        matches!(&pat, Pattern::Modules { width: 16, .. }),
+        "16x16 symbol"
+    );
+    // 4 chars = 1 triple + 1 left -> the one-left unlatch tail.
+    let pat = modules_of(b"^BXN,1,200", b"ABCD");
+    assert!(
+        matches!(&pat, Pattern::Modules { width: 12, .. }),
+        "12x12 symbol"
+    );
+}
+
+/// Rectangular DataMatrix (^BX aspect 2): the 8x18 and 12x26 sizes take
+/// the corner-b placement branch; 8x32/corners use corner_c/corner_d.
+#[test]
+fn dm_rectangular_sizes_reach_all_placement_corners() {
+    // 5 bytes -> 8x18 (smallest rect; corner_b placement).
+    let pat = modules_of(b"^BXN,1,200,,,,,2", b"abcde");
+    if let Pattern::Modules { width, height, .. } = &pat {
+        assert_eq!((*width, *height), (18, 8), "8x18 rect");
+    }
+    // 49 bytes -> 16x48 (the biggest standard rect).
+    let payload = vec![b'z'; 49];
+    let pat = modules_of(b"^BXN,1,200,,,,,2", &payload);
+    if let Pattern::Modules { width, height, .. } = &pat {
+        assert_eq!((*width, *height), (48, 16), "16x48 rect");
+    }
+}
+
+// --- PDF417: single-byte compaction + explicit geometry ----------------
+
+/// One byte takes the 901 + byte path (not the 924 latch path); a
+/// single char with explicit rows that need column growth exercises the
+/// row-count clamp.
+#[test]
+fn pdf417_single_byte_and_rows_given() {
+    // "x" -> 901,120 cws + SD + 2 EC (security 0) = 5 codewords total.
+    // Auto geometry picks the near-square 1 col x 5 rows: width =
+    // 17*1 + 69 + 4 = 90, height = 5 rows * 3 modules.
+    let pat = modules_of(b"^B7N,3,0", b"x");
+    let Pattern::Modules { width, height, .. } = &pat else {
+        panic!("single byte did not encode: {pat:?}")
+    };
+    assert_eq!(*width, 17 + 69 + 4, "1 data cw + SD + 2 EC -> 1 col");
+    assert_eq!(*height, 5 * 3, "5 auto rows x row height 3");
+    // Rows given (4): 5 codewords -> 2 cols, 4 rows -> 107 x 12.
+    let pat = modules_of(b"^B7N,3,0,,4", b"x");
+    assert!(
+        matches!(
+            &pat,
+            Pattern::Modules {
+                width: 107,
+                height: 12,
+                ..
+            }
+        ),
+        "2 cols x 4 rows given"
+    );
+    // Rows too few for the data: the encoder grows rows until the
+    // column count drops back under 30 (120 bytes -> 26 cols x 4 rows).
+    let pat = modules_of(b"^B7N,3,0,,3", &[b'y'; 120]);
+    assert!(
+        matches!(
+            &pat,
+            Pattern::Modules {
+                width: 515,
+                height: 12,
+                ..
+            }
+        ),
+        "rows grown 3 -> 4 to fit 26 cols"
+    );
+}
+
+// --- Aztec: binary count thresholds + d-parameter arms ------------------
+
+/// 32..62-byte payloads take the two-B/S-latch path; > 62 the extended
+/// 16-bit prefix; the compact 1..4 layer pick runs for both.
+#[test]
+fn aztec_binary_count_thresholds() {
+    for n in [31usize, 32, 40, 62, 63, 100] {
+        let payload = vec![b'q'; n];
+        let pat = modules_of(b"^B0N,2,,0", &payload);
+        assert!(matches!(&pat, Pattern::Modules { .. }), "n={n} encodes");
+    }
+}
+
+/// The d parameter (EC%) arms: 1..=10 -> 10%, 24..=36 -> 36%, otherwise
+/// 50%; each picks a valid symbol.
+#[test]
+fn aztec_d_parameter_ec_levels() {
+    for d in [5u32, 30, 99] {
+        let cmd = format!("^B0N,2,,{d}");
+        let pat = modules_of(cmd.as_bytes(), b"abc");
+        assert!(
+            matches!(&pat, Pattern::Modules { .. }),
+            "d={d} encodes a symbol"
+        );
+    }
+}

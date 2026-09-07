@@ -197,7 +197,7 @@ fn qr_count_bits(mode: QrMode, version: usize) -> usize {
         }
         QrMode::Alnum => {
             if wide {
-                13
+                11
             } else {
                 9
             }
@@ -335,10 +335,11 @@ fn qr_data_codewords(capacity: usize, mode: QrMode, payload: &[u8], version: usi
             }
         }
     }
-    // Terminator: up to 4 zero bits, to the byte boundary, but never
-    // past the capacity.
+    // Terminator (ISO/IEC 18004 8.4.9): up to 4 zero bits, shortened
+    // only by the remaining capacity - never by the byte boundary.
+    // Zero-padding to the byte boundary follows in the next loop.
     let remain = total_bits - bits.len();
-    let term = remain.min((8 - bits.len() % 8) % 8).min(4);
+    let term = remain.min(4);
     bits.extend(std::iter::repeat_n(0, term));
     while !bits.len().is_multiple_of(8) && bits.len() < total_bits {
         bits.push(0);
