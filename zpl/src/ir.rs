@@ -100,6 +100,13 @@ pub enum Justification {
 pub struct BarcodeField {
     pub x: u32,
     pub y: u32,
+    /// `^FO` (Block) = the bar box's top-left sits at the field origin for
+    /// every rotation. `^FT` (Dot) = the origin is the rotated "baseline"
+    /// corner: R0 bottom-left, R90 top-left, R180 top-right, R270
+    /// bottom-right (measured on the reference - four barcodes at one
+    /// ^FT origin tile the four quadrants around it, a cross; the
+    /// renderer subtracts the anchor from the painted rect origin).
+    pub origin: OriginMode,
     /// Symbology mnemonic letter, e.g. `b'C'` for `^BC`.
     pub symbology: u8,
     pub data: String,
@@ -304,6 +311,7 @@ mod tests {
                 Field::Barcode(BarcodeField {
                     x: 10,
                     y: 100,
+                    origin: OriginMode::Dot,
                     symbology: b'C',
                     data: "123456".into(),
                     module: 2,

@@ -1404,6 +1404,42 @@ fn barcode_rotated_interpret_line_hangs_outside_bars() {
     );
 }
 
+/// `^FT` (Dot) origin for barcodes (user report): the reference anchors
+/// the bar-box rect on the rotated "baseline" corner instead of the
+/// top-left, so four barcodes stacked at one `^FT` origin tile the four
+/// quadrants around it (a cross) instead of painting over each other:
+/// R0 hangs the bars ABOVE the origin (rect bottom-left at the origin),
+/// R90 draws right+down (top-left), R180 left+down (top-right), R270
+/// left+up (bottom-right). `^FO` keeps the top-left anchor for every
+/// rotation (measured on the reference, all four rotations).
+#[test]
+fn barcode_ft_origin_quadrant_cross() {
+    let (_, out) = render_bc(
+        b"^XA^PW1000^LL1000^FT450,750^BY2,2^BCN,100,Y,N^FD12345^FS\
+          ^FT450,750^BY2,2^BCR,100,Y,N^FD12345^FS\
+          ^FT450,750^BY2,2^BCI,100,Y,N^FD12345^FS\
+          ^FT450,750^BY2,2^BCB,100,Y,N^FD12345^FS^XZ",
+    );
+    let bmp = &out.bitmap;
+    // N hangs the bars above the origin (rows 650..749); the first 2-wide
+    // bar module is cols 450..453 across those rows.
+    assert!(
+        bmp.get(452, 700) && bmp.get(452, 740),
+        "N arm above the origin"
+    );
+    assert!(!bmp.get(452, 754), "N bars end at the origin row");
+    // R90 runs right+down from the origin: bar-height columns 450..549,
+    // first module rows 750..753.
+    assert!(bmp.get(460, 752), "R90 arm below the origin");
+    assert!(!bmp.get(560, 800), "R90 bar box ends at col 549");
+    // I180 runs left+down: bars left of the origin, rows 750..849; the
+    // rotated pattern's first module is the rightmost cols 445..448.
+    assert!(bmp.get(447, 800), "I180 arm left of the origin");
+    // B270 runs left+up: bars left of the origin, pattern above it (first
+    // module at the bottom of the up-running pattern).
+    assert!(bmp.get(440, 746), "B270 arm up-left of the origin");
+}
+
 /// Interpret line above (`^BC g=Y`): the line prints ABOVE the bars,
 /// extending the field above its ^FO origin; the bars are unchanged. The
 /// line is the built-in font-0 line at 12 dots per module (^BY2 -> 24),
@@ -1518,6 +1554,7 @@ fn barcode_hostile_module_never_panics() {
     let make = |symbology: u8, rotation| BarcodeField {
         x: 0,
         y: 0,
+        origin: zpl::ir::OriginMode::Block,
         symbology,
         data: "12".into(),
         module: u32::MAX,

@@ -74,6 +74,7 @@ fn bc128_auto_switches_and_checks() {
         &BarcodeField {
             x: 0,
             y: 0,
+            origin: zpl::ir::OriginMode::Block,
             symbology: b'C',
             data: "12345678".into(),
             module: 2,
@@ -1056,6 +1057,7 @@ fn b3_hostile_ratio_module_saturates() {
     let f = BarcodeField {
         x: 0,
         y: 0,
+        origin: zpl::ir::OriginMode::Block,
         symbology: b'3',
         data: "B".into(),
         module: u32::MAX,

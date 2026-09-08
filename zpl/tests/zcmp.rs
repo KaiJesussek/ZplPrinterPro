@@ -12,6 +12,7 @@ fn field() -> BarcodeField {
     let mut f = BarcodeField {
         x: 0,
         y: 0,
+        origin: zpl::ir::OriginMode::Block,
         symbology: b'Q',
         data: String::new(),
         module: 2,

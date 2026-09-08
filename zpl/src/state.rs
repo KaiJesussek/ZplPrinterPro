@@ -532,6 +532,7 @@ impl FieldDraft {
                 Some(b) => Field::Barcode(BarcodeField {
                     x: self.x,
                     y: self.y,
+                    origin: self.origin,
                     symbology: b.symbology,
                     data,
                     module: b.module,

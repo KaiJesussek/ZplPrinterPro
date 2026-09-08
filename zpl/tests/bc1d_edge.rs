@@ -726,6 +726,7 @@ fn b1_handbuilt_ir_without_check_digits() {
     let f = BarcodeField {
         x: 0,
         y: 0,
+        origin: zpl::ir::OriginMode::Block,
         symbology: b'1',
         data: "12345".into(),
         module: 1,

@@ -54,7 +54,7 @@ use ab_glyph::{point, Font, FontVec, GlyphId};
 
 use crate::bc::Pattern;
 use crate::fonts::{left_pad, matrix_pad, CapModel, FontData};
-use crate::ir::{BarcodeField, Rotation};
+use crate::ir::{BarcodeField, OriginMode, Rotation};
 use crate::render::text::{advance_at, draw_baseline, font_scale, scan_bitmap_ink};
 use crate::render::{font_spec, place, resolve_font, Bitmap, RenderOptions};
 
@@ -155,6 +155,23 @@ fn extent(b: &BarcodeField, pat: &Pattern, tw: u32) -> Extent {
     }
 }
 
+/// The R0-rect origin shift for `^FT` (Dot) fields: the reference puts
+/// the origin at the rotated "baseline" corner of the bar box, so the
+/// painted rect's top-left = field origin - this anchor. The dest rect is
+/// `fw` wide x `fh` tall for R0/R180 but `fh` x `fw` for R90/R270, so the
+/// R270 anchor takes the axes swapped. `^FO` (Block) anchors the top-left
+/// for every rotation (measured on the reference - four barcodes at one
+/// ^FT origin tile the four quadrants around it: rects lie right+down,
+/// right+down, left+down, left+up for N/R/I/B, a cross).
+fn origin_anchor(b: &BarcodeField, fw: u32, fh: u32) -> (i64, i64) {
+    match (b.origin, b.rotation) {
+        (OriginMode::Block, _) | (OriginMode::Dot, Rotation::R90) => (0, 0),
+        (OriginMode::Dot, Rotation::R0) => (0, fh as i64),
+        (OriginMode::Dot, Rotation::R180) => (fw as i64, 0),
+        (OriginMode::Dot, Rotation::R270) => (fh as i64, fw as i64),
+    }
+}
+
 /// The field's (y, height) in label space for the auto-height scan: the
 /// bar block (plus the interpret line, when one prints and its font
 /// resolves - a missing font hides only the line, not the bars).
@@ -162,13 +179,37 @@ pub(crate) fn footprint(b: &BarcodeField, _opts: &RenderOptions) -> Option<(u32,
     let height = if b.height == 0 { 10 } else { b.height };
     let line = b.line == b'Y' || b.interpret;
     let lc = if line { line_cell(b) } else { 0 };
-    // Each printed line adds its own cell (f=Y below, g=Y above): the box
-    // covers [-lc, h+lc) relative to the origin, and label-level transforms
-    // (^POI/^PMY far corner, auto height) must see the full span.
+    // Each printed line adds its own cell (f=Y below, g=Y above), hung
+    // off the rect. An ^FT field's rect hangs off the baseline corner, so
+    // the scan starts at the rect top; for R270 the rotated rect is
+    // `fw` tall (the pattern width), so that case derives the span from
+    // the encoded pattern.
     let lc_span = (u32::from(b.line == b'Y') + u32::from(b.interpret)) * lc;
+    let fw = if b.origin == OriginMode::Dot && b.rotation == Rotation::R270 {
+        pattern_width(b)
+    } else {
+        0
+    };
+    let (_, d_y) = origin_anchor(b, fw, height);
+    let span = if fw > 0 { fw } else { height };
     let y_off = if b.interpret { -(lc as i64) } else { 0 };
-    let y = (b.y as i64 + y_off).max(0) as u32;
-    Some((y, height.saturating_add(lc_span)))
+    let y = (b.y as i64 - d_y + y_off).max(0) as u32;
+    Some((y, span.saturating_add(lc_span)))
+}
+
+/// The R0 pattern width in dots (1D bar runs sum; 2D = module map dots).
+fn pattern_width(b: &BarcodeField) -> u32 {
+    let m = if b.module == 0 { 2 } else { b.module };
+    match crate::bc::barcode_field(b) {
+        Pattern::Bars(bars) => bars
+            .iter()
+            .map(|x| u64::from(x.width))
+            .sum::<u64>()
+            .min(u64::from(u32::MAX)) as u32,
+        Pattern::Modules { width, .. } => {
+            (u64::from(m) * u64::from(width)).min(u64::from(u32::MAX)) as u32
+        }
+    }
 }
 
 /// Map a content dot through the field rotation (same orientation as
@@ -446,6 +487,11 @@ pub(crate) fn paint(
         g.fw,
         g.fh,
     );
+    // `^FT` anchors the rect on the rotated baseline corner instead of
+    // the top-left: shift the painted rect so the field origin lands on
+    // the anchor (linear, so it composes with ^POI/^PM after `place`).
+    let (d_x, d_y) = origin_anchor(b, g.fw, g.fh);
+    let (ox, oy) = (ox - d_x, oy - d_y);
     let module = if b.module == 0 { 2 } else { b.module };
     let fw = g.fw as i64;
     let fh = g.fh as i64;
@@ -576,6 +622,7 @@ mod tests {
         BarcodeField {
             x: 0,
             y: 0,
+            origin: OriginMode::Block,
             symbology: b'X', // neutral 2D: not QR, so module tests paint at the origin
             data: String::new(),
             module: 4,
