@@ -260,6 +260,10 @@ pub struct FieldDraft {
     /// formatted text field" (guide p.205), resolved at render time.
     pub auto_x: bool,
     pub auto_y: bool,
+    /// `^FPd`: character direction for the text field.
+    pub direction: crate::ir::TextDirection,
+    /// `^FPg`: additional inter-character gap in dots.
+    pub char_gap: u32,
     pub font: [u8; 2],
     /// `^A` character height in dots; 0 = standard font matrix.
     pub font_height: u32,
@@ -456,6 +460,8 @@ impl FieldDraft {
             reverse: false,
             auto_x: false,
             auto_y: false,
+            direction: crate::ir::TextDirection::H,
+            char_gap: 0,
             font: mode.default_font,
             font_height: mode.default_font_h,
             font_width: mode.default_font_w,
@@ -607,6 +613,8 @@ impl FieldDraft {
                 None => Field::Text(TextField {
                     auto_x: self.auto_x,
                     auto_y: self.auto_y,
+                    direction: self.direction,
+                    char_gap: self.char_gap,
                     x: self.x,
                     y: self.y,
                     origin: self.origin,

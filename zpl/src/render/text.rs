@@ -181,6 +181,8 @@ struct Advancer<'a> {
     /// True inside a `^FB` block drawn at cell 24: the measured block
     /// advance corrections apply (see [`font0_adv24`]).
     fb24: bool,
+    /// `^FPg` additional inter-character gap, added to every char advance.
+    gap: u64,
 }
 
 impl Advancer<'_> {
@@ -191,11 +193,11 @@ impl Advancer<'_> {
             }
         }
         if self.fixed > 0 {
-            return self.fixed;
+            return self.fixed + self.gap;
         }
         let cell = ((self.metrics.cell_height as f32 * self.eff).round())
             .clamp(1.0, MAX_GLYPH_CELL as f32) as u32;
-        u64::from(advance_at(self.metrics, c, cell))
+        u64::from(advance_at(self.metrics, c, cell)) + self.gap
     }
 }
 
@@ -350,7 +352,10 @@ fn layout(t: &TextField, m: &FontMetrics, dpi: u32) -> Option<FieldLayout> {
         cell.max(baseline.saturating_add(1))
     };
     let spacing = t.block.as_ref().map(|b| b.line_spacing).unwrap_or(0);
-    let pitch = (cell as i64 + spacing as i64).max(1) as u64;
+    let mut pitch = (cell as i64 + spacing as i64).max(1) as u64;
+    if matches!(t.direction, crate::ir::TextDirection::V) {
+        pitch = pitch.saturating_add(t.char_gap as u64);
+    }
     // Bitmap-style fonts ignore the `^A` width (they advance at native
     // proportional widths); TrueType (downloaded) fonts honor it.
     let fixed = if matches!(m.cap, CapModel::Ascent) && t.font_width > 0 {
@@ -363,6 +368,7 @@ fn layout(t: &TextField, m: &FontMetrics, dpi: u32) -> Option<FieldLayout> {
         eff,
         fixed,
         fb24: t.block.is_some() && cell == 24,
+        gap: t.char_gap as u64,
     };
     let font_w = font_width_dots(t, m, dpi);
     let (wrap_w, justification, max_lines) = match &t.block {
@@ -378,12 +384,26 @@ fn layout(t: &TextField, m: &FontMetrics, dpi: u32) -> Option<FieldLayout> {
         }
         None => (u64::MAX, Justification::Left, 0),
     };
-    let data = if t.symbol {
+    let mut data = if t.symbol {
         symbol_for(t.data.chars().next().unwrap_or(' ')).to_string()
     } else {
         t.data.clone()
     };
-    let raw_lines = wrap_words(&data, wrap_w, &adv, max_lines);
+    // ^FPV stacks the characters top-to-bottom (one per line); ^FPR
+    // prints them right-to-left (the character order reverses).
+    if matches!(t.direction, crate::ir::TextDirection::R) {
+        data = data.chars().rev().collect();
+    }
+    let raw_lines: Vec<Line> = if matches!(t.direction, crate::ir::TextDirection::V) {
+        data.chars()
+            .map(|c| Line {
+                chars: vec![c],
+                width: adv.dots(c),
+            })
+            .collect()
+    } else {
+        wrap_words(&data, wrap_w, &adv, max_lines)
+    };
     let last_i = raw_lines.len().saturating_sub(1);
     let mut lines = Vec::with_capacity(raw_lines.len());
     let mut starts = Vec::with_capacity(raw_lines.len());
@@ -557,6 +577,7 @@ pub(crate) fn paint_text(
             0
         },
         fb24: t.block.is_some() && l.cell == 24,
+        gap: t.char_gap as u64,
     };
 
     let n_lines = l.lines.len() as i64;
@@ -1031,6 +1052,7 @@ mod tests {
             eff: 24.0 / 15.0,
             fixed: 0,
             fb24: true,
+            gap: 0,
         };
         assert_eq!(
             block.dots('x'),
@@ -1043,6 +1065,7 @@ mod tests {
             eff: 24.0 / 15.0,
             fixed: 0,
             fb24: false,
+            gap: 0,
         };
         assert_eq!(plain.dots('x'), 13, "outside blocks the base table scales");
     }
@@ -1070,6 +1093,8 @@ mod tests {
             y: 0,
             origin: OriginMode::Block,
             rotation: Rotation::R0,
+            direction: crate::ir::TextDirection::H,
+            char_gap: 0,
             font: *b"00",
             font_height: 15,
             font_width: 0,
@@ -1197,6 +1222,7 @@ mod tests {
             eff: 1.0,
             fixed: 40,
             fb24: false,
+            gap: 0,
         };
         assert_eq!(adv.dots('X'), 40);
         assert_eq!(adv.dots(' '), 40);

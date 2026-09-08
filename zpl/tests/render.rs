@@ -676,6 +676,46 @@ fn fo_blank_arguments_reset_to_zero() {
     );
 }
 
+#[test]
+fn fp_vertical_stacks_characters_with_gap() {
+    // ^FPV,5: "AB" prints top-to-bottom (one character per line) with a
+    // 5-dot inter-character gap; ^FPR reverses the char order.
+    let out = render_text(b"^XA^PW80^LL80^FO5,5^A0N,20,20^FPV,5^FDAB^FS^XZ");
+    let bmp = &out.bitmap;
+    let rows: Vec<u32> = (0..bmp.height)
+        .filter(|&y| (0..bmp.width).any(|x| bmp.get(x, y)))
+        .collect();
+    assert!(!rows.is_empty(), "vertical text must paint");
+    // Two glyph bands separated by a gap: the first band's row span and
+    // the next band start at least gap+1 rows apart.
+    let first_end = rows
+        .windows(2)
+        .find(|w| w[1] > w[0] + 1)
+        .map(|w| w[0])
+        .unwrap_or(rows[0]);
+    let second_start = rows.iter().skip_while(|&&y| y <= first_end).copied().next();
+    if let Some(s2) = second_start {
+        assert!(
+            s2 >= first_end + 5,
+            "vertical gap: row {} after first band ends at {}",
+            s2,
+            first_end
+        );
+    }
+    // IR level: the direction and gap landed on the field.
+    let (label, diags) = common::parse_one(b"^XA^FO5,5^A0N,20,20^FPV,5^FDAB^FS^XZ");
+    assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
+    if let zpl::ir::Field::Text(t) = &label.fields[0] {
+        assert_eq!(t.direction, zpl::ir::TextDirection::V);
+        assert_eq!(t.char_gap, 5);
+    } else {
+        panic!("expected text");
+    }
+    // Bad direction warns and falls back to H.
+    let (_label, diags) = common::parse_one(b"^XA^FO5,5^A0N,20,20^FPQ^FDAB^FS^XZ");
+    assert_eq!(diags.items.len(), 1, "invalid ^FP must warn: {diags:?}");
+}
+
 /// First row (within the given range) that has any black pixel.
 fn first_ink_row(bmp: &Bitmap, mut rows: core::ops::Range<u32>) -> Option<u32> {
     rows.find(|&y| (0..bmp.width).any(|x| bmp.get(x, y)))

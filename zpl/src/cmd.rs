@@ -667,6 +667,21 @@ fn query_model_id(ctx: &mut ParseContext, _params: &[u8]) {
     ctx.queries.push(QueryRequest::ModelId);
 }
 
+/// `~WL` (guide p.397): print a network configuration label. A hardware
+/// action with no host-visible data and no label-format effect here:
+/// accepted (params must be empty), nothing recorded.
+fn network_label(ctx: &mut ParseContext, params: &[u8]) {
+    if !params.is_empty() {
+        ctx.diags.push(Diagnostic::warning(
+            "WL",
+            format!(
+                "unexpected parameter '{}'; ~WL takes none",
+                String::from_utf8_lossy(params)
+            ),
+        ));
+    }
+}
+
 /// Static command table; rows are added by later tasks as handlers land.
 const TABLE: &[CommandSpec] = &[
     CommandSpec {
@@ -1443,6 +1458,14 @@ const TABLE: &[CommandSpec] = &[
         binary_handler: None,
     },
     CommandSpec {
+        mnemonic: *b"FP",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: textfmt::field_prop,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
         mnemonic: *b"FE",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
@@ -1659,6 +1682,14 @@ const TABLE: &[CommandSpec] = &[
         prefix: Prefix::Tilde,
         kind: CmdKind::PrinterOp,
         handler: query_config_dump,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"WL",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: network_label,
         binary_len: None,
         binary_handler: None,
     },
@@ -2057,6 +2088,8 @@ mod tests {
             draft: FieldDraft {
                 auto_x: false,
                 auto_y: false,
+                direction: crate::ir::TextDirection::H,
+                char_gap: 0,
                 x: 10,
                 y: 20,
                 origin: OriginMode::Dot,

@@ -31,6 +31,16 @@ pub enum Field {
     Ellipse(EllipseField),
 }
 
+/// `^FPd` field direction (guide p.202): H horizontal, V vertical
+/// (top-to-bottom characters), R reverse (right-to-left characters).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TextDirection {
+    #[default]
+    H,
+    V,
+    R,
+}
+
 /// Field rotation in 90deg steps.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub enum Rotation {
@@ -54,6 +64,10 @@ pub struct TextField {
     /// position after the last formatted text field" (guide p.205).
     pub auto_x: bool,
     pub auto_y: bool,
+    /// `^FPd`: character direction (default H).
+    pub direction: TextDirection,
+    /// `^FPg`: additional inter-character gap in dots (0..9999, default 0).
+    pub char_gap: u32,
     pub x: u32,
     pub y: u32,
     pub origin: OriginMode,
@@ -301,6 +315,8 @@ mod tests {
                 Field::Text(TextField {
                     auto_x: false,
                     auto_y: false,
+                    direction: TextDirection::H,
+                    char_gap: 0,
                     x: 10,
                     y: 20,
                     origin: OriginMode::Dot,
@@ -324,6 +340,8 @@ mod tests {
                 Field::Text(TextField {
                     auto_x: false,
                     auto_y: false,
+                    direction: TextDirection::H,
+                    char_gap: 0,
                     x: 10,
                     y: 60,
                     origin: OriginMode::Block,

@@ -4,6 +4,7 @@
 //! Field-scoped commands no-op outside a format (state `Outside`), matching
 //! Zebra; the printer-state commands are meaningful any time.
 
+use crate::config::u32_in;
 use crate::diag::{Diagnostic, Diagnostics};
 use crate::ir::{Justification, OriginMode, Rotation, TextBlock};
 use crate::state::{
@@ -428,6 +429,34 @@ pub(crate) fn field_delimiter(ctx: &mut ParseContext, params: &[u8]) {
         return;
     }
     ctx.field_delimiter = d[0];
+}
+
+/// `^FPd,g` (guide p.202): field direction - H horizontal (default),
+/// V vertical (characters top-to-bottom), R reverse (right-to-left) - and
+/// an additional inter-character gap of g dots (0..9999).
+pub(crate) fn field_prop(ctx: &mut ParseContext, params: &[u8]) {
+    let parts = split_commas(params);
+    let direction = match parts.first().and_then(|p| p.first()).copied() {
+        Some(b'H') | Some(b'h') => crate::ir::TextDirection::H,
+        Some(b'V') | Some(b'v') => crate::ir::TextDirection::V,
+        Some(b'R') | Some(b'r') => crate::ir::TextDirection::R,
+        Some(_) => {
+            ctx.diags.push(Diagnostic::warning(
+                "FP",
+                format!(
+                    "invalid direction '{}'; using H",
+                    String::from_utf8_lossy(parts.first().copied().unwrap_or(&[]))
+                ),
+            ));
+            crate::ir::TextDirection::H
+        }
+        None => crate::ir::TextDirection::H,
+    };
+    let gap = u32_in(parts.get(1).copied(), "FP", "gap", ctx.diags, 0, 9999, 0);
+    if let Some(d) = draft_mut(ctx) {
+        d.direction = direction;
+        d.char_gap = gap;
+    }
 }
 
 /// `^FHx`: hex escapes in this field's ^FD data use indicator x
