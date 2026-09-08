@@ -408,11 +408,14 @@ pub(crate) fn field_font_spec(t: &TextField) -> FontSpec {
 pub(crate) fn resolve_font(spec: &FontSpec, opts: &RenderOptions) -> Option<FontData> {
     match spec {
         FontSpec::Zebra(_) => opts.fonts.get(spec),
-        FontSpec::Downloaded(name) => opts
-            .memory
-            .fonts
-            .get(name)
-            .and_then(|ttf| font_data_from_ttf(ttf)),
+        FontSpec::Downloaded(name) => opts.memory.fonts.get(name).and_then(|bytes| {
+            // A ~DB download is the structured bitmap-font text, not a
+            // TTF; parse it when the TTF interpretation fails.
+            font_data_from_ttf(bytes).or_else(|| {
+                crate::fonts::parse_bitmap_font(bytes)
+                    .map(|font| crate::fonts::font_data_from_bitmap(&font, bytes))
+            })
+        }),
     }
 }
 

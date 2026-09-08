@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 
+use zpl::memory::Memory;
 use zpl::state::HostValueRequest;
 
 use crate::state::PrinterState;
@@ -17,6 +18,126 @@ pub const EMULATOR_SERIAL: &str = "ZPLDEMO0001";
 /// Firmware version string (~WD, ~HI; the guide's ~HS print-mode footnote
 /// references V60.14.x for exactly this class of printer).
 pub const EMULATOR_FIRMWARE: &str = "V60.14.0";
+
+/// `~HB` (p.220): battery status, STX/ETX-framed. The emulator has no
+/// battery model; a nominal "good" reading is returned.
+pub fn respond_hb(s: &PrinterState) -> Vec<u8> {
+    let charge = 0; // line-powered emulator: no battery model
+    let line = format!(
+        "BATTERY {}; CHARGE {}%; TEMP {}",
+        if charge > 0 { "GOOD" } else { "N/A" },
+        charge,
+        temp_name(s.conditions.head_temp)
+    );
+    frame_stx(&line)
+}
+
+/// `~HD` (p.221): head diagnostic - power supply voltage and head
+/// temperature.
+pub fn respond_hd(s: &PrinterState) -> Vec<u8> {
+    let line = format!(
+        "HEAD TEMP {}; SUPPLY 24V; DIAG OK",
+        temp_name(s.conditions.head_temp)
+    );
+    frame_stx(&line)
+}
+
+/// `~HM` (p.223): host RAM status - total, maximum, available bytes
+/// (per-object accounting over the stored images/fonts/formats).
+pub fn respond_hm(mem: &Memory) -> Vec<u8> {
+    let total = (mem.images.len() + mem.fonts.len() + mem.formats.len()) as u64 * 8192;
+    let max: u64 = 16 * 1024 * 1024;
+    let avail = max.saturating_sub(total);
+    let line = format!("TOTAL: {total}; MAX: {max}; AVAILABLE: {avail}");
+    frame_stx(&line)
+}
+
+/// `^HH` (p.222): one-line host status.
+pub fn respond_hh(s: &PrinterState) -> Vec<u8> {
+    let line = format!(
+        "ZPL II EMULATOR {}; LABEL LENGTH {} DOTS; {}",
+        EMULATOR_FIRMWARE,
+        s.label_length_dots,
+        if s.partial_format {
+            "FORMAT OPEN"
+        } else {
+            "IDLE"
+        }
+    );
+    frame_stx(&line)
+}
+
+/// Map the emulator's coarse head-temperature state to a readable reading.
+fn temp_name(t: crate::state::Temp) -> &'static str {
+    match t {
+        crate::state::Temp::Normal => "NORMAL",
+        crate::state::Temp::Warm => "WARM",
+        crate::state::Temp::OverTemp => "OVERTEMP",
+    }
+}
+
+fn frame_stx(line: &str) -> Vec<u8> {
+    let mut out = vec![0x02];
+    out.extend_from_slice(line.as_bytes());
+    out.push(0x03);
+    out
+}
+
+/// `^HGd:o.x` (p.221): upload a stored graphic as ~DG-style ASCII hex:
+/// `"<name>,<bytes-per-row>,<byte count>,<hex>"`.
+pub fn respond_hg(name: &str, mem: &Memory) -> Vec<u8> {
+    let Some(img) = mem.images.get(name) else {
+        return format!("*ERROR*: {name} NOT FOUND").into_bytes();
+    };
+    let mut out = format!("{name},{},{}", img.width.div_ceil(8), img.data.len()).into_bytes();
+    for b in &img.data {
+        out.extend_from_slice(format!("{b:02X}").as_bytes());
+    }
+    out
+}
+
+/// `^HWd:o.x,f` (p.224): host directory listing. The pattern's name and
+/// extension parts (default `*`) are matched against the stored images,
+/// formats, and fonts, one `DIR *.GRF`-style line per object
+/// ("<name> <size> <date>").
+pub fn respond_hw(spec: &str, mem: &Memory) -> Vec<u8> {
+    let (name_p, ext_p) = spec.rsplit_once('.').map_or((spec, "*"), |(n, e)| (n, e));
+    let name_p = name_p.trim_end_matches(':');
+    let mut lines: Vec<String> = Vec::new();
+    let wc = |s: &str, p: &str| {
+        p == "*"
+            || s.eq_ignore_ascii_case(p)
+            || (p.ends_with('*')
+                && s.len() >= p.len() - 1
+                && s[..p.len() - 1].eq_ignore_ascii_case(&p[..p.len() - 1]))
+    };
+    let push = |name: &str, size: usize, lines: &mut Vec<String>| {
+        let (n, e) = name.rsplit_once('.').unwrap_or((name, ""));
+        if wc(n, name_p) && (ext_p == "*" || wc(e, ext_p)) {
+            lines.push(format!("{n}.{e} {size}"));
+        }
+    };
+    for (k, v) in &mem.images {
+        push(k, v.data.len(), &mut lines);
+    }
+    for (k, v) in &mem.formats {
+        push(k, v.len(), &mut lines);
+    }
+    for (k, v) in &mem.fonts {
+        push(k, v.len(), &mut lines);
+    }
+    if lines.is_empty() {
+        return format!("NO FILES FOR {spec}").into_bytes();
+    }
+    let mut out = String::new();
+    for (i, l) in lines.iter().enumerate() {
+        if i > 0 {
+            out.push_str("\r\n");
+        }
+        out.push_str(l);
+    }
+    out.into_bytes()
+}
 
 /// `~HQ<query-type>`: respond per the guide's pages 226-232, or `None` for
 /// an unsupported/empty query-type (the guide: "must be an accepted value

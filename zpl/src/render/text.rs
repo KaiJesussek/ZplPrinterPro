@@ -508,6 +508,123 @@ pub(crate) fn text_width(t: &TextField, opts: &RenderOptions) -> Option<u32> {
     Some(fw as u32)
 }
 
+/// Paint a `~DB` downloaded bitmap font field: the glyph rows blit
+/// pixel-exact into the same per-cell frame `paint_glyph` uses (pen at the
+/// advance column, rows anchored to the cell top), with all rotation and
+/// origin handling delegated to `rotate_point` exactly as the TTF path.
+#[allow(clippy::too_many_arguments)]
+fn paint_bitmap_text(
+    bmp: &mut Bitmap,
+    t: &TextField,
+    m: &FontMetrics,
+    bitmap: &crate::fonts::BitmapFont,
+    _fd: &FontData,
+    l: &FieldLayout,
+    opts: &RenderOptions,
+    _warnings: &mut Vec<String>,
+) {
+    let eff_raw = if t.font_height > 0 {
+        t.font_height as f32 / m.cell_height.max(1) as f32
+    } else {
+        opts.dpi as f32 / 203.0
+    };
+    let eff = eff_raw.max(0.01);
+    // Bitmap fonts carry width_pow = 1.0: eff is the plain vertical scale.
+    let adv = Advancer {
+        metrics: m,
+        eff,
+        fixed: 0,
+        fb24: false,
+        gap: t.char_gap as u64,
+    };
+    let paint_baseline = l.baseline as i64 + 1;
+    let first_adv: i64 = l
+        .lines
+        .last()
+        .and_then(|ln| ln.chars.first())
+        .map(|c| adv.dots(*c) as i64)
+        .unwrap_or(0);
+    let ft_adv = first_adv.saturating_sub(1);
+    let (rx, ry, rw, rh) = field_rect(t, l, l.baseline as i64, paint_baseline, ft_adv);
+    let (ox, oy) = crate::render::place(
+        opts.mode,
+        bmp.width as i64,
+        bmp.height as i64,
+        t.x as i64 + rx,
+        t.y as i64 + ry,
+        rw as u32,
+        rh as u32,
+    );
+    let (ox, oy) = (ox - rx, oy - ry);
+    if t.reverse {
+        let pb = if matches!(m.cap, CapModel::Ascent) {
+            l.baseline as i64
+        } else {
+            l.baseline as i64 + 1
+        };
+        paint_reverse_box(bmp, ox, oy, l, t, ft_adv, l.baseline as i64, pb);
+    }
+    let black = !t.reverse;
+    let glyph_scale = eff;
+    for (li, line) in l.lines.iter().enumerate() {
+        let start = l.start(li) as i64;
+        let line_top = li as i64 * l.pitch as i64;
+        let mut pen: i64 = 0;
+        for &ch in &line.chars {
+            let ch_adv = adv.dots(ch) as i64;
+            let Some(g) = bitmap.glyphs.get(&(ch as u32)) else {
+                pen = pen.saturating_add(ch_adv);
+                continue;
+            };
+            // Scaled destination rect per native set bit (block scaling,
+            // crisp at any magnification).
+            for gy in 0..g.h {
+                let y0 = ((g.y as f32 + gy as f32) * glyph_scale).round();
+                let y1 = ((g.y as f32 + gy as f32 + 1.0) * glyph_scale).round();
+                for gx in 0..g.w {
+                    // bit check
+                    let byte = (gy * g.w + gx) as usize / 8;
+                    let bit = 7 - ((gx as usize) % 8);
+                    if !g.rows.get(byte).is_some_and(|b| (b >> bit) & 1 == 1) {
+                        continue;
+                    }
+                    let x0 = ((g.x as f32 + gx as f32) * glyph_scale).round();
+                    let x1 = ((g.x as f32 + gx as f32 + 1.0) * glyph_scale).round();
+                    for dy in y0 as i64..(y1.max(y0 + 1.0)) as i64 {
+                        if dy < 0 || dy >= l.cell as i64 {
+                            continue;
+                        }
+                        for dx in x0 as i64..(x1.max(x0 + 1.0)) as i64 {
+                            let cell_left = start + pen;
+                            let (bx, by) = rotate_point(
+                                dx,
+                                dy,
+                                line_top,
+                                cell_left,
+                                t.rotation,
+                                t.origin,
+                                l.cell as i64,
+                                l.baseline as i64,
+                                l.box_right as i64,
+                                l.block_h as i64,
+                                last_pitch(l),
+                                ch_adv,
+                                ft_adv,
+                            );
+                            bmp.set((bx + ox) as u32, (by + oy) as u32, black);
+                        }
+                    }
+                }
+            }
+            pen = pen.saturating_add(ch_adv);
+        }
+    }
+}
+
+fn last_pitch(l: &FieldLayout) -> i64 {
+    (l.lines.len() as i64 - 1) * l.pitch as i64
+}
+
 /// Paint a text field into the bitmap. Warnings are appended for fields
 /// that cannot print (a ^FB block narrower than one character, unusable
 /// TTF).
@@ -529,6 +646,10 @@ pub(crate) fn paint_text(
     };
     if l.lines.iter().all(|ln| ln.chars.is_empty()) {
         return; // empty field: nothing to paint, nothing to warn about
+    }
+    if let Some(bitmap) = &fd.bitmap {
+        paint_bitmap_text(bmp, t, &fd.metrics, bitmap, fd, &l, opts, warnings);
+        return;
     }
     let Ok(mut face) = FontVec::try_from_vec(fd.ttf.clone()) else {
         warnings

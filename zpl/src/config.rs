@@ -492,6 +492,425 @@ pub(crate) fn clock_mode(ctx: &mut ParseContext, params: &[u8]) {
     let _ = u32_in(parts.get(1).copied(), "SL", "language", ctx.diags, 0, 26, 0);
 }
 
+// --- Audit batch: remaining documented hardware/config commands ------------
+// Every command here is a printer setting or action with no label-image
+// effect (head/sensor/network/wireless/RFID/password/kiosk). Each handler
+// validates its parameters against the guide's ranges - out-of-range or
+// malformed values warn - and is then accepted. This closes the "unknown
+// command" gap for the guide's command set without inventing consumers for
+// hardware state the emulator does not model.
+
+/// One numeric parameter, validated by range (warning on failure), dropped.
+fn accept_num(ctx: &mut ParseContext, params: &[u8], cmd: &str, what: &str, lo: u32, hi: u32) {
+    let _ = u32_in(
+        split_commas(params).first().copied(),
+        cmd,
+        what,
+        ctx.diags,
+        lo,
+        hi,
+        lo,
+    );
+}
+
+/// One letter parameter, validated against a set (warning on failure),
+/// dropped.
+fn accept_letter(ctx: &mut ParseContext, params: &[u8], cmd: &str, what: &str, set: &[u8]) {
+    check_letters(
+        split_commas(params).first().copied(),
+        cmd,
+        what,
+        ctx.diags,
+        set,
+    );
+}
+
+/// `^CMa,b,c,d,e` - memory aliases B:/E:/R:/A: (or NONE) with an optional
+/// multi-alias M (p.161).
+pub(crate) fn memory_aliases(ctx: &mut ParseContext, params: &[u8]) {
+    for (i, what) in ["alias B", "alias E", "alias R", "alias A"]
+        .into_iter()
+        .enumerate()
+    {
+        let seg = split_commas(params).get(i).copied().unwrap_or(&[]);
+        let ok = seg.is_empty()
+            || matches!(
+                seg.first().copied().map(|c| c.to_ascii_uppercase()),
+                Some(b'B' | b'E' | b'R' | b'A')
+            )
+            || seg.eq_ignore_ascii_case(b"NONE");
+        if !ok {
+            ctx.diags.push(Diagnostic::warning(
+                "CM",
+                format!("invalid {what} '{}'; ignored", String::from_utf8_lossy(seg)),
+            ));
+        }
+    }
+}
+
+/// `^CNa` - cut mode override: 0 = kiosk cut amount, 1 = full cut (p.162).
+pub(crate) fn cut_mode(ctx: &mut ParseContext, params: &[u8]) {
+    accept_num(ctx, params, "CN", "cut mode", 0, 1);
+}
+
+/// `^COa,b,c` - font cache on (Y/N, default Y), additional cache KB
+/// (1..9999, default 40), cache type 0/1 (p.163).
+pub(crate) fn cache_on(ctx: &mut ParseContext, params: &[u8]) {
+    let parts = split_commas(params);
+    accept_letter(ctx, params, "CO", "cache on", b"YN");
+    let _ = u32_in(
+        parts.get(1).copied(),
+        "CO",
+        "cache KB",
+        ctx.diags,
+        1,
+        9999,
+        40,
+    );
+    let _ = u32_in(
+        parts.get(2).copied(),
+        "CO",
+        "cache type",
+        ctx.diags,
+        0,
+        1,
+        0,
+    );
+}
+
+/// `^CPa` - kiosk present mode: 0 eject / 1 retract / 2 use ^KV c (p.165).
+pub(crate) fn kiosk_mode(ctx: &mut ParseContext, params: &[u8]) {
+    accept_num(ctx, params, "CP", "present mode", 0, 2);
+}
+
+/// `^CVa` - code validation error labels: Y on / N off (p.166).
+pub(crate) fn code_validation(ctx: &mut ParseContext, params: &[u8]) {
+    accept_letter(ctx, params, "CV", "code validation", b"YN");
+}
+
+/// `^JBa` - initialize flash device: A option / B PCMCIA / E internal (p.270).
+pub(crate) fn init_flash(ctx: &mut ParseContext, params: &[u8]) {
+    accept_letter(ctx, params, "JB", "device", b"ABE");
+}
+
+/// `^JHa..j` - head/ribbon management: a = supplies warning E/D, b = labels
+/// per roll 100..9999, c = media replaced Y/N; the remaining head-ribbon
+/// fields are accept-loose (p.271).
+pub(crate) fn head_management(ctx: &mut ParseContext, params: &[u8]) {
+    let parts = split_commas(params);
+    accept_letter(ctx, params, "JH", "supplies warning", b"ED");
+    let _ = u32_in(
+        parts.get(1).copied(),
+        "JH",
+        "labels per roll",
+        ctx.diags,
+        100,
+        9999,
+        900,
+    );
+    accept_letter(ctx, params, "JH", "media replaced", b"YN");
+}
+
+/// `^JId:o.x,b,c,d` - run a ZBI program after initialization (p.272).
+pub(crate) fn init_program(ctx: &mut ParseContext, params: &[u8]) {
+    let parts = split_commas(params);
+    if parts.first().is_none_or(|p| p.is_empty()) {
+        ctx.diags.push(Diagnostic::warning(
+            "JI",
+            "program location and name must be specified",
+        ));
+    }
+}
+
+/// `^JJa,b,c,d,e,f` - auxiliary-port/verifier operating modes (p.273).
+pub(crate) fn verifier_mode(ctx: &mut ParseContext, params: &[u8]) {
+    accept_num(ctx, params, "JJ", "aux port mode", 0, 2);
+}
+
+/// `^JMn` - dots per millimeter class A/B (p.278).
+pub(crate) fn dpmm_class(ctx: &mut ParseContext, params: &[u8]) {
+    accept_letter(ctx, params, "JM", "class", b"AB");
+}
+
+/// `^JSa` - sensor selection: A auto / R reflective / T transmissive (p.279).
+pub(crate) fn sensor_select(ctx: &mut ParseContext, params: &[u8]) {
+    accept_letter(ctx, params, "JS", "sensor", b"ART");
+}
+
+/// `^JT####,a,b,c` - head test interval (0..9999), range select Y/N and
+/// element bounds (p.280).
+pub(crate) fn head_test(ctx: &mut ParseContext, params: &[u8]) {
+    let parts = split_commas(params);
+    let _ = u32_in(
+        parts.first().copied(),
+        "JT",
+        "labels between head tests",
+        ctx.diags,
+        0,
+        9999,
+        0,
+    );
+    accept_letter(ctx, params, "JT", "range select", b"YN");
+    let _ = u32_in(
+        parts.get(2).copied(),
+        "JT",
+        "first element",
+        ctx.diags,
+        0,
+        9999,
+        0,
+    );
+    let _ = u32_in(
+        parts.get(3).copied(),
+        "JT",
+        "last element",
+        ctx.diags,
+        0,
+        9999,
+        0,
+    );
+}
+
+/// `^JUa` - active configuration: A/F/N reload, R recall, S save (p.281).
+pub(crate) fn active_config(ctx: &mut ParseContext, params: &[u8]) {
+    accept_letter(ctx, params, "JU", "configuration", b"AFNRS");
+}
+
+/// `^JWt` - media tension L/M/H (p.282).
+pub(crate) fn tension(ctx: &mut ParseContext, params: &[u8]) {
+    accept_letter(ctx, params, "JW", "tension", b"LMH");
+}
+
+/// `^KCa,b,c,d` - host authentication: mode 0..3, plus MAC/ASCII/HEX values
+/// (p.283).
+pub(crate) fn host_auth(ctx: &mut ParseContext, params: &[u8]) {
+    accept_num(ctx, params, "KC", "mode", 0, 3);
+}
+
+/// `^KDa` - date/time display format 0..6 (p.284).
+pub(crate) fn date_format(ctx: &mut ParseContext, params: &[u8]) {
+    accept_num(ctx, params, "KD", "format", 0, 6);
+}
+
+/// `^KLa` - panel language 1..9 (p.285).
+pub(crate) fn panel_language(ctx: &mut ParseContext, params: &[u8]) {
+    accept_num(ctx, params, "KL", "language", 1, 9);
+}
+
+/// `^KNa,b` - printer name and description strings (accept-any, p.285).
+pub(crate) fn printer_name(_ctx: &mut ParseContext, _params: &[u8]) {}
+
+/// `^KPa,b` - four-digit password and query (p.286).
+pub(crate) fn password(ctx: &mut ParseContext, params: &[u8]) {
+    let p = split_commas(params).first().copied().unwrap_or(&[]);
+    if !p.is_empty() && (p.len() != 4 || !p.iter().all(|b| b.is_ascii_digit())) {
+        ctx.diags.push(Diagnostic::warning(
+            "KP",
+            format!(
+                "password '{}' is not four digits",
+                String::from_utf8_lossy(p)
+            ),
+        ));
+    }
+}
+
+/// `^KVa,b,c,d,e` - kiosk cut amount (0, or 10..60 mm), plus media/window
+/// values (accept-loose, p.287).
+pub(crate) fn kiosk_cut(ctx: &mut ParseContext, params: &[u8]) {
+    let p = split_commas(params).first().copied().unwrap_or(&[]);
+    match p.first().copied() {
+        Some(b'0') => {}
+        Some(_) => {
+            let _ = u32_in(Some(p), "KV", "cut amount", ctx.diags, 10, 60, 0);
+        }
+        None => {}
+    }
+}
+
+/// `^MAtype,...` - maintenance alert (R head replacement / C head cleaning)
+/// thresholds (p.306).
+pub(crate) fn maintenance_alert(ctx: &mut ParseContext, params: &[u8]) {
+    accept_letter(ctx, params, "MA", "alert type", b"RC");
+}
+
+/// `^MCa` - map clear: Y clear the bitmap for ^FV templates / N merge
+/// (p.307).
+pub(crate) fn map_clear(ctx: &mut ParseContext, params: &[u8]) {
+    accept_letter(ctx, params, "MC", "map clear", b"YN");
+}
+
+/// `^NBa` - check wired print server at boot: C check / S skip (p.309).
+pub(crate) fn boot_check(ctx: &mut ParseContext, params: &[u8]) {
+    accept_letter(ctx, params, "NB", "check", b"CS");
+}
+
+/// `^NCa` - primary network device 1 wired / 2 wireless (p.310).
+pub(crate) fn primary_net(ctx: &mut ParseContext, params: &[u8]) {
+    accept_num(ctx, params, "NC", "device", 1, 2);
+}
+
+/// `^NDa,b,...` - network device setup (a = 1 external wired / 2 internal
+/// wired / 3 wireless; the rest accept-loose, p.310).
+pub(crate) fn net_device(ctx: &mut ParseContext, params: &[u8]) {
+    accept_num(ctx, params, "ND", "device", 1, 3);
+}
+
+/// `^NI###` - three-digit network ID 001..999 (p.311).
+pub(crate) fn network_id(ctx: &mut ParseContext, params: &[u8]) {
+    accept_num(ctx, params, "NI", "network ID", 0, 999);
+}
+
+/// `^NNa,b,c,d,e,f` - SNMP system name/contact/location strings (p.311).
+pub(crate) fn system_info(_ctx: &mut ParseContext, _params: &[u8]) {}
+
+/// `^NPa` - primary device P printer / M MPS (p.313).
+pub(crate) fn primary_device(ctx: &mut ParseContext, params: &[u8]) {
+    accept_letter(ctx, params, "NP", "primary", b"PM");
+}
+
+/// `^NSa,b,c,d,e,f,g,h,i` - IP resolution protocol and addresses (p.313).
+pub(crate) fn ip_resolution(ctx: &mut ParseContext, params: &[u8]) {
+    accept_letter(ctx, params, "NS", "IP resolution", b"ABCD");
+}
+
+/// `^NTa,b` - SMTP server address and print-server domain (p.314).
+pub(crate) fn smtp_server(_ctx: &mut ParseContext, _params: &[u8]) {}
+
+/// `^NWa` - web-page auth timeout in minutes 0..255 (p.315).
+pub(crate) fn web_timeout(ctx: &mut ParseContext, params: &[u8]) {
+    accept_num(ctx, params, "NW", "timeout", 0, 255);
+}
+
+/// `^PLa` - additional eject length in mm 000..255 (p.322).
+pub(crate) fn eject_length(ctx: &mut ParseContext, params: &[u8]) {
+    accept_num(ctx, params, "PL", "eject length", 0, 255);
+}
+
+/// `^PP` - RFID tag-present/near-field calibration (no params, p.323).
+pub(crate) fn tag_present(ctx: &mut ParseContext, params: &[u8]) {
+    if !params.is_empty() {
+        ctx.diags.push(Diagnostic::warning(
+            "PP",
+            format!(
+                "unexpected parameter '{}'; ^PP takes none",
+                String::from_utf8_lossy(params)
+            ),
+        ));
+    }
+}
+
+/// `^RBn,p0..p15` - RFID tag partition sizes (n = total bits, plus up to
+/// 16 partition fields; accept-loose, p.327).
+pub(crate) fn tag_partitions(ctx: &mut ParseContext, params: &[u8]) {
+    let _ = u32_in(
+        split_commas(params).first().copied(),
+        "RB",
+        "total bits",
+        ctx.diags,
+        1,
+        4096,
+        96,
+    );
+}
+
+/// `^RFo,f,b,n,m` - RFID write/read operation with data (p.328).
+pub(crate) fn rfid_operation(_ctx: &mut ParseContext, _params: &[u8]) {}
+
+/// `^RLP/B/M` - RFID lock operations (p.329).
+pub(crate) fn rfid_lock(_ctx: &mut ParseContext, _params: &[u8]) {}
+
+/// `^RSt,p,v,n,e,a,c,s` - RFID tag type (8 = Gen 2) and setup (p.336).
+pub(crate) fn rfid_setup(ctx: &mut ParseContext, params: &[u8]) {
+    let _ = u32_in(
+        split_commas(params).first().copied(),
+        "RS",
+        "tag type",
+        ctx.diags,
+        8,
+        8,
+        8,
+    );
+}
+
+/// `^RUa,b` - RFID prefix in ASCII binary, max 38 chars of 0/1 (p.338).
+pub(crate) fn rfid_prefix(ctx: &mut ParseContext, params: &[u8]) {
+    let p = split_commas(params).first().copied().unwrap_or(&[]);
+    if !p.is_empty() && (!p.iter().all(|b| matches!(b, b'0' | b'1')) || p.len() > 38) {
+        ctx.diags.push(Diagnostic::warning(
+            "RU",
+            "prefix must be ASCII 0/1 characters, max 38",
+        ));
+    }
+}
+
+/// `^RWr,w,a` - RFID read power 0..30 plus write power/calibration (p.339).
+pub(crate) fn rfid_power(ctx: &mut ParseContext, params: &[u8]) {
+    accept_num(ctx, params, "RW", "read power", 0, 30);
+}
+
+/// `^WAa,b` - RFID receive antenna D/L/R (p.343).
+pub(crate) fn receive_antenna(ctx: &mut ParseContext, params: &[u8]) {
+    accept_letter(ctx, params, "WA", "antenna", b"DLR");
+}
+
+/// `^WEa,b,...` - wireless encryption OFF/40/128 plus keys (p.345).
+pub(crate) fn wireless_encryption(ctx: &mut ParseContext, params: &[u8]) {
+    let p = split_commas(params).first().copied().unwrap_or(&[]);
+    if !p.is_empty() && !p.eq_ignore_ascii_case(b"OFF") && !matches!(p, b"40" | b"128") {
+        ctx.diags.push(Diagnostic::warning(
+            "WE",
+            format!("invalid encryption mode '{}'", String::from_utf8_lossy(p)),
+        ));
+    }
+}
+
+/// `^WPa,b` - wireless passwords 0000..9999 (p.348).
+pub(crate) fn wireless_password(ctx: &mut ParseContext, params: &[u8]) {
+    for (i, what) in ["old password", "new password"].into_iter().enumerate() {
+        let _ = u32_in(
+            split_commas(params).get(i).copied(),
+            "WP",
+            what,
+            ctx.diags,
+            0,
+            9999,
+            0,
+        );
+    }
+}
+
+/// `^WRa,b,c,d,e` - 802.11 transmit rates 1/2/5.5/11 Mb/s Y/N (p.348).
+pub(crate) fn wireless_rates(_ctx: &mut ParseContext, _params: &[u8]) {}
+
+/// `^WSe,o,p,h,i,j,k` - wireless network ESSID and settings (p.349).
+pub(crate) fn wireless_net(_ctx: &mut ParseContext, _params: &[u8]) {}
+
+/// `^WX01` - wireless security disable map (accept-digits, p.350).
+pub(crate) fn wireless_security(ctx: &mut ParseContext, params: &[u8]) {
+    let p = split_commas(params).first().copied().unwrap_or(&[]);
+    if !p.is_empty() && !p.iter().all(|b| b.is_ascii_digit()) {
+        ctx.diags
+            .push(Diagnostic::warning("WX", "security map must be digits"));
+    }
+}
+
+/// `^HL` / `~HL` - RFID event log (no params; the emulator logs nothing).
+pub(crate) fn rfid_log(ctx: &mut ParseContext, params: &[u8]) {
+    if !params.is_empty() {
+        ctx.diags.push(Diagnostic::warning(
+            "HL",
+            format!(
+                "unexpected parameter '{}'; ^HL takes none",
+                String::from_utf8_lossy(params)
+            ),
+        ));
+    }
+}
+
+/// `^HRa,b,c,d,e,f,g,h,i` - RFID print-report framing (start/end strings,
+/// table columns; accept-loose).
+pub(crate) fn rfid_report(_ctx: &mut ParseContext, _params: &[u8]) {}
+
 /// `^MTa`: media type - T thermal transfer / D direct thermal. Validated,
 /// not stored.
 pub(crate) fn media_type(ctx: &mut ParseContext, params: &[u8]) {

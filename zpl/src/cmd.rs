@@ -9,7 +9,7 @@ use crate::ir::Label;
 use crate::memory;
 use crate::scanner::{Cmd, Scanner, Token};
 use crate::state::{FieldDraft, FormatEnd, FormatState, ParseContext, PendingBinary, QueryRequest};
-use crate::textfmt;
+use crate::textfmt::{self, split_commas};
 use std::collections::BTreeMap;
 
 /// Command prefix: `^` (format commands) or `~` (printer operations).
@@ -667,6 +667,129 @@ fn query_model_id(ctx: &mut ParseContext, _params: &[u8]) {
     ctx.queries.push(QueryRequest::ModelId);
 }
 
+/// `^HGd:o.x` (guide p.221): upload a stored graphic to the host. The
+/// server answers with the stored image in ~DG-style ASCII hex.
+fn upload_graphic(ctx: &mut ParseContext, params: &[u8]) {
+    let name = crate::memory::image_name(params);
+    ctx.queries.push(QueryRequest::UploadGraphic(name));
+}
+
+/// `^HH` (guide p.222): host status - a one-line printer state summary
+/// answered from the server's PrinterState.
+fn host_status_label(ctx: &mut ParseContext, params: &[u8]) {
+    if !params.is_empty() {
+        ctx.diags.push(Diagnostic::warning(
+            "HH",
+            format!(
+                "unexpected parameter '{}'; ^HH takes none",
+                String::from_utf8_lossy(params)
+            ),
+        ));
+    }
+    ctx.queries.push(QueryRequest::HostStatusLabel);
+}
+
+/// `^HWd:o.x,f` (guide p.224): host directory listing of stored objects
+/// matching the pattern (default `*.*`).
+fn directory_listing(ctx: &mut ParseContext, params: &[u8]) {
+    let spec = if params.is_empty() {
+        b"*.*".to_vec()
+    } else {
+        params
+            .split(|&b| b == b',')
+            .next()
+            .unwrap_or(b"*.*")
+            .to_vec()
+    };
+    ctx.queries.push(QueryRequest::DirectoryListing(
+        String::from_utf8_lossy(&spec).into_owned(),
+    ));
+}
+
+/// `^WDd:o.x` (guide p.361): print a directory label listing bar codes,
+/// objects, and fonts. The label has no emulator model; the object spec
+/// is accepted and no label is produced.
+fn print_directory(_ctx: &mut ParseContext, _params: &[u8]) {}
+
+/// `^WLa,b,c` (guide p.363): LEAP security mode (OFF/ON) plus user name
+/// and password stores.
+fn leap_security(ctx: &mut ParseContext, params: &[u8]) {
+    let p = split_commas(params).first().copied().unwrap_or(&[]);
+    if !p.is_empty() && !p.eq_ignore_ascii_case(b"OFF") && !p.eq_ignore_ascii_case(b"ON") {
+        ctx.diags.push(Diagnostic::warning(
+            "WL",
+            format!(
+                "invalid mode '{}'; expected OFF or ON",
+                String::from_utf8_lossy(p)
+            ),
+        ));
+    }
+}
+
+/// `~HB` - battery status query (mobile printers).
+fn battery_status(ctx: &mut ParseContext, _params: &[u8]) {
+    ctx.queries.push(QueryRequest::BatteryStatus);
+}
+
+/// `~HD` - head diagnostic query.
+fn head_diagnostic(ctx: &mut ParseContext, _params: &[u8]) {
+    ctx.queries.push(QueryRequest::HeadDiagnostic);
+}
+
+/// `~HM` - host RAM status query.
+fn memory_status(ctx: &mut ParseContext, _params: &[u8]) {
+    ctx.queries.push(QueryRequest::MemoryStatus);
+}
+
+/// `~NC###` - connect a printer on an RS-485 network by its ID (000..999).
+fn network_connect(ctx: &mut ParseContext, params: &[u8]) {
+    let p = split_commas(params).first().copied().unwrap_or(&[]);
+    if p.is_empty() {
+        return;
+    }
+    if !p.iter().all(|b| b.is_ascii_digit()) || p.len() > 3 {
+        ctx.diags.push(Diagnostic::warning(
+            "NC",
+            format!(
+                "invalid network ID '{}'; ~NC takes 000..999",
+                String::from_utf8_lossy(p)
+            ),
+        ));
+    }
+}
+
+/// `~ROc` - reset advanced counters, optionally c (a counter letter).
+fn reset_counters(_ctx: &mut ParseContext, _params: &[u8]) {
+    // ~ROc: single optional counter letter; accept-loose.
+}
+
+/// `~JF` (p.249): set battery condition - Y = pause on low voltage /
+/// N = continue (accept-loose; no battery model).
+fn battery_condition(ctx: &mut ParseContext, params: &[u8]) {
+    accept_only(ctx, params, "JF");
+}
+
+/// `~WQ<query-type>` - write query: print odometer/maintenance/history.
+fn write_query(ctx: &mut ParseContext, params: &[u8]) {
+    if params.is_empty() {
+        ctx.diags
+            .push(Diagnostic::warning("WQ", "missing query type; ~WQ ignored"));
+    }
+}
+
+/// Generic accept-only tilde: a hardware action taking no parameters.
+fn accept_only(ctx: &mut ParseContext, params: &[u8], cmd: &str) {
+    if !params.is_empty() {
+        ctx.diags.push(Diagnostic::warning(
+            cmd,
+            format!(
+                "unexpected parameter '{}'; ~{cmd} takes none",
+                String::from_utf8_lossy(params)
+            ),
+        ));
+    }
+}
+
 /// `~WL` (guide p.397): print a network configuration label. A hardware
 /// action with no host-visible data and no label-format effect here:
 /// accepted (params must be empty), nothing recorded.
@@ -680,6 +803,85 @@ fn network_label(ctx: &mut ParseContext, params: &[u8]) {
             ),
         ));
     }
+}
+
+fn accept_only_ja(ctx: &mut ParseContext, params: &[u8]) {
+    accept_only(ctx, params, "JA");
+}
+
+fn accept_only_jc(ctx: &mut ParseContext, params: &[u8]) {
+    accept_only(ctx, params, "JC");
+}
+
+fn accept_only_jd(ctx: &mut ParseContext, params: &[u8]) {
+    accept_only(ctx, params, "JD");
+}
+
+fn accept_only_je(ctx: &mut ParseContext, params: &[u8]) {
+    accept_only(ctx, params, "JE");
+}
+
+fn accept_only_jg(ctx: &mut ParseContext, params: &[u8]) {
+    accept_only(ctx, params, "JG");
+}
+
+fn accept_only_ji(ctx: &mut ParseContext, params: &[u8]) {
+    accept_only(ctx, params, "JI");
+}
+
+fn accept_only_jl(ctx: &mut ParseContext, params: &[u8]) {
+    accept_only(ctx, params, "JL");
+}
+
+fn accept_only_jn(ctx: &mut ParseContext, params: &[u8]) {
+    accept_only(ctx, params, "JN");
+}
+
+fn accept_only_jo(ctx: &mut ParseContext, params: &[u8]) {
+    accept_only(ctx, params, "JO");
+}
+
+fn accept_only_jp(ctx: &mut ParseContext, params: &[u8]) {
+    accept_only(ctx, params, "JP");
+}
+
+fn accept_only_jq(ctx: &mut ParseContext, params: &[u8]) {
+    accept_only(ctx, params, "JQ");
+}
+
+fn accept_only_js(ctx: &mut ParseContext, params: &[u8]) {
+    accept_only(ctx, params, "JS");
+}
+
+fn accept_only_jx(ctx: &mut ParseContext, params: &[u8]) {
+    accept_only(ctx, params, "JX");
+}
+
+fn accept_only_kb(ctx: &mut ParseContext, params: &[u8]) {
+    accept_only(ctx, params, "KB");
+}
+
+fn accept_only_nr(ctx: &mut ParseContext, params: &[u8]) {
+    accept_only(ctx, params, "NR");
+}
+fn accept_only_jb(ctx: &mut ParseContext, params: &[u8]) {
+    accept_only(ctx, params, "JB");
+}
+
+fn accept_only_pm(ctx: &mut ParseContext, params: &[u8]) {
+    accept_only(ctx, params, "PM");
+}
+
+fn accept_only_pr(ctx: &mut ParseContext, params: &[u8]) {
+    accept_only(ctx, params, "PR");
+}
+
+fn accept_only_wr(ctx: &mut ParseContext, params: &[u8]) {
+    accept_only(ctx, params, "WR");
+}
+
+fn accept_only_nt(ctx: &mut ParseContext, params: &[u8]) {
+    accept_only(ctx, params, "NT");
 }
 
 /// Static command table; rows are added by later tasks as handlers land.
@@ -1530,6 +1732,414 @@ const TABLE: &[CommandSpec] = &[
         binary_handler: None,
     },
     CommandSpec {
+        mnemonic: *b"CM",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::memory_aliases,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"CN",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::cut_mode,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"CO",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::cache_on,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"CP",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::kiosk_mode,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"CV",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::code_validation,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"HF",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: memory::recall_host_format,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"HG",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: upload_graphic,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"HH",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: host_status_label,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"HL",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::rfid_log,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"HR",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::rfid_report,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"HW",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: directory_listing,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"JB",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::init_flash,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"JH",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::head_management,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"JI",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::init_program,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"JJ",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::verifier_mode,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"JM",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::dpmm_class,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"JS",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::sensor_select,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"JT",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::head_test,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"JU",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::active_config,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"JW",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::tension,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"KC",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::host_auth,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"KD",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::date_format,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"KL",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::panel_language,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"KN",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::printer_name,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"KP",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::password,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"KV",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::kiosk_cut,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"MA",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::maintenance_alert,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"MC",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::map_clear,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"NB",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::boot_check,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"NC",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::primary_net,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"ND",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::net_device,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"NI",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::network_id,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"NN",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::system_info,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"NP",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::primary_device,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"NS",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::ip_resolution,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"NT",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::smtp_server,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"NW",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::web_timeout,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"PL",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::eject_length,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"PP",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::tag_present,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"RB",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::tag_partitions,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"RF",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::rfid_operation,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"RL",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::rfid_lock,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"RS",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::rfid_setup,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"RU",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::rfid_prefix,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"RW",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::rfid_power,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"WA",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::receive_antenna,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"WE",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::wireless_encryption,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"WP",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::wireless_password,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"WR",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::wireless_rates,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"WS",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::wireless_net,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"WX",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::wireless_security,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
         mnemonic: *b"LR",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
@@ -1706,6 +2316,238 @@ const TABLE: &[CommandSpec] = &[
         prefix: Prefix::Tilde,
         kind: CmdKind::PrinterOp,
         handler: query_config_dump,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"HB",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: battery_status,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"HD",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: head_diagnostic,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"HM",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: memory_status,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"JA",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: accept_only_ja,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"JC",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: accept_only_jc,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"JD",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: accept_only_jd,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"JF",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: battery_condition,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"JE",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: accept_only_je,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"JG",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: accept_only_jg,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"JI",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: accept_only_ji,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"JL",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: accept_only_jl,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"JN",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: accept_only_jn,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"JO",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: accept_only_jo,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"JP",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: accept_only_jp,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"JQ",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: accept_only_jq,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"JS",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: accept_only_js,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"JX",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: accept_only_jx,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"KB",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: accept_only_kb,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"NR",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: accept_only_nr,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"NT",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: accept_only_nt,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"NC",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: network_connect,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"RO",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: reset_counters,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"WQ",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: write_query,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"WD",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: print_directory,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"WL",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: leap_security,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"JB",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: accept_only_jb,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"PM",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: accept_only_pm,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"PR",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: accept_only_pr,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"WR",
+        prefix: Prefix::Tilde,
+        kind: CmdKind::PrinterOp,
+        handler: accept_only_wr,
         binary_len: None,
         binary_handler: None,
     },

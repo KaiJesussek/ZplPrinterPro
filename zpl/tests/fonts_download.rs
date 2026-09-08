@@ -199,10 +199,11 @@ fn at_select_carries_cell_and_scaled_advance() {
 fn db_downloads_bitmap_font_header_and_data() {
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
-    // Guide format: ~DBd:o.x,a,h,w,base,space,#char,copyright,data.
-    // Character 65 = 'A': #065.8.6.0.0.8.<hex rows>.
+    // Guide format (p.170): ~DBd:o.x,a,h,w,base,space,#char,copyright,data
+    // with the data as #code.h.w.x.y.i. followed by O/F row lines (the
+    // guide's own TIMES example shape: F marks black, O white).
     let src =
-        "~DBR:TIMES.FNT,N,24,12,20,10,2,ZEBRA 1992,#065.8.6.0.0.8.0018002400420081008100420024001800^XA^XZ";
+        "~DBR:TIMES.FNT,N,8,6,6,2,2,ZEBRA 1992,#065.4.4.0.2.6.OFFOFOOF\nOFFO\nOFFOOFFO\nOFFO^XA^XZ";
     let (_, ctx) = common::parse_ctx(src.as_bytes(), &mut diags, &mut memory);
     assert_eq!(
         ctx.diags.items.len(),
@@ -211,7 +212,21 @@ fn db_downloads_bitmap_font_header_and_data() {
         ctx.diags.items
     );
     let stored = ctx.memory.fonts.get("TIMES.FNT").expect("stored");
-    assert!(stored.starts_with(b"#065"), "structured data stored raw");
+    assert!(
+        stored.starts_with(b"R:TIMES.FNT"),
+        "the full record (header + data) is stored for later parsing"
+    );
+
+    // The stored record parses into a renderable bitmap font.
+    let font = zpl::fonts::parse_bitmap_font(stored).expect("record parses");
+    assert_eq!(font.cell_h, 8, "header height");
+    assert_eq!(font.baseline, 6, "header baseline");
+    assert_eq!(font.space, 2, "header space width");
+    let a = font.glyphs.get(&65).expect("char 065 = 'A'");
+    assert_eq!(a.h, 4, "glyph rows");
+    assert_eq!(a.advance, 6, "glyph advance (typesetting motion)");
+    assert!(!a.rows.is_empty());
+
     // Missing required header values are rejected with a warning.
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
@@ -279,4 +294,49 @@ fn dv_downloads_vector_object_by_extension() {
         Some(&b"ABCD"[..]),
         "hex payload stored verbatim"
     );
+}
+
+#[test]
+fn db_bitmap_font_renders_glyphs() {
+    // A tiny solid glyph (char 66 = 'B', code 066): a 3x3 block. Downloaded
+    // at cell 5 (h=5, w=5, base=4, space=2) and drawn by ^A@N,10,10 at
+    // double scale (eff = 10/5 = 2), the glyph inks a 6x6 block two rows
+    // down from the cell top (y = 1 -> row 2..7) at the field origin.
+    let src = "~DBR:T.FNT,N,5,5,4,2,1,X,#066.3.3.0.1.4.FFF\nFFF\nFFF^XA^FO10,10^A@N,10,10,R:T.FNT^FDB^FS^XZ";
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let mut ctx = zpl::state::ParseContext::new(&mut diags, &mut memory);
+    zpl::cmd::parse_stream(&mut zpl::scanner::Scanner::new(src.as_bytes()), &mut ctx);
+    let label = ctx.pending_label.take().expect("format closed");
+    assert_eq!(ctx.diags.items.len(), 0, "clean: {:?}", ctx.diags.items);
+    assert_eq!(ctx.memory.fonts.len(), 1);
+    let opts = RenderOptions {
+        dpi: 203,
+        fonts: &DefaultFontProvider::new(),
+        memory: &*ctx.memory,
+        mode: &ctx.mode,
+    };
+    let out = render(&label, &opts).expect("render");
+    let bmp = &out.bitmap;
+    let ink: Vec<(u32, u32)> = (0..bmp.height)
+        .flat_map(|y| (0..bmp.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| bmp.get(x, y))
+        .collect();
+    assert!(!ink.is_empty(), "the bitmap font glyph must paint");
+    let xs: Vec<u32> = ink.iter().map(|&(x, _)| x).collect();
+    let ys: Vec<u32> = ink.iter().map(|&(_, y)| y).collect();
+    let (x0, x1) = (*xs.iter().min().unwrap(), *xs.iter().max().unwrap());
+    let (y0, y1) = (*ys.iter().min().unwrap(), *ys.iter().max().unwrap());
+    // 3x3 glyph at eff 2 = 6x6, x offset 0, y offset 1 -> rows 12..17,
+    // cols 10..15.
+    assert!(
+        (y0, y1) == (12, 17),
+        "glyph vertical span (rows {y0}..{y1}, want 12..17)"
+    );
+    assert!(
+        (x0, x1) == (10, 15),
+        "glyph horizontal span (cols {x0}..{x1}, want 10..15)"
+    );
+    // The 3x3 solid block fills 36 dots at 2x.
+    assert_eq!(ink.len(), 36, "solid 3x3 scaled by 2");
 }

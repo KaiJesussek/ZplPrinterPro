@@ -115,6 +115,258 @@ pub struct FontData {
     pub ttf: Vec<u8>,
     /// Metric data at the 203 dpi reference size.
     pub metrics: FontMetrics,
+    /// A parsed `~DB` bitmap font (guide p.170) when the stored bytes are
+    /// the structured `#code.h.w.x.y.i.data` text rather than a TTF.
+    pub bitmap: Option<BitmapFont>,
+}
+
+/// A `~DB` downloaded bitmap font: the cell metrics plus per-character
+/// glyph bitmaps parsed from the structured ASCII data.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BitmapFont {
+    /// Maximum cell height in dots (the `~DB` h parameter).
+    pub cell_h: u32,
+    /// Maximum cell width in dots (the `~DB` w parameter).
+    pub cell_w: u32,
+    /// Dots from the top of the cell to the character baseline.
+    pub baseline: u32,
+    /// Width (in dots) of a space or non-existent character.
+    pub space: u32,
+    /// Character definitions, keyed by character code (ASCII decimal for
+    /// the standard 1-4 digit codes).
+    pub glyphs: std::collections::BTreeMap<u32, BitmapGlyph>,
+}
+
+/// One character definition: bitmap rows plus cell-relative geometry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BitmapGlyph {
+    /// Bitmap height in dot rows.
+    pub h: u32,
+    /// Bitmap width in dots.
+    pub w: u32,
+    /// Cell-relative x offset (dots).
+    pub x: i32,
+    /// Cell-relative y offset (dots from the cell top).
+    pub y: i32,
+    /// Typesetting motion displacement: the advance in dots, inter-
+    /// character spacing included.
+    pub advance: u32,
+    /// 1bpp rows, MSB-first, `w` bits per row.
+    pub rows: Vec<u8>,
+}
+
+/// Parse a `~DB` download record (the raw parameter stream, guide p.170):
+/// `d:o.x,a,h,w,base,space,#char,copyright,data` where `data` is the
+/// structured `#xxxx.h.w.x.y.i.<row lines>` character text (rows of O/F
+/// markers, one line per dot row, `F` = black). Returns `None` when the
+/// record is not a well-formed bitmap font (the caller then treats the
+/// stored object as an opaque download).
+pub fn parse_bitmap_font(params: &[u8]) -> Option<BitmapFont> {
+    // Split the first 8 commas: the header's 9 segments; the rest is the
+    // character data.
+    let commas: Vec<usize> = params
+        .iter()
+        .enumerate()
+        .filter(|(_, &b)| b == b',')
+        .take(8)
+        .map(|(i, _)| i)
+        .collect();
+    if commas.len() < 7 {
+        return None;
+    }
+    let seg = |idx: usize| -> Option<&[u8]> {
+        let start = if idx == 0 { 0 } else { commas[idx - 1] + 1 };
+        let end = commas.get(idx).copied().unwrap_or(params.len());
+        params.get(start..end).map(str_trim)
+    };
+    let h = parse_u32(seg(2)?)?;
+    let w = parse_u32(seg(3)?)?;
+    let base = parse_u32(seg(4)?)?;
+    let space = parse_u32(seg(5)?)?;
+    let data = &params[commas[7] + 1..];
+    let mut font = BitmapFont {
+        cell_h: h,
+        cell_w: w.max(1),
+        baseline: base.min(h),
+        space,
+        glyphs: Default::default(),
+    };
+    // Character tokens: `#code.h.w.x.y.i.` followed by row lines until
+    // the next `#` token.
+    let bytes = data;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'#' {
+            i += 1;
+            continue;
+        }
+        // token head: code.h.w.x.y.i.
+        let head = &bytes[i + 1..];
+        let mut fields: Vec<&[u8]> = Vec::new();
+        let mut cur = 0usize;
+        for dot in head
+            .iter()
+            .enumerate()
+            .take_while(|(_, &b)| b != b'\n' && b != b'#')
+        {
+            if *dot.1 == b'.' {
+                fields.push(str_trim(&head[cur..dot.0]));
+                cur = dot.0 + 1;
+                if fields.len() == 6 {
+                    break;
+                }
+            }
+        }
+        if fields.len() != 6 {
+            i += 1;
+            continue;
+        }
+        if fields.iter().any(|f| f.is_empty()) {
+            i += 1;
+            continue;
+        }
+        let code = parse_u32(fields[0]).unwrap_or(0);
+        let gh = parse_u32(fields[1]).unwrap_or(h);
+        let gw = parse_u32(fields[2]).unwrap_or(w);
+        let gx = fields[3]
+            .iter()
+            .try_fold(0i32, |a, &b| {
+                Some(a.saturating_mul(10).saturating_add((b - b'0') as i32))
+            })
+            .unwrap_or(0);
+        let gy = fields[4]
+            .iter()
+            .try_fold(0i32, |a, &b| {
+                Some(a.saturating_mul(10).saturating_add((b - b'0') as i32))
+            })
+            .unwrap_or(0);
+        let advance = parse_u32(fields[5]).unwrap_or(space.max(1));
+        // Advance past the token head (the 6th dot of code.h.w.x.y.i.).
+        let head_end = {
+            let mut p = i + 1;
+            let mut dots = 0;
+            while p < bytes.len() && dots < 6 {
+                if bytes[p] == b'.' {
+                    dots += 1;
+                }
+                p += 1;
+            }
+            p
+        };
+        let mut j = head_end;
+        let mut rows: Vec<u8> = Vec::new();
+        let mut row_count = 0u32;
+        while j < bytes.len() && bytes[j] != b'#' && row_count < gh {
+            // one row = one line
+            let line_end =
+                if let Some(rel) = bytes[j..].iter().position(|&b| b == b'\n' || b == b'\r') {
+                    j + rel
+                } else {
+                    bytes.len()
+                };
+            let line = &bytes[j..line_end.min(j + gw as usize)];
+            if !line.is_empty() {
+                let mut byte = 0u8;
+                let mut bits = 0u8;
+                for &c in line {
+                    if c == b'F' || c == b'f' {
+                        byte |= 1 << (7 - bits);
+                    }
+                    bits += 1;
+                    if bits == 8 {
+                        rows.push(byte);
+                        byte = 0;
+                        bits = 0;
+                    }
+                }
+                if bits > 0 {
+                    rows.push(byte);
+                }
+                row_count += 1;
+            }
+            j = if line_end < bytes.len() {
+                line_end + 1
+            } else {
+                bytes.len()
+            };
+            if j == bytes.len()
+                && bytes[bytes.len() - 1] != b'\n'
+                && bytes[bytes.len() - 1] != b'\r'
+            {
+                break;
+            }
+        }
+        font.glyphs.insert(
+            code,
+            BitmapGlyph {
+                h: row_count.max(1),
+                w: gw.max(1),
+                x: gx,
+                y: gy,
+                advance,
+                rows,
+            },
+        );
+        // advance i to the next '#' (or the end)
+        let mut q = j;
+        while q < bytes.len() && bytes[q] != b'#' {
+            q += 1;
+        }
+        i = q;
+    }
+    if font.glyphs.is_empty() {
+        return None;
+    }
+    Some(font)
+}
+
+fn str_trim(b: &[u8]) -> &[u8] {
+    let s = b
+        .iter()
+        .position(|&c| !c.is_ascii_whitespace())
+        .unwrap_or(b.len());
+    let e = b
+        .iter()
+        .rposition(|&c| !c.is_ascii_whitespace())
+        .map_or(s, |p| p + 1);
+    &b[s..e]
+}
+
+fn parse_u32(b: &[u8]) -> Option<u32> {
+    if b.is_empty() || !b.iter().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(b.iter().fold(0u32, |a, &c| {
+        a.saturating_mul(10).saturating_add((c - b'0') as u32)
+    }))
+}
+
+/// Build a renderable `FontData` from a parsed bitmap font: the raw bytes
+/// ride along in `ttf` (unused) and the metrics are synthesized from the
+/// garbage-free `~DB` header (cell, baseline as `^CF`-style rows-from-top,
+/// per-glyph advances).
+pub fn font_data_from_bitmap(font: &BitmapFont, raw: &[u8]) -> FontData {
+    let cell_height = font.cell_h.max(1);
+    let mut advances = vec![font.space.max(1) as u16; 95];
+    for (&code, g) in &font.glyphs {
+        if (32..=126).contains(&code) {
+            advances[(code - 32) as usize] = g.advance.clamp(1, u16::MAX as u32) as u16;
+        }
+    }
+    let percent = ((font.baseline.max(1)) * 100 / cell_height).clamp(1, 100) as u16;
+    FontData {
+        ttf: raw.to_vec(),
+        metrics: FontMetrics {
+            cell_height,
+            baseline: font.baseline.min(cell_height),
+            advances,
+            tenths: None,
+            cap: CapModel::Ratio { percent },
+            x_scale: 1.0,
+            width_pow: 1.0,
+        },
+        bitmap: Some(font.clone()),
+    }
 }
 
 /// How a built-in font's rendered cap height derives from the drawn cell
@@ -798,6 +1050,7 @@ impl FontProvider for DefaultFontProvider {
         Some(FontData {
             ttf: bytes.to_vec(),
             metrics: self.metrics[idx].clone(),
+            bitmap: None,
         })
     }
 }
@@ -849,6 +1102,7 @@ pub fn font_data_from_ttf(ttf: &[u8]) -> Option<FontData> {
     let baseline = ((ascent * ppem / upem).round().max(1.0) as u32).min(cell_height);
     Some(FontData {
         ttf: ttf.to_vec(),
+        bitmap: None,
         metrics: FontMetrics {
             cell_height,
             baseline,

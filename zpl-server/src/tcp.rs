@@ -301,6 +301,14 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
                         QueryRequest::ConfigDump(_) => Some(proto::respond_wd(&ps)),
                         QueryRequest::ModelId => Some(proto::respond_hi()),
                         QueryRequest::HostValue(req) => Some(proto::respond_hv(req, &ps.numbered)),
+                        QueryRequest::BatteryStatus => Some(proto::respond_hb(&ps)),
+                        QueryRequest::HeadDiagnostic => Some(proto::respond_hd(&ps)),
+                        QueryRequest::MemoryStatus => Some(proto::respond_hm(&guard)),
+                        QueryRequest::HostStatusLabel => Some(proto::respond_hh(&ps)),
+                        QueryRequest::UploadGraphic(name) => Some(proto::respond_hg(name, &guard)),
+                        QueryRequest::DirectoryListing(spec) => {
+                            Some(proto::respond_hw(spec, &guard))
+                        }
                     };
                     if let Some(r) = resp {
                         responses.push(r);

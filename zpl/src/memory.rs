@@ -127,7 +127,7 @@ pub(crate) fn strip_device(spec: &[u8]) -> &[u8] {
 /// `LOGO.PNG.GRF`, an object name with a period outside the guide's
 /// "1 to 8 alphanumeric characters" rule. `^XG`/`^IM`/`^IL` recall
 /// through the same key space).
-fn image_name(spec: &[u8]) -> String {
+pub(crate) fn image_name(spec: &[u8]) -> String {
     let s = strip_device(spec);
     if s.is_empty() {
         return "UNKNOWN.GRF".into();
@@ -761,15 +761,20 @@ pub(crate) fn download_bitmap_font(ctx: &mut ParseContext, params: &[u8]) {
     } else {
         data
     };
-    if !data.starts_with(b"#") || data.len() < chars as usize {
+    if !(data.starts_with(b"#") || segs.last().is_some_and(|p| p.starts_with(b"#")))
+        || data.len() < chars as usize
+    {
         warn_drop(ctx, DB, &name, "missing or truncated character data");
         return;
     }
-    if !fits_total(ctx.memory, &name, data.len()) {
+    // Store the full parameter stream (header + character definitions):
+    // the renderer parses the header's cell metrics and the `#code...`
+    // glyph text from the record at selection time.
+    if !fits_total(ctx.memory, &name, params.len()) {
         warn_memory_full(ctx, DB, &name);
         return;
     }
-    ctx.memory.fonts.insert(name, data.to_vec());
+    ctx.memory.fonts.insert(name, params.to_vec());
 }
 
 /// `~DEd:o.x,s,data` (guide p.172): download a character-encoding
@@ -926,17 +931,27 @@ fn font_download(ctx: &mut ParseContext, params: &[u8], default_ext: &str, cmd: 
 /// (recursion capped at depth 4; `^XA`/`^XZ`/`^DF` inside stored bytes are
 /// ignored with a warning). A missing format warns and parsing continues.
 pub(crate) fn recall_format(ctx: &mut ParseContext, params: &[u8]) {
+    recall_format_cmd(ctx, params, "XF");
+}
+
+/// `^HFd,o,x` (guide p.220): recall a stored format from memory into the
+/// current label - the Host Format command, an alias of `^XF`'s recall.
+pub(crate) fn recall_host_format(ctx: &mut ParseContext, params: &[u8]) {
+    recall_format_cmd(ctx, params, "HF");
+}
+
+fn recall_format_cmd(ctx: &mut ParseContext, params: &[u8], cmd: &str) {
     let name = format_name(params);
     if ctx.recall_depth >= 4 {
         ctx.diags.push(Diagnostic::warning(
-            "XF",
+            cmd,
             format!("{name}: stored-format recall depth limit (4) reached; recursion stopped"),
         ));
         return;
     }
     let Some(bytes) = ctx.memory.formats.get(&name).cloned() else {
         ctx.diags.push(Diagnostic::warning(
-            "XF",
+            cmd,
             format!("stored format '{name}' not found; recall skipped"),
         ));
         return;

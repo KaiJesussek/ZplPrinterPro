@@ -655,6 +655,18 @@ pub enum QueryRequest {
     ModelId,
     /// `^HV` - return a numbered field's data to the host.
     HostValue(HostValueRequest),
+    /// `~HB` - battery status (mobile printers).
+    BatteryStatus,
+    /// `~HD` - head diagnostic (power supply, head temperature).
+    HeadDiagnostic,
+    /// `~HM` - host RAM status (total/max/available).
+    MemoryStatus,
+    /// `^HH` - host status (label-format status flash, guide p.222).
+    HostStatusLabel,
+    /// `^HGd:o.x` - upload a stored graphic to the host.
+    UploadGraphic(String),
+    /// `^HWd:o.x` - host directory listing for a stored-object pattern.
+    DirectoryListing(String),
 }
 
 /// Parsed `^HV#,n,h,t,a` parameters (guide p.239).

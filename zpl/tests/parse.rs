@@ -6,7 +6,7 @@ mod common;
 use common::parse_one;
 use zpl::diag::{Diagnostics, Severity};
 use zpl::ir::{Field, Justification, Label, OriginMode, Rotation, TextBlock, TextField};
-use zpl::state::Memory;
+use zpl::state::{Memory, ParseContext};
 
 fn text_field(label: &Label, i: usize) -> &TextField {
     match &label.fields[i] {
@@ -1056,4 +1056,59 @@ fn hardware_stores_validate_ranges() {
     let src = b"^XA^SO5^FS^SP99999^SI1,300^SL0^FS^XZ";
     let (_label, diags) = parse_one(src);
     assert_eq!(diags.items.len(), 4, "each bad range must warn: {diags:?}");
+}
+
+// --- Audit sweep: every documented mnemonic has a handler ----------------
+
+/// The guide's full command set: parsing a bare instance of each documented
+/// ^/~ mnemonic must never produce an UnknownCommand diagnostic (an
+/// "unknown command" warning for a documented command is an audit finding).
+#[test]
+fn every_documented_mnemonic_dispatches() {
+    let carets: &[&str] = &[
+        "A@", "Af", "B0", "B1", "B2", "B3", "B4", "B5", "B7", "B8", "B9", "BA", "BB", "BC", "BD",
+        "BE", "BF", "BI", "BJ", "BK", "BL", "BM", "BO", "BP", "BQ", "BR", "BS", "BT", "BU", "BX",
+        "BY", "BZ", "CC", "CF", "CI", "CM", "CN", "CO", "CP", "CT", "CV", "CW", "DF", "FB", "FC",
+        "FD", "FE", "FH", "FL", "FN", "FO", "FP", "FR", "FS", "FT", "FV", "FW", "FX", "GB", "GC",
+        "GD", "GE", "GF", "GS", "HF", "HG", "HH", "HL", "HR", "HV", "HW", "HY", "HZ", "ID", "IL",
+        "IM", "IS", "JB", "JH", "JI", "JJ", "JM", "JS", "JT", "JU", "JW", "JZ", "KC", "KD", "KL",
+        "KN", "KP", "KV", "LH", "LL", "LR", "LS", "LT", "MA", "MC", "MD", "MF", "MI", "ML", "MM",
+        "MN", "MP", "MT", "MU", "MW", "NB", "NC", "ND", "NI", "NN", "NP", "NS", "NT", "NW", "PA",
+        "PF", "PH", "PL", "PM", "PN", "PO", "PP", "PQ", "RB", "RF", "RL", "RS", "RU", "RW", "SC",
+        "SF", "SI", "SL", "SN", "SO", "SP", "SQ", "SR", "SS", "ST", "SX", "SZ", "TB", "TO", "WA",
+        "WD", "WE", "WL", "WP", "WR", "WS", "WX", "XA", "XB", "XF", "XG", "XS", "XZ", "ZZ",
+    ];
+    let tildes: &[&str] = &[
+        "DB", "DE", "DG", "DN", "DS", "DT", "DU", "DV", "HB", "HD", "HI", "HM", "HQ", "HU", "JA",
+        "JB", "JC", "JD", "JE", "JF", "JG", "JI", "JL", "JN", "JO", "JP", "JQ", "JR", "JS", "JX",
+        "KB", "NC", "NR", "NT", "PM", "PR", "RO", "SD", "TA", "WC", "WL", "WQ", "WR",
+    ];
+    let mut bad = Vec::new();
+    for &m in carets {
+        // A bare command may not close a label (^DF downloads, queries) -
+        // only the UnknownCommand diagnostics matter here.
+        let src = format!("^XA^{m}^XZ");
+        let mut diags = Diagnostics::default();
+        let mut memory = Memory::default();
+        let mut ctx = ParseContext::new(&mut diags, &mut memory);
+        zpl::cmd::parse_stream(&mut zpl::scanner::Scanner::new(src.as_bytes()), &mut ctx);
+        for d in &ctx.diags.items {
+            if d.severity == zpl::diag::Severity::UnknownCommand {
+                bad.push(format!("^{m}: unknown"));
+            }
+        }
+    }
+    for &m in tildes {
+        let src = format!("~{m}^XA^XZ");
+        let mut diags = Diagnostics::default();
+        let mut memory = Memory::default();
+        let mut ctx = ParseContext::new(&mut diags, &mut memory);
+        zpl::cmd::parse_stream(&mut zpl::scanner::Scanner::new(src.as_bytes()), &mut ctx);
+        for d in &ctx.diags.items {
+            if d.severity == zpl::diag::Severity::UnknownCommand {
+                bad.push(format!("~{m}: unknown"));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "undispatched documented commands: {bad:?}");
 }
