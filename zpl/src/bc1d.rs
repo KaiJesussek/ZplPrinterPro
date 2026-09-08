@@ -586,6 +586,7 @@ pub(crate) fn prepare(f: &BarcodeField, data: &[u8]) -> Vec<u8> {
         b'2' if f.ucc => prepare_i25_check(data),
         b'3' => prepare_code39(f.check, data),
         b'K' => prepare_codabar(f.start, f.stop, data),
+        b'L' => prepare_logmars(data),
         b'M' => prepare_msi(f.check, data),
         _ => data.to_vec(),
     }
@@ -626,6 +627,24 @@ pub(crate) fn data_error(symbology: u8, check: u8, data: &[u8]) -> Option<String
         b'E' => check_digits(data, "EAN-13 (^BE)"),
         b'U' => check_digits(data, "UPC-A (^BU)"),
         b'5' => check_digits(data, "Planet Code (^B5)"),
+        b'I' => check_digits(data, "Industrial 2 of 5 (^BI)"),
+        b'J' => check_digits(data, "Standard 2 of 5 (^BJ)"),
+        b'L' => check_charset(data, C39_CHARS, "LOGMARS (^BL)"),
+        b'P' => check_charset(data, b"0123456789ABCDEF", "Plessey (^BP)"),
+        b'Z' => check_digits(data, "POSTNET (^BZ)").and_then(|()| {
+            if !matches!(data.len(), 5 | 9 | 11) {
+                Err("POSTNET (^BZ): 5, 9, or 11 digit ZIP data is required".into())
+            } else {
+                Ok(())
+            }
+        }),
+        b'S' => check_digits(data, "UPC/EAN add-on (^BS)").and_then(|()| {
+            if !matches!(data.len(), 2 | 5) {
+                Err("UPC/EAN add-on (^BS): 2- or 5-digit extension data is required".into())
+            } else {
+                Ok(())
+            }
+        }),
         _ => Ok(()),
     };
     err.err()
@@ -1045,4 +1064,279 @@ fn bit_runs(bits: &str) -> Vec<u32> {
 
 fn position(set: &[u8], b: u8) -> Option<u8> {
     set.iter().position(|&c| c == b).map(|i| i as u8)
+}
+
+// --- ^BI / ^BJ (zint 2of5.c tables) ---------------------------------------
+
+/// Industrial 2 of 5 element rows: five bars with narrow spaces, two
+/// wide bars per digit ('1' narrow, '3' wide; zint C25IndustTable).
+#[rustfmt::skip]
+const C25_INDUST: [[u8; 10]; 10] = [
+    [1, 1, 1, 1, 3, 1, 3, 1, 1, 1], // 0
+    [3, 1, 1, 1, 1, 1, 1, 1, 3, 1], // 1
+    [1, 1, 3, 1, 1, 1, 1, 1, 3, 1], // 2
+    [3, 1, 3, 1, 1, 1, 1, 1, 1, 1], // 3
+    [1, 1, 1, 1, 3, 1, 1, 1, 3, 1], // 4
+    [3, 1, 1, 1, 3, 1, 1, 1, 1, 1], // 5
+    [1, 1, 3, 1, 3, 1, 1, 1, 1, 1], // 6
+    [1, 1, 1, 1, 1, 1, 3, 1, 3, 1], // 7
+    [3, 1, 1, 1, 1, 1, 3, 1, 1, 1], // 8
+    [1, 1, 3, 1, 1, 1, 3, 1, 1, 1], // 9
+];
+
+/// Standard (Matrix) 2 of 5 element rows: six elements per digit with
+/// two wide bars (zint C25MatrixTable).
+#[rustfmt::skip]
+const C25_MATRIX: [[u8; 6]; 10] = [
+    [1, 1, 3, 3, 1, 1], // 0
+    [3, 1, 1, 1, 3, 1], // 1
+    [1, 3, 1, 1, 3, 1], // 2
+    [3, 3, 1, 1, 1, 1], // 3
+    [1, 1, 3, 1, 3, 1], // 4
+    [3, 1, 3, 1, 1, 1], // 5
+    [1, 3, 3, 1, 1, 1], // 6
+    [1, 1, 1, 3, 3, 1], // 7
+    [3, 1, 1, 3, 1, 1], // 8
+    [1, 3, 1, 3, 1, 1], // 9
+];
+
+/// ^BI: bars carry the data, spaces are narrow. Guards: wide-narrow-wide
+/// start, wide-narrow-narrow-wide stop; e.g. the ^BY ratio scales the wide
+/// elements.
+pub(crate) fn industrial25(data: &[u8], module: u32, ratio: u32) -> Result<Pattern, String> {
+    if data.iter().any(|b| !b.is_ascii_digit()) {
+        return Err("Industrial 2 of 5 (^BI): digits only".into());
+    }
+    let narrow = module;
+    let wide = wide_dots(module, ratio);
+    let mut runs: Vec<u32> = Vec::with_capacity(6 + data.len() * 10);
+    runs.extend([2, 1, 2, 1, 1, 1]); // start
+    for &b in data {
+        for &e in &C25_INDUST[(b - b'0') as usize] {
+            runs.push(if e == 1 { 1 } else { 2 });
+        }
+    }
+    runs.extend([2, 1, 1, 1, 2]); // stop
+    Ok(bars_ratio(&runs, narrow, wide))
+}
+
+/// ^BJ: six elements per digit; start guard wide-bar, stop wide-bar.
+pub(crate) fn standard25(data: &[u8], module: u32, ratio: u32) -> Result<Pattern, String> {
+    if data.iter().any(|b| !b.is_ascii_digit()) {
+        return Err("Standard 2 of 5 (^BJ): digits only".into());
+    }
+    let narrow = module;
+    let wide = wide_dots(module, ratio);
+    let mut runs: Vec<u32> = Vec::with_capacity(6 + data.len() * 7);
+    runs.extend([2, 1, 1, 1, 1, 1]); // start
+    for &b in data {
+        for &e in &C25_MATRIX[(b - b'0') as usize] {
+            runs.push(if e == 1 { 1 } else { 2 });
+        }
+    }
+    runs.push(1); // stop gap
+    runs.extend([2, 1, 1, 1, 1]); // stop
+    Ok(bars_ratio(&runs, narrow, wide))
+}
+
+// --- ^BL LOGMARS -----------------------------------------------------------
+
+/// LOGMARS field data: Code 39 with a mandatory Mod-43 check character
+/// (DoD UID spec; zint code 50).
+fn prepare_logmars(data: &[u8]) -> Vec<u8> {
+    if data.iter().any(|&b| position(C39_CHARS, b).is_none()) {
+        return data.to_vec(); // the encoder reports it
+    }
+    let sum: u32 = data
+        .iter()
+        .filter_map(|&b| position(C39_CHARS, b))
+        .map(u32::from)
+        .sum();
+    let mut out = data.to_vec();
+    out.push(C39_CHARS[(sum % 43) as usize]);
+    out
+}
+
+// --- ^BP Plessey (zint plessey.c) -------------------------------------------
+
+/// Plesey element table: four pulses (bar,space) per character, '1'
+/// narrow, '3' wide modules (zint PlessTable).
+#[rustfmt::skip]
+const PLESSEY: [[u8; 8]; 16] = [
+    [1, 3, 1, 3, 1, 3, 1, 3], // 0
+    [3, 1, 1, 3, 1, 3, 1, 3], // 1
+    [1, 3, 3, 1, 1, 3, 1, 3], // 2
+    [3, 1, 3, 1, 1, 3, 1, 3], // 3
+    [1, 3, 1, 3, 3, 1, 1, 3], // 4
+    [3, 1, 1, 3, 3, 1, 1, 3], // 5
+    [1, 3, 3, 1, 3, 1, 1, 3], // 6
+    [3, 1, 3, 1, 3, 1, 1, 3], // 7
+    [1, 3, 1, 3, 1, 3, 3, 1], // 8
+    [3, 1, 1, 3, 1, 3, 3, 1], // 9
+    [1, 3, 3, 1, 1, 3, 3, 1], // A
+    [3, 1, 3, 1, 1, 3, 3, 1], // B
+    [1, 3, 1, 3, 3, 1, 3, 1], // C
+    [3, 1, 1, 3, 3, 1, 3, 1], // D
+    [1, 3, 3, 1, 3, 1, 3, 1], // E
+    [3, 1, 3, 1, 3, 1, 3, 1], // F
+];
+
+/// ^BP: pulse-width code with an inherent 4x CRC check (zint grid
+/// 100101001 / generator x.4+x+1). Fixed 1/3-module pulse widths; the ^BY
+/// ratio does not apply.
+pub(crate) fn plessey(data: &[u8], module: u32) -> Result<Pattern, String> {
+    if data
+        .iter()
+        .any(|b| position(b"0123456789ABCDEF", *b).is_none())
+    {
+        return Err("Plessey (^BP): hexadecimal data (0-9, A-F) required".into());
+    }
+    const START: [u32; 8] = [3, 1, 3, 1, 1, 3, 3, 1];
+    const STOP: [u32; 9] = [3, 3, 1, 3, 1, 1, 3, 1, 3];
+    let mut bits: Vec<u8> = Vec::with_capacity(data.len() * 4 + 8);
+    for &b in data {
+        let v = u8::from_str_radix(&(b as char).to_string(), 16).unwrap_or(0);
+        for k in 0..4 {
+            bits.push((v >> k) & 1);
+        }
+    }
+    // 4x CRC over the data bits (grid 100101001 -> 111101001 plus the
+    // padded zeroes; zint's loop XORs the remainder bits).
+    let mut rem = vec![0u8; bits.len() + 8];
+    rem[..bits.len()].copy_from_slice(&bits);
+    for i in 0..bits.len() {
+        if rem[i] == 1 {
+            for (j, &g) in [1u8, 1, 1, 1, 0, 1, 0, 0, 1].iter().enumerate() {
+                rem[i + j] ^= g;
+            }
+        }
+    }
+    let mut runs: Vec<u32> = Vec::with_capacity(8 + data.len() * 8 + 16 + 9);
+    runs.extend(START);
+    for &b in data {
+        let v = match b {
+            b'0'..=b'9' => b - b'0',
+            b'A'..=b'F' => b - b'A' + 10,
+            _ => unreachable!(),
+        };
+        runs.extend(PLESSEY[v as usize].iter().map(|&e| e as u32));
+    }
+    for k in 0..8 {
+        runs.extend(if rem[bits.len() + k] == 0 {
+            [1, 3]
+        } else {
+            [3, 1]
+        });
+    }
+    runs.extend(STOP);
+    Ok(bars_fixed(&runs, module))
+}
+
+// --- ^BZ POSTNET (zint postal.c) -------------------------------------------
+
+/// ^BZ (t = 0): POSTNET 5/9/11-digit ZIP with the guard bars and the
+/// (10 - sum mod 10) check digit; e.g. the short bars print at 2/5 of the
+/// height, like ^B5.
+pub(crate) fn postnet(data: &[u8], module: u32, height: u32) -> Result<Pattern, String> {
+    check_digits(data, "POSTNET (^BZ)")?;
+    let sum: u32 = data.iter().map(|&d| u32::from(d - b'0')).sum();
+    let check = (10 - sum % 10) % 10;
+    let short_h = (2 * height.max(1)) / 5;
+    let space = 3 * module / 2;
+    let mut bars = Vec::with_capacity(2 + data.len() * 10);
+    bars.push(Bar {
+        width: module,
+        black: true,
+        height: None,
+    }); // start guard
+    for digit in data
+        .iter()
+        .copied()
+        .chain(std::iter::once(b'0' + check as u8))
+    {
+        for &short in &PLANET[(digit - b'0') as usize] {
+            bars.push(Bar {
+                width: space,
+                black: false,
+                height: None,
+            });
+            bars.push(Bar {
+                width: module,
+                black: true,
+                height: if short == 1 { Some(short_h) } else { None },
+            });
+        }
+    }
+    bars.push(Bar {
+        width: space,
+        black: false,
+        height: None,
+    });
+    bars.push(Bar {
+        width: module,
+        black: true,
+        height: None,
+    }); // stop guard
+    Ok(Pattern::Bars(bars))
+}
+
+// --- ^BS UPC/EAN add-on (zint upcean.c ean_add_on) --------------------------
+
+/// Add-on digit element widths: EANsetA/B are bar,space,bar,space module
+/// runs; the guard is 1,1,2 and the digit separator 1,1. Parity rows come
+/// from GS1 Table 7.
+#[rustfmt::skip]
+const EAN_ADD_A: [[u32; 4]; 10] = [
+    [3, 2, 1, 1], [2, 2, 2, 1], [2, 1, 2, 2], [1, 4, 1, 1], [1, 1, 3, 2],
+    [1, 2, 3, 1], [1, 1, 1, 4], [1, 3, 1, 2], [1, 2, 1, 3], [3, 1, 1, 2],
+];
+#[rustfmt::skip]
+const EAN_ADD_B: [[u32; 4]; 10] = [
+    [1, 1, 2, 3], [1, 2, 2, 2], [2, 2, 1, 2], [1, 1, 4, 1], [2, 3, 1, 1],
+    [2, 1, 3, 1], [1, 1, 1, 4], [2, 1, 1, 2], [2, 2, 1, 2], [3, 1, 1, 2],
+];
+
+/// EAN-2/EAN-5 add-on parity rows (GS1 Table 7; 0 = A digit set, 1 = B).
+#[rustfmt::skip]
+const EAN_ADD2_PARITY: [[u8; 2]; 4] = [
+    [0, 0], [0, 1], [1, 0], [1, 1],
+];
+#[rustfmt::skip]
+const EAN_ADD5_PARITY: [[u8; 5]; 10] = [
+    [1, 1, 0, 0, 0], [1, 0, 1, 0, 0], [1, 0, 0, 1, 0], [1, 0, 0, 0, 1], [0, 1, 1, 0, 0],
+    [0, 0, 1, 1, 0], [0, 0, 0, 1, 1], [0, 1, 0, 1, 0], [0, 1, 0, 0, 1], [0, 0, 1, 0, 1],
+];
+
+/// ^BS: the 2- or 5-digit publisher add-on extension (guard 1,1,2, digit
+/// separators 1,1). The digit parity set follows the extension value
+/// (EAN-2: value mod 4; EAN-5: 3-odd + 9-even weighted sum mod 10, GS1
+/// Table 7). Fixed module widths; no ratio.
+pub(crate) fn ean_addon(data: &[u8], module: u32) -> Result<Pattern, String> {
+    check_digits(data, "UPC/EAN add-on (^BS)")?;
+    if !matches!(data.len(), 2 | 5) {
+        return Err("UPC/EAN add-on (^BS): 2- or 5-digit extension data is required".into());
+    }
+    let parity: [u8; 5] = if data.len() == 2 {
+        let value = u32::from(data[0] - b'0') * 10 + u32::from(data[1] - b'0');
+        let p = EAN_ADD2_PARITY[(value % 4) as usize];
+        [p[0], p[1], 0, 0, 0]
+    } else {
+        let v: Vec<u32> = data.iter().map(|&d| u32::from(d - b'0')).collect();
+        let sum = 3 * (v[0] + v[2] + v[4]) + 9 * (v[1] + v[3]);
+        EAN_ADD5_PARITY[(sum % 10) as usize]
+    };
+    let mut runs: Vec<u32> = Vec::with_capacity(3 + data.len() * 4 + (data.len() - 1) * 2);
+    runs.extend([1, 1, 2]); // guard
+    for (i, &b) in data.iter().enumerate() {
+        let d = (b - b'0') as usize;
+        runs.extend(if parity[i] == 0 {
+            EAN_ADD_A[d]
+        } else {
+            EAN_ADD_B[d]
+        });
+        if i + 1 < data.len() {
+            runs.extend([1, 1]); // digit separator
+        }
+    }
+    Ok(bars_fixed(&runs, module))
 }

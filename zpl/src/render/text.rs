@@ -349,8 +349,8 @@ fn layout(t: &TextField, m: &FontMetrics, dpi: u32) -> Option<FieldLayout> {
     } else {
         cell.max(baseline.saturating_add(1))
     };
-    let spacing = t.block.as_ref().map(|b| b.line_spacing as u64).unwrap_or(0);
-    let pitch = cell + spacing;
+    let spacing = t.block.as_ref().map(|b| b.line_spacing).unwrap_or(0);
+    let pitch = (cell as i64 + spacing as i64).max(1) as u64;
     // Bitmap-style fonts ignore the `^A` width (they advance at native
     // proportional widths); TrueType (downloaded) fonts honor it.
     let fixed = if matches!(m.cap, CapModel::Ascent) && t.font_width > 0 {
@@ -476,6 +476,16 @@ pub(crate) fn text_footprint(t: &TextField, opts: &RenderOptions) -> Option<(u32
     let (y, _fw, fh) = extents(t, &l);
     let y = y.max(0) as u32;
     Some((y, fh as u32))
+}
+
+/// The formatted width in dots (pre-rotation), for ^FT's auto-origin
+/// runner ("position after the last formatted text field", guide p.205).
+pub(crate) fn text_width(t: &TextField, opts: &RenderOptions) -> Option<u32> {
+    let spec = crate::render::field_font_spec(t);
+    let fd = crate::render::resolve_font(&spec, opts)?;
+    let l = layout(t, &fd.metrics, opts.dpi)?;
+    let (_y, fw, _fh) = extents(t, &l);
+    Some(fw as u32)
 }
 
 /// Paint a text field into the bitmap. Warnings are appended for fields
@@ -1054,6 +1064,8 @@ mod tests {
         // advances 10 @15, drawn at cell 15 (eff 1): "ab cd" = 50,
         // "efgh" = 40, "ij kl" = 50, box 60.
         let t = TextField {
+            auto_x: false,
+            auto_y: false,
             x: 0,
             y: 0,
             origin: OriginMode::Block,

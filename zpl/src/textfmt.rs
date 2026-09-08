@@ -186,21 +186,32 @@ pub(crate) fn field_typeset(ctx: &mut ParseContext, params: &[u8]) {
 
 fn apply_origin(ctx: &mut ParseContext, params: &[u8], origin: OriginMode, cmd: &str) {
     let parts = split_commas(params);
-    // Blank ^FO/^FT arguments carry the LAST field origin forward (the
-    // guide's "last specified value" rule) - e.g. `^FT^GSN^FDA` stacks a
-    // graphic symbol at the previous field's position (BinaryKits
-    // GraphicSymbol comparison). Only the first field with a blank
-    // origin falls back to 0,0.
+    // ^FO's x/y default is 0 (the guide's parameter table): a blank
+    // argument resets, it never carries. ^FT's default is "the position
+    // after the last formatted text field"; a blank argument carries the
+    // previous origin (measured reference: `^FT^GSN^FDA` stacks a graphic
+    // symbol at the prior field's position).
     let x = p_u32(parts.first().copied(), cmd, "x", ctx.diags, 0);
     let y = p_u32(parts.get(1).copied(), cmd, "y", ctx.diags, 0);
     if let Some(d) = draft_mut(ctx) {
-        if !parts.first().is_some_and(|p| p.is_empty()) {
+        d.origin = origin;
+        if cmd == "FO" {
+            d.x = x;
+            d.y = y;
+            d.auto_x = false;
+            d.auto_y = false;
+            return;
+        }
+        let blank_x = parts.first().is_some_and(|p| p.is_empty());
+        let blank_y = parts.get(1).is_some_and(|p| p.is_empty());
+        d.auto_x = blank_x;
+        d.auto_y = blank_y;
+        if !blank_x {
             d.x = x;
         }
-        if !parts.get(1).is_some_and(|p| p.is_empty()) {
+        if !blank_y {
             d.y = y;
         }
-        d.origin = origin;
     }
 }
 
@@ -260,7 +271,77 @@ pub(crate) fn serial_number(ctx: &mut ParseContext, params: &[u8]) {
     };
     if let Some(d) = draft_mut(ctx) {
         d.data = v.to_vec();
-        d.serial = Some(SerialSetting { step, zeros });
+        d.serial = Some(SerialSetting {
+            step,
+            zeros,
+            mask: None,
+            incr: None,
+        });
+    }
+}
+
+/// ^SF mask,increment: serialize a standard ^FD string through a mask of
+/// position classes (guide p.335). The mask is right-aligned to the ^FD
+/// characters; the increment string is a per-position value in the aligned
+/// class alphabet (default: decimal one).
+pub(crate) fn serialized_field(ctx: &mut ParseContext, params: &[u8]) {
+    let parts = split_commas(params);
+    let Some(mask) = parts.first().copied().filter(|p| !p.is_empty()) else {
+        ctx.diags.push(Diagnostic::warning(
+            "SF",
+            "missing mask string; ^SF ignored",
+        ));
+        return;
+    };
+    if !mask.iter().all(|c| {
+        matches!(
+            c,
+            b'D' | b'd' | b'H' | b'h' | b'O' | b'o' | b'A' | b'a' | b'N' | b'n' | b'%'
+        )
+    }) {
+        ctx.diags.push(Diagnostic::warning(
+            "SF",
+            format!(
+                "invalid mask character '{}'; ^SF ignored",
+                String::from_utf8_lossy(
+                    &mask
+                        .iter()
+                        .cloned()
+                        .find(|c| !matches!(
+                            c,
+                            b'D' | b'd'
+                                | b'H'
+                                | b'h'
+                                | b'O'
+                                | b'o'
+                                | b'A'
+                                | b'a'
+                                | b'N'
+                                | b'n'
+                                | b'%'
+                        ))
+                        .unwrap_or(0)
+                        .to_le_bytes()
+                )
+            ),
+        ));
+        return;
+    }
+    let mask = mask.to_vec();
+    // ^SF's increment uses the same class alphabet for its own characters
+    // (mask-aligned); the default is a decimal one. Only non-% positions
+    // contribute.
+    let mut incr: Vec<u8> = parts.get(1).copied().unwrap_or(b"1").to_vec();
+    if incr.is_empty() {
+        incr = b"1".to_vec();
+    }
+    if let Some(d) = draft_mut(ctx) {
+        d.serial = Some(SerialSetting {
+            step: 1, // unused by the mask path (the incr string is the step)
+            zeros: false,
+            mask: Some(mask),
+            incr: Some(incr),
+        });
     }
 }
 
@@ -274,6 +355,79 @@ fn append_data(ctx: &mut ParseContext, params: &[u8]) {
     if let Some(d) = draft_mut(ctx) {
         d.data.extend_from_slice(&bytes);
     }
+}
+
+/// `^LRa` (guide p.295): reverse print all fields from here on (N/Y; the
+/// stored Y/N answer is carried as a persisted option). Fields following
+/// the command print in reverse video, like an implicit ^FR on each.
+pub(crate) fn label_reverse(ctx: &mut ParseContext, params: &[u8]) {
+    ctx.label_reverse = match params.split(|&b| b == b',').next().and_then(|p| p.first()) {
+        Some(b'Y') | Some(b'y') => true,
+        Some(b'N') | Some(b'n') => false,
+        Some(_) => {
+            ctx.diags.push(Diagnostic::warning(
+                "LR",
+                "invalid reverse-print value; using N",
+            ));
+            false
+        }
+        None => false,
+    };
+}
+
+/// `^FL<ext>,<base>,<link>` (guide p.195): link a TTF/TTE extension font
+/// to resident .FNT/.TTF/.TTE base fonts (link = 1 associate / 0
+/// disassociate). The printer stores the association; there is no image
+/// effect in this renderer (no TTF rasterization), so the triple is
+/// validated and recorded.
+pub(crate) fn font_link(ctx: &mut ParseContext, params: &[u8]) {
+    let parts = split_commas(params);
+    let ext = parts.first().copied().unwrap_or(&[]);
+    let base = parts.get(1).copied().unwrap_or(&[]);
+    let upper = |b: &[u8]| b.iter().map(|c| c.to_ascii_uppercase()).collect::<Vec<_>>();
+    let ext_ok =
+        ext.contains(&b'.') && (upper(ext).ends_with(b".TTF") || upper(ext).ends_with(b".TTE"));
+    let base_ok = base.contains(&b'.');
+    let link = match parts.get(2).and_then(|p| p.first()) {
+        Some(b'0') => Some(0u8),
+        Some(b'1') => Some(1u8),
+        _ => None,
+    };
+    if ext_ok && base_ok {
+        if let Some(l) = link {
+            ctx.config.font_links.push((ext.to_vec(), base.to_vec(), l));
+        } else {
+            ctx.diags
+                .push(Diagnostic::warning("FL", "invalid link value; ^FL ignored"));
+        }
+    } else {
+        ctx.diags.push(Diagnostic::warning(
+            "FL",
+            "extension/base filenames must include an extension; ^FL ignored",
+        ));
+    }
+}
+
+/// `^FEa` (guide p.194): set the field-data delimiter that brackets ^FN
+/// insertions in ^FD data. Any single byte except the format ('^') and
+/// control ('~') prefixes.
+pub(crate) fn field_delimiter(ctx: &mut ParseContext, params: &[u8]) {
+    let Some(d) = params.split(|&b| b == b',').next() else {
+        ctx.diags
+            .push(Diagnostic::warning("FE", "missing delimiter; ^FE ignored"));
+        return;
+    };
+    if d.len() != 1 || matches!(d[0], b'^' | b'~') {
+        ctx.diags.push(Diagnostic::warning(
+            "FE",
+            format!(
+                "invalid delimiter '{}'; ^FE ignored",
+                String::from_utf8_lossy(d)
+            ),
+        ));
+        return;
+    }
+    ctx.field_delimiter = d[0];
 }
 
 /// `^FHx`: hex escapes in this field's ^FD data use indicator x
@@ -324,7 +478,21 @@ pub(crate) fn field_block(ctx: &mut ParseContext, params: &[u8]) {
     let parts = split_commas(params);
     let width = p_u32(parts.first().copied(), "FB", "width", ctx.diags, 0);
     let max_lines = p_u32(parts.get(1).copied(), "FB", "max lines", ctx.diags, 1);
-    let line_spacing = p_u32(parts.get(2).copied(), "FB", "line spacing", ctx.diags, 0);
+    let line_spacing = match parts.get(2).and_then(|p| to_i64(p)) {
+        Some(v) if (-9999..=9999).contains(&v) => v as i32,
+        _ => {
+            if parts.get(2).is_some_and(|p| !p.is_empty()) {
+                ctx.diags.push(Diagnostic::warning(
+                    "FB",
+                    format!(
+                        "invalid line spacing '{}'; using 0",
+                        String::from_utf8_lossy(parts.get(2).copied().unwrap_or(&[]))
+                    ),
+                ));
+            }
+            0
+        }
+    };
     let justification = parse_justification(parts.get(3).copied().unwrap_or(b""), ctx.diags);
     if let Some(d) = draft_mut(ctx) {
         d.block = Some(TextBlock {

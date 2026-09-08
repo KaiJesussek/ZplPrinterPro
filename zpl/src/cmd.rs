@@ -10,6 +10,7 @@ use crate::memory;
 use crate::scanner::{Cmd, Scanner, Token};
 use crate::state::{FieldDraft, FormatEnd, FormatState, ParseContext, PendingBinary, QueryRequest};
 use crate::textfmt;
+use std::collections::BTreeMap;
 
 /// Command prefix: `^` (format commands) or `~` (printer operations).
 /// Dispatch matches these against the mode's *current* command/tilde
@@ -166,32 +167,52 @@ fn expand_serials(ctx: &mut ParseContext) {
         }
         _ => return,
     };
+    let per_batch = ctx
+        .mode
+        .copies
+        .saturating_div(ctx.mode.replicates.saturating_add(1)) as i64;
     let mut ordinal = 0u8;
     for draft in drafts {
-        let (step, zeros) = match &draft.serial {
-            Some(serial) => (serial.step, serial.zeros),
+        let (step, zeros, mask, incr) = match &draft.serial {
+            Some(serial) => (
+                serial.step,
+                serial.zeros,
+                serial.mask.clone(),
+                serial.incr.clone(),
+            ),
             None => continue,
         };
         // The guide caps indexing at the rightmost 12 integers; an
         // overlength run is not an error - its leading digits stay literal.
-        let counter = ctx.serial_counters.entry(ordinal).or_insert_with(|| {
-            indexed_run(&draft.data)
-                .and_then(|(start, end)| parse_digits(&draft.data[start..end]))
-                .unwrap_or(0)
-        });
-        draft.data = substitute_run(&draft.data, *counter, zeros);
-        // One counter advance per serial printed: with ^PQ r replicates,
-        // each serial prints r+1 times (guide p.324/p.341), so the number
-        // of serials over this batch is copies / (r+1). Integer division
-        // leaves a batch ending mid-replicate unadvanced - the guide's
-        // "when all replicates ... have been printed" has no rule for the
-        // partial case (documented v1 choice).
-        let serials = ctx
-            .mode
-            .copies
-            .saturating_div(ctx.mode.replicates.saturating_add(1));
-        let advance = step.saturating_mul(serials as i64);
-        *counter = counter.saturating_add(advance);
+        // ^SF fields seed the odometer from the mask interpretation.
+        let counter = ctx
+            .serial_counters
+            .entry(ordinal)
+            .or_insert_with(|| match &mask {
+                Some(m) => mask_value(&draft.data, m) as i64,
+                None => indexed_run(&draft.data)
+                    .and_then(|(start, end)| parse_digits(&draft.data[start..end]))
+                    .unwrap_or(0),
+            });
+        if let Some(mask) = mask {
+            // ^SF mask path: the right-aligned mask classes form one mixed-
+            // radix odometer (radix per position, % = width-1 literal). The
+            // odometer value is the counter; the increment string (default
+            // decimal 1) is added per batch of labels, position-weighted in
+            // the aligned class alphabets. Overflow wraps to the class zero
+            // characters (999 -> 000, Z -> A), like ^SN.
+            let value = *counter;
+            let data = core::mem::take(&mut draft.data);
+            let rendered = mask_render(&data, &mask, value as u64);
+            let incr_bytes = incr.as_deref().unwrap_or(b"1");
+            let advance = mask_increment(incr_bytes, &mask, per_batch);
+            *counter = counter.wrapping_add(advance);
+            draft.data = rendered;
+        } else {
+            draft.data = substitute_run(&draft.data, *counter, zeros);
+            let advance = step.saturating_mul(per_batch);
+            *counter = counter.saturating_add(advance);
+        }
         // Saturated, never wrapped: far beyond the guide's 100-150-field
         // limit, later serials would share a counter instead of panicking.
         ordinal = ordinal.saturating_add(1);
@@ -270,13 +291,208 @@ fn substitute_run(data: &[u8], value: i64, zeros: bool) -> Vec<u8> {
     out
 }
 
+/// ^SF class tables: (radix, zero char, alphabet) per mask byte. `%` marks
+/// a literal position (radix 1, value always 0, char keeps the data byte).
+fn sf_class(mask: u8) -> (u64, u8, &'static [u8]) {
+    match mask {
+        b'D' | b'd' => (10, b'0', b"0123456789"),
+        b'H' | b'h' => (16, b'0', b"0123456789ABCDEF"),
+        b'O' | b'o' => (8, b'0', b"01234567"),
+        b'A' => (26, b'A', b"ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+        b'a' => (26, b'a', b"abcdefghijklmnopqrstuvwxyz"),
+        b'N' => (36, b'0', b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+        b'n' => (36, b'0', b"0123456789abcdefghijklmnopqrstuvwxyz"),
+        _ => (1, b'%', b""), // %
+    }
+}
+
+/// Digit value of `ch` in `alphabet`; chars outside the alphabet count as
+/// zero (the guide: "Invalid characters ... are assumed to be equal to a
+/// value of zero").
+fn sf_digit(ch: u8, alphabet: &[u8]) -> u64 {
+    alphabet.iter().position(|&a| a == ch).unwrap_or(0) as u64
+}
+
+/// Interpret the right-aligned mask over `data` as an odometer value:
+/// `data`'s last mask.len() bytes, each position's char valued in its
+/// class alphabet, weighted by the product of the radices to its right.
+fn mask_value(data: &[u8], mask: &[u8]) -> u64 {
+    let mut value = 0u64;
+    let mut weight = 1u64;
+    for (i, &m) in mask.iter().rev().enumerate() {
+        let (radix, _, alphabet) = sf_class(m);
+        let ch = data
+            .get(data.len().wrapping_sub(1).wrapping_sub(i))
+            .copied()
+            .unwrap_or(b'0');
+        value = value.wrapping_add(sf_digit(ch, alphabet).wrapping_mul(weight));
+        weight = weight.wrapping_mul(radix);
+    }
+    value
+}
+
+/// Advance value for one batch of labels: the increment string (default
+/// "1") aligned right to the mask, each char valued in the class alphabet
+/// of the aligned position, weighted like the odometer. `%` positions and
+/// chars outside their alphabet contribute zero.
+fn mask_increment(incr: &[u8], mask: &[u8], per_batch: i64) -> i64 {
+    // The documented default - an omitted increment, or a bare "1" - adds
+    // a decimal one to the whole odometer value. Any other increment string
+    // is interpreted position-by-position in the aligned class alphabets
+    // (guide: "to increment an alphabetic character by one the value 'B'
+    // must be in the increment string"; invalid chars count as zero).
+    if incr == b"1" {
+        return per_batch;
+    }
+    let mut add = 0u64;
+    let mut weight = 1u64;
+    for (i, &m) in mask.iter().rev().enumerate() {
+        let (radix, _, alphabet) = sf_class(m);
+        // The increment string is right-aligned to the mask.
+        let ch = incr
+            .get(incr.len().wrapping_sub(1).wrapping_sub(i))
+            .copied()
+            .unwrap_or(b'0');
+        add = add.wrapping_add(sf_digit(ch, alphabet).wrapping_mul(weight));
+        weight = weight.wrapping_mul(radix);
+    }
+    add as i64 * per_batch
+}
+
+/// Render `data` with the odometer read `value` through `mask`: each mask
+/// position prints the class character for its digit (leading data not
+/// covered by the mask stays literal, `%` positions keep their data char).
+fn mask_render(data: &[u8], mask: &[u8], mut value: u64) -> Vec<u8> {
+    let covered = mask.len().min(data.len());
+    let mut out: Vec<u8> = data[..data.len() - covered].to_vec();
+    let mut rest = Vec::with_capacity(covered);
+    for (i, &m) in mask[mask.len() - covered..].iter().rev().enumerate() {
+        let (radix, zero, alphabet) = sf_class(m);
+        if radix == 1 {
+            rest.push(data[data.len() - 1 - i]);
+            continue;
+        }
+        let digit = (value % radix) as usize;
+        let ch = if alphabet.is_empty() {
+            zero
+        } else {
+            alphabet[digit]
+        };
+        rest.push(ch);
+        value /= radix;
+    }
+    rest.reverse();
+    out.extend_from_slice(&rest);
+    out
+}
+
 fn end_field(ctx: &mut ParseContext, _params: &[u8]) {
     // An open field closes into its format. A ^DF download is not touched
     // here: its ^FS is body text and the download ends at ^XZ.
+    insert_field_data(ctx);
+    if ctx.label_reverse {
+        if let FormatState::Field { draft, .. } = &mut ctx.state {
+            draft.reverse = true; // ^LR: implicit ^FR on fields after it
+        }
+    }
     check_barcode_data(ctx);
     check_malformed_utf16(ctx);
     check_malformed_utf8(ctx);
     ctx.state.end_field();
+}
+
+/// `^FE` insertions in the open field's ^FD data: `#n#` replaces with the
+/// whole ^FN n field, `#n,a,x,y#` with the part starting at x (f = from the
+/// start, b = from the end) of length y (guide p.194). Only ^FN fields
+/// already closed in this format are visible; an unknown number substitutes
+/// nothing (the text stays literal).
+fn insert_field_data(ctx: &mut ParseContext) {
+    let delim = ctx.field_delimiter;
+    let (data, numbered) = match &ctx.state {
+        FormatState::Field { draft, fields } => {
+            let mut numbered: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
+            for d in fields.iter() {
+                if let Some(n) = d.field_number {
+                    numbered.insert(n, d.data.clone());
+                }
+            }
+            (draft.data.clone(), numbered)
+        }
+        _ => return,
+    };
+    if !data.contains(&delim) || numbered.is_empty() {
+        return;
+    }
+    // Token scan: a run "<d><d>?..." with digits between delimiter pairs.
+    let mut out = Vec::with_capacity(data.len());
+    let mut i = 0;
+    while i < data.len() {
+        if data[i] == delim {
+            // Find the closing delimiter.
+            if let Some(rel) = data[i + 1..].iter().position(|&b| b == delim) {
+                let inner = &data[i + 1..i + 1 + rel];
+                let after = i + 1 + rel;
+                if let Some(repl) = field_insert(inner, &numbered) {
+                    out.extend_from_slice(&repl);
+                    i = after + 1;
+                    continue;
+                }
+            }
+            out.push(data[i]);
+            i += 1;
+        } else {
+            out.push(data[i]);
+            i += 1;
+        }
+    }
+    if let FormatState::Field { draft, .. } = &mut ctx.state {
+        draft.data = out;
+    }
+}
+
+/// Interpret one `#... #` insertion token: `n` or `n,a,x,y`. Returns the
+/// replacement bytes, or None when the token does not name a known ^FN
+/// field (the literal text is kept).
+fn field_insert(inner: &[u8], numbered: &BTreeMap<u32, Vec<u8>>) -> Option<Vec<u8>> {
+    let mut parts = inner.split(|&b| b == b',');
+    let n = parts.next()?;
+    if n.is_empty() || !n.iter().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let num: u32 = n.iter().fold(0u32, |a, &b| {
+        a.saturating_mul(10).saturating_add((b - b'0') as u32)
+    });
+    let src = numbered.get(&num)?;
+    let mut it = parts;
+    let next = it.next();
+    let (a, x, y) = match next {
+        Some(v) if v == b"f" || v == b"b" => {
+            let x = it.next().and_then(parse_digits);
+            let y = it.next().and_then(parse_digits);
+            (v[0], x, y)
+        }
+        _ => (b'f', Some(1), None),
+    };
+    // 0 and negative offsets are invalid; the insertion is ignored (the
+    // pattern is kept literal when any part is bad).
+    let x = match x {
+        Some(v) if v >= 1 => v as usize,
+        _ => return None,
+    };
+    let y = y.map(|v| v as usize);
+    let take = |s: &[u8]| -> Vec<u8> {
+        if a == b'b' {
+            let x1 = x.min(s.len());
+            let start = s.len() - x1;
+            let n = y.unwrap_or(usize::MAX).min(s.len() - start);
+            s[start..start + n].to_vec()
+        } else {
+            let start = (x - 1).min(s.len());
+            let n = y.unwrap_or(usize::MAX).min(s.len() - start);
+            s[start..start + n].to_vec()
+        }
+    };
+    Some(take(src))
 }
 
 /// A `^CI29`/`^CI30` field whose bytes are malformed UTF-16 (odd length,
@@ -658,6 +874,94 @@ const TABLE: &[CommandSpec] = &[
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: bc::codabar_field,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"BO",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: bc::aztec_o_field,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"BB",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: bc::codablock_field,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"BF",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: bc::micropdf417_field,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"BR",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: bc::databar_field,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"BT",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: bc::tlc39_field,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"BI",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: bc::industrial25_field,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"BJ",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: bc::standard25_field,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"BL",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: bc::logmars_field,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"BP",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: bc::plessey_field,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"BS",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: bc::addon_field,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"BZ",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: bc::postnet_field,
         binary_len: None,
         binary_handler: None,
     },
@@ -1135,6 +1439,70 @@ const TABLE: &[CommandSpec] = &[
         prefix: Prefix::Caret,
         kind: CmdKind::Format,
         handler: textfmt::serial_number,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"FE",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: textfmt::field_delimiter,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"SO",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::clock_set,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"SP",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::print_row,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"SI",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::sensor_config,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"SL",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: config::clock_mode,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"LR",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: textfmt::label_reverse,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"FL",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: textfmt::font_link,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
+        mnemonic: *b"SF",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: textfmt::serialized_field,
         binary_len: None,
         binary_handler: None,
     },
@@ -1687,6 +2055,8 @@ mod tests {
         // An open field as Task 5's ^FO/^FD handlers will leave one.
         ctx.state = FormatState::Field {
             draft: FieldDraft {
+                auto_x: false,
+                auto_y: false,
                 x: 10,
                 y: 20,
                 origin: OriginMode::Dot,

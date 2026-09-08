@@ -1192,3 +1192,138 @@ fn invalid_1d_barcode_data_warns_and_skips() {
         matches!(barcode_field(assert_single_barcode(&label)), Pattern::Bars(b) if b.is_empty())
     );
 }
+
+// --- ^BI / ^BJ / ^BL / ^BP / ^BZ / ^BS -------------------------------------
+// Bar sequence references from zint 2of5.c / plessey.c / postal.c /
+// upcean.c tables (the encoders transcribe those tables; see bc1d.rs).
+
+/// ^BI Industrial 2 of 5: bars carry the data with fixed narrow spaces;
+/// guards wide-narrow-wide / wide-narrow-narrow-wide.
+#[test]
+fn industrial_25_patterns_match_2of5_table() {
+    let label = parse_via("^XA^FO0,0^BY2,3.0^BIN,50^FD12^FS^XZ");
+    let f = assert_single_barcode(&label);
+    let pattern = barcode_field(f);
+    // "12": C25Indust 1 = 3111111311, 2 = 1311111311.
+    // start 2,1,2,1,1,1   1   2   stop 2,1,1,1,2 (markers 2=wide)
+    // wide markers 3 (= 3x module at ratio 3.0), narrow 1
+    let expected = [
+        3, 1, 3, 1, 1, 1, // start
+        3, 1, 1, 1, 1, 1, 1, 1, 3, 1, // '1'
+        1, 1, 3, 1, 1, 1, 1, 1, 3, 1, // '2'
+        3, 1, 1, 1, 3, // stop
+    ];
+    assert_bars(&pattern, 2, &expected);
+}
+
+/// ^BJ Standard 2 of 5: six elements per digit, wide start/stop bars.
+#[test]
+fn standard_25_patterns_match_matrix_table() {
+    let label = parse_via("^XA^FO0,0^BY2,3.0^BJN,50^FD12^FS^XZ");
+    let f = assert_single_barcode(&label);
+    let pattern = barcode_field(f);
+    let expected = [
+        3, 1, 1, 1, 1, 1, // start
+        3, 1, 1, 1, 3, 1, // '1'
+        1, 3, 1, 1, 3, 1, // '2'
+        1, // gap
+        3, 1, 1, 1, 1, // stop
+    ];
+    assert_bars(&pattern, 2, &expected);
+}
+
+/// ^BL LOGMARS: Code 39 with a mandatory Mod-43 check character.
+#[test]
+fn logmars_appends_mod43_check() {
+    // Code 39 alphabet: 0-9 = 0-9, A-Z = 10..35, then "-. $/+%".
+    // "ABC" sums 10+11+12 = 33 -> C39_CHARS[33] = 'X'. The LOGMARS output
+    // must exactly equal a plain Code 39 (^B3) rendering of "ABCX".
+    fn widths(cmd: &str, s: &str) -> Vec<u32> {
+        // ^BL has no check-digit slot (o,h,g only); ^B3 disables its own
+        // Mod-43 option so the baseline encodes exactly the 4 characters.
+        let shape = if cmd == "^BL" {
+            format!("^XA^FO0,0^BY2,3.0{cmd}N,50^FD{s}^FS^XZ")
+        } else {
+            format!("^XA^FO0,0^BY2,3.0{cmd}N,N,50^FD{s}^FS^XZ")
+        };
+        let label = parse_via(&shape);
+        let f = assert_single_barcode(&label);
+        let Pattern::Bars(bars) = barcode_field(f) else {
+            panic!("bars")
+        };
+        bars.iter().map(|b| b.width).collect()
+    }
+    let logmars = widths("^BL", "ABC");
+    let plain = widths("^B3", "ABCX");
+    assert_eq!(logmars, plain, "LOGMARS must append the Mod-43 check");
+    // ...and the parse warns when the data contains a non-Code-39 char.
+    let (_label, diags) = common::parse_one(b"^XA^FO0,0^BY2,3.0^BLN,50^FDABaC^FS^XZ");
+    assert_eq!(diags.items.len(), 1, "non-Code-39 data warns: {diags:?}");
+}
+
+/// ^BP Plessey: start, per-digit pulses, the 4x CRC, and the stop pulse
+/// (fixed 1/3-module widths; the CRC makes "123A" a fixed symbol).
+#[test]
+fn plessey_pulse_pattern_has_crc() {
+    let label = parse_via("^XA^FO0,0^BY2^BPN,N,50^FD7^FS^XZ");
+    let f = assert_single_barcode(&label);
+    let Pattern::Bars(bars) = barcode_field(f) else {
+        panic!("bars")
+    };
+    let els: Vec<u32> = bars.iter().map(|b| b.width / 2).collect();
+    assert_eq!(&els[..8], &[3, 1, 3, 1, 1, 3, 3, 1], "start pulse");
+    // digits: 7 -> PLESSEY[7] = 3,1,3,1,3,1,1,3
+    assert_eq!(&els[8..16], &[3, 1, 3, 1, 3, 1, 1, 3], "'7' pulse");
+    // the CRC block is 16 elements, then the stop pulse
+    assert_eq!(els.len(), 8 + 8 + 16 + 9, "start + digit + CRC + stop");
+    assert_eq!(&els[els.len() - 9..], &[3, 3, 1, 3, 1, 1, 3, 1, 3], "stop");
+    // hex 'G' is rejected
+    let (_label, diags) = common::parse_one(b"^XA^FO0,0^BY2^BPN,N,50^FD12G^FS^XZ");
+    assert!(diags.items.iter().any(|d| d.message.contains("Plessey")));
+}
+
+/// ^BZ POSTNET: 5/9/11-digit ZIP, guard bars, (10 - sum%10)%10 check.
+#[test]
+fn postnet_adds_check_digit_and_guards() {
+    let label = parse_via("^XA^FO0,0^BY2^BZN,40^FD12345^FS^XZ");
+    let f = assert_single_barcode(&label);
+    let Pattern::Bars(bars) = barcode_field(f) else {
+        panic!("bars")
+    };
+    // guard + (digit or space) x 6 (data "12345" + check 5) + guard
+    assert_eq!(bars.len(), 1 + 6 * 10 + 2, "guards and 6 digits");
+    assert!(bars[0].black && bars.last().unwrap().black, "guard bars");
+    // wrong-length data warns
+    let (_label, diags) = common::parse_one(b"^XA^FO0,0^BY2^BZN,40^FD123^FS^XZ");
+    assert!(diags.items.iter().any(|d| d.message.contains("POSTNET")));
+}
+
+/// ^BS UPC/EAN add-on: 2- or 5-digit extension, guard 1,1,2, digit
+/// separators 1,1, GS1 Table 7 digit-set parity.
+#[test]
+fn ean_addon_parity_and_guards() {
+    let label = parse_via("^XA^FO0,0^BY2^BSN,40^FD12^FS^XZ");
+    let f = assert_single_barcode(&label);
+    let Pattern::Bars(bars) = barcode_field(f) else {
+        panic!("bars")
+    };
+    let els: Vec<u32> = bars.iter().map(|b| b.width / 2).collect();
+    // guard 1,1,2 then two digits (4 elements each) with separator 1,1
+    assert_eq!(&els[..3], &[1, 1, 2], "guard");
+    assert_eq!(&els[7..9], &[1, 1], "digit separator");
+    // "12" -> 12 % 4 = 0 -> set A for both digits: 1 = 2,2,2,1 twice
+    assert_eq!(&els[3..7], &[2, 2, 2, 1], "digit 1 (set A)");
+    assert_eq!(&els[9..13], &[2, 1, 2, 2], "digit 2 (set A: 2 = 2,1,2,2)");
+    // 1-digit / 6-digit data warns
+    let (_label, diags) = common::parse_one(b"^XA^FO0,0^BY2^BSN,40^FD1^FS^XZ");
+    assert!(diags.items.iter().any(|d| d.message.contains("add-on")));
+}
+
+fn parse_via(src: &str) -> zpl::ir::Label {
+    let (label, diags) = common::parse_one(src.as_bytes());
+    assert!(
+        !diags.items.iter().any(|d| d.severity == Severity::Warning),
+        "unexpected warnings: {diags:?}"
+    );
+    label
+}

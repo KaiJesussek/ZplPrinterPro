@@ -15,6 +15,18 @@ fn text_field(label: &Label, i: usize) -> &TextField {
     }
 }
 
+fn field_reverse(label: &Label, i: usize) -> bool {
+    match &label.fields[i] {
+        Field::Text(t) => t.reverse,
+        Field::Barcode(_) => false, // barcodes have no reverse flag
+        Field::Box(b) => b.reverse,
+        Field::Graphic(_) => false, // ^GF has no reverse flag
+        Field::Circle(c) => c.reverse,
+        Field::Diagonal(d) => d.reverse,
+        Field::Ellipse(e) => e.reverse,
+    }
+}
+
 #[test]
 fn fo_ft_fd_fs_build_field() {
     let (label, diags) = parse_one(b"^XA^FO100,50^A0N,30,30^FDHello^FS^XZ");
@@ -864,4 +876,184 @@ fn fx_comment_body_ignored() {
     assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
     assert_eq!(label.fields.len(), 1);
     assert_eq!(text_field(&label, 0).data, "real");
+}
+
+// --- ^SF serialized-field mask (guide p.335) ------------------------------
+
+#[test]
+fn sf_mask_serializes_right_aligned_odometer() {
+    // Mask "%%DDDDD" aligned to the ^FD from the right: two literal '%' and
+    // a five-digit decimal odometer. First print shows the starting value,
+    // each later format in the same session advances by one.
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (label, mut ctx) = common::parse_ctx(
+        b"^XA^FO10,10^SF%%DDDDD,1^FDAB00123^FS^XZ",
+        &mut diags,
+        &mut memory,
+    );
+    assert_eq!(ctx.diags.items.len(), 0, "unexpected: {:?}", ctx.diags);
+    assert_eq!(text_field(&label, 0).data, "AB00123");
+
+    // The mask covers the rightmost 7 chars: "00123" (+ "AB") -> the
+    // odometer reads 123 and advances on the next print.
+    let mut scanner = zpl::scanner::Scanner::new(b"^XA^FO10,10^SF%%DDDDD,1^FDAB00123^FS^XZ");
+    zpl::cmd::parse_stream(&mut scanner, &mut ctx);
+    let label2 = ctx.pending_label.take().expect("second format");
+    assert_eq!(ctx.diags.items.len(), 0, "unexpected: {:?}", ctx.diags);
+    assert_eq!(text_field(&label2, 0).data, "AB00124");
+}
+
+#[test]
+fn sf_alnum_and_alpha_classes_carry_like_an_odometer() {
+    // "NNA": the rightmost mask char is the least-significant odometer
+    // position. data "12A" -> d0('A')=0, d1('2')=2, d2('1')=1, weights
+    // 1, 26, 26*36 -> value 988. +1 -> 989 -> 989%26 = 1 = 'B'; carries
+    // leave the N positions at 2,1 -> the second print reads "12B".
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (label, mut ctx) =
+        common::parse_ctx(b"^XA^FO10,10^SFNNA,1^FD12A^FS^XZ", &mut diags, &mut memory);
+    assert_eq!(ctx.diags.items.len(), 0, "unexpected: {:?}", ctx.diags);
+    assert_eq!(text_field(&label, 0).data, "12A");
+
+    let mut scanner = zpl::scanner::Scanner::new(b"^XA^FO10,10^SFNNA,1^FD12A^FS^XZ");
+    zpl::cmd::parse_stream(&mut scanner, &mut ctx);
+    let label2 = ctx.pending_label.take().expect("second format");
+    assert_eq!(ctx.diags.items.len(), 0, "unexpected: {:?}", ctx.diags);
+    assert_eq!(
+        text_field(&label2, 0).data,
+        "12B",
+        "rightmost alpha carries"
+    );
+}
+
+#[test]
+fn sf_alpha_wraps_to_class_zero() {
+    // "A" alone with value "Z" + one -> wraps to "A" (class zero).
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (label, mut ctx) =
+        common::parse_ctx(b"^XA^FO10,10^SFA,1^FDZ^FS^XZ", &mut diags, &mut memory);
+    assert_eq!(ctx.diags.items.len(), 0, "unexpected: {:?}", ctx.diags);
+    assert_eq!(text_field(&label, 0).data, "Z");
+    let mut scanner = zpl::scanner::Scanner::new(b"^XA^FO10,10^SFA,1^FDZ^FS^XZ");
+    zpl::cmd::parse_stream(&mut scanner, &mut ctx);
+    let label2 = ctx.pending_label.take().expect("second format");
+    assert_eq!(text_field(&label2, 0).data, "A", "Z+1 wraps to A");
+}
+
+#[test]
+fn sf_invalid_mask_warns_and_default_increment_is_one() {
+    // 'X' is not a mask class -> the ^SF is ignored with a warning.
+    let (label, diags) = parse_one(b"^XA^FO10,10^SFXXD,1^FD001^FS^XZ");
+    assert_eq!(diags.items.len(), 1, "invalid mask must warn: {diags:?}");
+    // Field data is still produced verbatim (the serialization is skipped).
+    assert_eq!(text_field(&label, 0).data, "001");
+}
+
+// --- ^FE field-data insertion, ^FL, ^LR (guide p.194/195/295) ---------------
+
+#[test]
+fn fe_inserts_fn_fields_into_fd() {
+    // The guide's own example (p.194): #n# inserts the whole ^FN field,
+    // and only ^FN fields already closed in the format are visible.
+    let (label, diags) = parse_one(
+        b"^XA^FO10,10^FN2^FDField FN 2 Data^FS^FN3^FDField FN 3 Data^FS^FE#^FO10,20^FD#2# and then #3#^FS^XZ",
+    );
+    assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
+    let inserted = text_field(&label, 2).data.clone();
+    assert_eq!(inserted, "Field FN 2 Data and then Field FN 3 Data");
+}
+
+#[test]
+fn fe_forward_and_backward_slices() {
+    // #n,f,x,y# = x chars in from the start; #n,b,x,y# = x chars in from
+    // the end (1 = the last char), y chars taken; a y overrun takes
+    // everything from the start to the end (guide p.195).
+    let (label, diags) = parse_one(
+        b"^XA^FO10,10^FN1^FD1234567890^FS^FE#^FO10,20^FD#1,f,3,4#-#1,b,2,4#-#1,f,8,99#^FS^XZ",
+    );
+    assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
+    let out = text_field(&label, 1).data.clone();
+    // f,3,4 = "3456"; b,2,4: 2nd-from-last onward = "90" only (overrun);
+    // f,8,99 = "890" (overrun to the end).
+    assert_eq!(out, "3456-90-890");
+}
+
+#[test]
+fn fe_unknown_number_stays_literal_and_bad_delimiter_warns() {
+    // #9# is not defined: the token stays literal.
+    let (label, diags) = parse_one(b"^XA^FO10,10^FN1^FDabc^FS^FE#^FO10,20^FD#9#^FS^XZ");
+    assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
+    assert_eq!(text_field(&label, 1).data, "#9#");
+
+    // '~' is reserved as the control prefix: ^FE~ lexes as ^FE (no param
+    // -> empty-delimiter warning) plus a dangling ~ token (unknown-command
+    // warning). The delimiter stays '#', so the default substitution still
+    // happens; nothing crashes on the reserved byte.
+    let (label, diags) = parse_one(b"^XA^FO10,10^FN1^FDabc^FS^FE~^FO10,20^FD#1#^FS^XZ");
+    assert_eq!(
+        diags.items.len(),
+        2,
+        "rejected delimiter must warn: {diags:?}"
+    );
+    assert_eq!(text_field(&label, 1).data, "abc");
+}
+
+#[test]
+fn lr_reverses_only_fields_after_it() {
+    // ^LRN then ^LRY: the first field closes under N (normal), the second
+    // under Y (the draft's reverse flag is set, like an implicit ^FR).
+    let (label, diags) = parse_one(b"^XA^FO10,10^FDbefore^FS^LRN^FO10,30^FDon^FS^XZ");
+    assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
+    assert!(!field_reverse(&label, 0), "before ^LRY prints normal");
+    let (label, diags) = parse_one(b"^XA^FO10,10^FDbefore^FS^LRY^FO10,30^FDon^FS^XZ");
+    assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
+    assert!(!field_reverse(&label, 0), "field before ^LRY stays normal");
+    assert!(field_reverse(&label, 1), "field after ^LRY reverses");
+    // Bad value -> warning + N.
+    let (label, diags) = parse_one(b"^XA^LRQ^FO10,10^FDx^FS^XZ");
+    assert_eq!(diags.items.len(), 1, "invalid ^LR must warn: {diags:?}");
+    assert!(!field_reverse(&label, 0));
+}
+
+#[test]
+fn fl_validates_and_records_font_links_in_config() {
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let (_label, ctx) = common::parse_ctx(
+        b"^XA^FLE:SWISS721.TTF,0.FNT,1^FS^FL*.TTF,Arial.TTE,0^XZ",
+        &mut diags,
+        &mut memory,
+    );
+    assert_eq!(ctx.diags.items.len(), 0, "unexpected: {:?}", ctx.diags);
+    assert_eq!(ctx.config.font_links.len(), 2);
+    assert_eq!(
+        ctx.config.font_links[0],
+        (b"E:SWISS721.TTF".to_vec(), b"0.FNT".to_vec(), 1)
+    );
+    // Bad link value -> warning, nothing stored.
+    let mut diags = Diagnostics::default();
+    let (_label, ctx) = common::parse_ctx(b"^XA^FLE:A.TTF,0.FNT,7^FS^XZ", &mut diags, &mut memory);
+    assert_eq!(
+        ctx.diags.items.len(),
+        1,
+        "invalid link must warn: {:?}",
+        ctx.diags
+    );
+    assert!(ctx.config.font_links.is_empty());
+}
+
+#[test]
+fn hardware_stores_validate_ranges() {
+    // ^SO clock 2-3 and offsets -32000..32000; ^SP row 0..32000;
+    // ^SI setting 1-2 value 0..196; ^SL mode S/T/1-999.
+    let src = b"^XA^SO2,1,-2,3^FS^SP500^SI1,50^SLT,1^FS^XZ";
+    let (_label, diags) = parse_one(src);
+    assert_eq!(diags.items.len(), 0, "unexpected diagnostics: {diags:?}");
+    // Out of range -> warnings, no panic.
+    let src = b"^XA^SO5^FS^SP99999^SI1,300^SL0^FS^XZ";
+    let (_label, diags) = parse_one(src);
+    assert_eq!(diags.items.len(), 4, "each bad range must warn: {diags:?}");
 }

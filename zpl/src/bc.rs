@@ -67,7 +67,13 @@ pub fn encode(
         b'A' => bc1d::code93(data, module),
         b'E' => bc1d::ean13(data, module),
         b'K' => bc1d::codabar(data, module, ratio),
+        b'L' => bc1d::code39(data, module, ratio),
         b'M' => bc1d::msi(data, module, ratio),
+        b'P' => bc1d::plessey(data, module),
+        b'I' => bc1d::industrial25(data, module, ratio),
+        b'J' => bc1d::standard25(data, module, ratio),
+        b'Z' => bc1d::postnet(data, module, height),
+        b'S' => bc1d::ean_addon(data, module),
         b'U' => bc1d::upca(data, module),
         _ => Err(format!("unsupported symbology '{}'", symbology as char)),
     }
@@ -450,6 +456,10 @@ struct Spec {
     line: (usize, u8),
     /// `g` (line above) position.
     above: usize,
+    /// `g` default for the line-above control (the guide defaults it to N
+    /// everywhere except ^BS, where the add-on's interpretation line is
+    /// above by default).
+    above_default: u8,
     /// ^BK k/l start/stop positions.
     start: Option<usize>,
     stop: Option<usize>,
@@ -477,6 +487,7 @@ const SPEC_B1: Spec = Spec {
     check: Some((Check::DigitCount, 1)),
     height: (2, 32000),
     line: (3, b'Y'),
+    above_default: b'N',
     above: 4,
     start: None,
     stop: None,
@@ -485,6 +496,7 @@ const SPEC_B2: Spec = Spec {
     check: Some((Check::Ucc, 4)),
     height: (1, 32000),
     line: (2, b'Y'),
+    above_default: b'N',
     above: 3,
     start: None,
     stop: None,
@@ -493,6 +505,7 @@ const SPEC_B3: Spec = Spec {
     check: Some((Check::Mod43, 1)),
     height: (2, 32000),
     line: (3, b'Y'),
+    above_default: b'N',
     above: 4,
     start: None,
     stop: None,
@@ -501,6 +514,7 @@ const SPEC_B5: Spec = Spec {
     check: None,
     height: (1, 9999),
     line: (2, b'N'),
+    above_default: b'N',
     above: 3,
     start: None,
     stop: None,
@@ -509,6 +523,7 @@ const SPEC_B8: Spec = Spec {
     check: None,
     height: (1, 32000),
     line: (2, b'Y'),
+    above_default: b'N',
     above: 3,
     start: None,
     stop: None,
@@ -517,6 +532,7 @@ const SPEC_B9: Spec = Spec {
     check: Some((Check::PrintDigit(b'Y'), 4)),
     height: (1, 32000),
     line: (2, b'Y'),
+    above_default: b'N',
     above: 3,
     start: None,
     stop: None,
@@ -525,6 +541,7 @@ const SPEC_BA: Spec = Spec {
     check: Some((Check::PrintDigit(b'N'), 4)),
     height: (1, 32000),
     line: (2, b'Y'),
+    above_default: b'N',
     above: 3,
     start: None,
     stop: None,
@@ -533,6 +550,7 @@ const SPEC_BK: Spec = Spec {
     check: Some((Check::FixedN, 1)),
     height: (2, 32000),
     line: (3, b'Y'),
+    above_default: b'N',
     above: 4,
     start: Some(5),
     stop: Some(6),
@@ -541,6 +559,7 @@ const SPEC_BE: Spec = Spec {
     check: None,
     height: (1, 32000),
     line: (2, b'Y'),
+    above_default: b'N',
     above: 3,
     start: None,
     stop: None,
@@ -549,6 +568,7 @@ const SPEC_BU: Spec = Spec {
     check: Some((Check::PrintDigit(b'Y'), 4)),
     height: (1, 9999),
     line: (2, b'Y'),
+    above_default: b'N',
     above: 3,
     start: None,
     stop: None,
@@ -557,7 +577,56 @@ const SPEC_BM: Spec = Spec {
     check: Some((Check::Mode, 1)),
     height: (2, 32000),
     line: (3, b'Y'),
+    above_default: b'N',
     above: 4,
+    start: None,
+    stop: None,
+};
+const SPEC_BI: Spec = Spec {
+    check: None,
+    height: (1, 32000),
+    line: (2, b'Y'),
+    above_default: b'N',
+    above: 3,
+    start: None,
+    stop: None,
+};
+const SPEC_BJ: Spec = Spec {
+    check: None,
+    height: (1, 32000),
+    line: (2, b'Y'),
+    above_default: b'N',
+    above: 3,
+    start: None,
+    stop: None,
+};
+// ^BL o,h,g: only the g (line above) exists; the below-line default is N.
+const SPEC_BL: Spec = Spec {
+    check: None,
+    height: (1, 32000),
+    line: (3, b'N'),
+    above_default: b'N',
+    above: 2,
+    start: None,
+    stop: None,
+};
+// ^BP o,e,h,f,g: e = print check digit (the CRC is inherent to the bars).
+const SPEC_BP: Spec = Spec {
+    check: Some((Check::PrintDigit(b'Y'), 1)),
+    height: (3, 32000),
+    line: (4, b'Y'),
+    above_default: b'N',
+    above: 5,
+    start: None,
+    stop: None,
+};
+// ^BS o,h,f,g: guide defaults f=Y, g=Y (the add-on's line is above).
+const SPEC_BS: Spec = Spec {
+    check: None,
+    height: (1, 32000),
+    line: (2, b'Y'),
+    above_default: b'Y',
+    above: 3,
     start: None,
     stop: None,
 };
@@ -594,6 +663,7 @@ pub(crate) fn barcode_digit(ctx: &mut ParseContext, params: &[u8]) {
         b'9' => barcode_1d(ctx, rest, "B9", b'9', SPEC_B9),
         b'0' => aztec_field(ctx, rest),
         b'7' => pdf417_field(ctx, rest),
+        b'4' => unsupported_symbology(ctx, "B4", "Code 49"),
         _ => {
             // ^B0 Aztec, ^B4 Code 49, ^B6, ^B7 PDF417: 2D or stacked
             // symbologies outside the 1D scope (Task 16 owns the 2D
@@ -701,7 +771,7 @@ pub(crate) fn qr_field(ctx: &mut ParseContext, params: &[u8]) {
         ctx.diags,
         1,
         100,
-        ctx.mode.by_module,
+        2, // guide p.128: 2 on 200-dpi printers (3 on 300, 6 on 600)
     );
     let ec = match parts.get(3).and_then(|p| p.first()).copied() {
         Some(c @ (b'H' | b'Q' | b'M' | b'L')) => c,
@@ -717,9 +787,9 @@ pub(crate) fn qr_field(ctx: &mut ParseContext, params: &[u8]) {
             b'Q'
         }
     };
-    // Mask default 0 - the reference fixes mask 0 (measured corpus
-    // 11/16), not the guide's 7.
-    let mask = u32_in(parts.get(4).copied(), "BQ", "mask", ctx.diags, 0, 7, 0) as u8;
+    // Mask default 7 per the guide (p.128 "e = mask value ... Default: 7");
+    // any mask decodes, so the doc value is harmless and normative.
+    let mask = u32_in(parts.get(4).copied(), "BQ", "mask", ctx.diags, 0, 7, 7) as u8;
     finish_2d(
         ctx,
         b'Q',
@@ -764,8 +834,16 @@ pub(crate) fn datamatrix_field(ctx: &mut ParseContext, params: &[u8]) {
         32000,
         0,
     );
+    // guide p.144: quality accepts 0, 50, 80, 100, 140, 200 only.
     let quality = u32_in(parts.get(2).copied(), "BX", "quality", ctx.diags, 0, 200, 0);
-    if matches!(quality, 50 | 80 | 100 | 140) {
+    if !matches!(quality, 0 | 50 | 80 | 100 | 140 | 200) {
+        ctx.diags.push(Diagnostic::warning(
+            "BX",
+            format!(
+                "DataMatrix quality {quality} is not an ECC level (0, 50, 80, 100, 140, 200); encoding ECC 200"
+            ),
+        ));
+    } else if matches!(quality, 50 | 80 | 100 | 140) {
         ctx.diags.push(Diagnostic::warning(
             "BX",
             format!(
@@ -1025,7 +1103,7 @@ fn barcode_1d(ctx: &mut ParseContext, params: &[u8], cmd: &str, symbology: u8, s
         cmd,
         "line above code",
         ctx.diags,
-        b'N',
+        spec.above_default,
     ) == b'Y';
     let mut check = b'N';
     let mut ucc = false;
@@ -1163,4 +1241,135 @@ pub(crate) fn upca_field(ctx: &mut ParseContext, params: &[u8]) {
 }
 pub(crate) fn msi_field(ctx: &mut ParseContext, params: &[u8]) {
     barcode_1d(ctx, params, "BM", b'M', SPEC_BM);
+}
+pub(crate) fn industrial25_field(ctx: &mut ParseContext, params: &[u8]) {
+    barcode_1d(ctx, params, "BI", b'I', SPEC_BI);
+}
+pub(crate) fn standard25_field(ctx: &mut ParseContext, params: &[u8]) {
+    barcode_1d(ctx, params, "BJ", b'J', SPEC_BJ);
+}
+pub(crate) fn logmars_field(ctx: &mut ParseContext, params: &[u8]) {
+    barcode_1d(ctx, params, "BL", b'L', SPEC_BL);
+}
+pub(crate) fn plessey_field(ctx: &mut ParseContext, params: &[u8]) {
+    barcode_1d(ctx, params, "BP", b'P', SPEC_BP);
+}
+pub(crate) fn addon_field(ctx: &mut ParseContext, params: &[u8]) {
+    barcode_1d(ctx, params, "BS", b'S', SPEC_BS);
+}
+
+/// ^BZ o,h,f,g,t: POSTNET (t = 0). Other postal types warn and fall back.
+pub(crate) fn postnet_field(ctx: &mut ParseContext, params: &[u8]) {
+    let parts = split_commas(params);
+    let rotation = match parts.first().copied() {
+        Some([]) => None,
+        Some(o) => match parse_rotation(o) {
+            Some(r) => Some(r),
+            None => {
+                warn_invalid("BZ", "orientation", o, ctx.diags);
+                None
+            }
+        },
+        None => None,
+    };
+    let height = u32_in(
+        parts.get(1).copied(),
+        "BZ",
+        "height",
+        ctx.diags,
+        1,
+        32000,
+        ctx.mode.by_height,
+    );
+    let line = yn(
+        parts.get(2).copied(),
+        "BZ",
+        "interpretation line",
+        ctx.diags,
+        b'N',
+    );
+    let interpret = yn(
+        parts.get(3).copied(),
+        "BZ",
+        "line above code",
+        ctx.diags,
+        b'N',
+    ) == b'Y';
+    let kind = u32_in(
+        parts.get(4).copied(),
+        "BZ",
+        "postal code type",
+        ctx.diags,
+        0,
+        5,
+        0,
+    );
+    if kind != 0 {
+        ctx.diags.push(Diagnostic::warning(
+            "BZ",
+            format!("postal code type {kind} is not implemented; encoding POSTNET"),
+        ));
+    }
+    let module = ctx.mode.by_module;
+    let ratio = ctx.mode.by_ratio;
+    let Some(d) = draft_mut(ctx) else {
+        return;
+    };
+    d.barcode = Some(BarcodeDraft {
+        symbology: b'Z',
+        module,
+        ratio,
+        height,
+        line,
+        interpret,
+        ucc: false,
+        model: b'N',
+        check: b'N',
+        start: b'A',
+        stop: b'A',
+        qr_ec: b'Q',
+        qr_mask: 7,
+        dm_quality: 0,
+        dm_format: 6,
+        dm_aspect: 1,
+        az_level: 0,
+        az_menu: false,
+        az_append: 1,
+        pdf_security: 0,
+        pdf_cols: 0,
+        pdf_rows: 0,
+        pdf_truncate: false,
+        md_mode: 2,
+        md_mag: 1,
+    });
+    if let Some(r) = rotation {
+        d.rotation = r;
+    }
+}
+
+/// ^BO: the letter-O alias of ^B0 (Aztec). Same option layout.
+pub(crate) fn aztec_o_field(ctx: &mut ParseContext, params: &[u8]) {
+    aztec_field(ctx, params);
+}
+
+/// Family diagnostics for the multi-row/2D symbologies this build does not
+/// render yet: a clear named warning beats the generic unknown command.
+fn unsupported_symbology(ctx: &mut ParseContext, mnemonic: &str, name: &str) {
+    ctx.diags.push(Diagnostic::warning(
+        mnemonic,
+        format!("{name} ({mnemonic}) is not implemented by this build; field skipped"),
+    ));
+}
+
+pub(crate) fn codablock_field(ctx: &mut ParseContext, _params: &[u8]) {
+    unsupported_symbology(ctx, "BB", "Codablock");
+}
+pub(crate) fn micropdf417_field(ctx: &mut ParseContext, _params: &[u8]) {
+    unsupported_symbology(ctx, "BF", "MicroPDF417");
+}
+pub(crate) fn databar_field(ctx: &mut ParseContext, _params: &[u8]) {
+    unsupported_symbology(ctx, "BR", "Codablock F");
+}
+pub(crate) fn tlc39_field(ctx: &mut ParseContext, _params: &[u8]) {
+    unsupported_symbology(ctx, "BT", "TLC39");
 }

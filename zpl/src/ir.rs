@@ -50,6 +50,10 @@ pub enum OriginMode {
 /// A text field (`^FO`/`^FT` origin + `^FD` data).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct TextField {
+    /// `^FT` blank arguments: resolve x (y) at render time to "the
+    /// position after the last formatted text field" (guide p.205).
+    pub auto_x: bool,
+    pub auto_y: bool,
     pub x: u32,
     pub y: u32,
     pub origin: OriginMode,
@@ -78,7 +82,9 @@ pub struct TextField {
 pub struct TextBlock {
     pub width: u32,
     pub max_lines: u32,
-    pub line_spacing: u32,
+    /// ^FB c: extra space between lines, signed (-9999..9999 per guide
+    /// p.186; negative tightens).
+    pub line_spacing: i32,
     pub justification: Justification,
     /// True for a `^FB` block (guide p.186 width rule: "If the value is
     /// less than the font width or not specified, the text does not
@@ -293,6 +299,8 @@ mod tests {
             numbered: BTreeMap::new(),
             fields: vec![
                 Field::Text(TextField {
+                    auto_x: false,
+                    auto_y: false,
                     x: 10,
                     y: 20,
                     origin: OriginMode::Dot,
@@ -314,6 +322,8 @@ mod tests {
                     re_eval: true,
                 }),
                 Field::Text(TextField {
+                    auto_x: false,
+                    auto_y: false,
                     x: 10,
                     y: 60,
                     origin: OriginMode::Block,

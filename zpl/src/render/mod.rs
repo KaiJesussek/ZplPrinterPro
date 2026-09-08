@@ -187,12 +187,29 @@ pub fn render(label: &Label, opts: &RenderOptions) -> Result<RenderOutcome, Rend
     let mut bmp = Bitmap::new(w as u32, h as u32);
     let mut warnings = Vec::new();
 
+    // ^FT auto-origin ("position after the last formatted text field",
+    // guide p.205): the runner advances past every painted text field.
+    let mut flow: Option<(i64, i64)> = None;
     for field in &label.fields {
         match field {
             Field::Text(t) => {
-                let spec = field_font_spec(t);
+                let mut resolved = t.clone();
+                if let Some((fx, fy)) = flow {
+                    if t.auto_x {
+                        resolved.x = fx.max(0) as u32;
+                    }
+                    if t.auto_y {
+                        resolved.y = fy.max(0) as u32;
+                    }
+                }
+                let spec = field_font_spec(&resolved);
                 match resolve_font(&spec, opts) {
-                    Some(fd) => text::paint_text(&mut bmp, t, &fd, opts, &mut warnings),
+                    Some(fd) => {
+                        text::paint_text(&mut bmp, &resolved, &fd, opts, &mut warnings);
+                        if let Some(w) = text::text_width(&resolved, opts) {
+                            flow = Some((resolved.x as i64 + w as i64, resolved.y as i64));
+                        }
+                    }
                     None => warnings.push(format!(
                         "font unavailable for text field ({spec:?}); field skipped"
                     )),

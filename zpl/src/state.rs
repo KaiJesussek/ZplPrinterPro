@@ -135,6 +135,9 @@ pub struct PrinterConfig {
     /// `^MU` units letter: D dots / I inches / M millimeters (power-up D).
     /// Field-by-field meaning; Task 13 scales field coordinates by it.
     pub units: u8,
+    /// `^FL` font links: (extension file, base file, 1 = link / 0 = unlink).
+    /// Validated and recorded; the renderer has no TTF rasterization.
+    pub font_links: Vec<(Vec<u8>, Vec<u8>, u8)>,
     /// `^SZ` ZPL mode: 1 = ZPL, 2 = ZPL II (power-up 2). Mode 1 selects the
     /// legacy ZPL language, which this project deliberately does not
     /// implement (the plan drops ZPL I); the value is recorded anyway.
@@ -148,6 +151,7 @@ impl Default for PrinterConfig {
             media_tracking: 0,
             units: b'D',
             zpl_mode: 2,
+            font_links: Vec::new(),
         }
     }
 }
@@ -252,6 +256,10 @@ pub struct FieldDraft {
     pub origin: OriginMode,
     pub rotation: Rotation,
     pub reverse: bool,
+    /// `^FT` blank arguments: x/y default to "the position after the last
+    /// formatted text field" (guide p.205), resolved at render time.
+    pub auto_x: bool,
+    pub auto_y: bool,
     pub font: [u8; 2],
     /// `^A` character height in dots; 0 = standard font matrix.
     pub font_height: u32,
@@ -304,8 +312,14 @@ pub struct FieldDraft {
 /// counter's current value at ^XZ.
 #[derive(Debug, Clone)]
 pub struct SerialSetting {
+    /// ^SN step (may be negative) / ^SF increment string (parsed later).
     pub step: i64,
+    /// ^SN z = leading zeros.
     pub zeros: bool,
+    /// ^SF mask string (right-aligned to the ^FD chars), when set.
+    pub mask: Option<Vec<u8>>,
+    /// ^SF increment string (defaults to "1" = decimal one).
+    pub incr: Option<Vec<u8>>,
 }
 
 /// A pending `^IS` image-save request, recorded by `memory::image_save` and
@@ -440,6 +454,8 @@ impl FieldDraft {
             origin: OriginMode::Block,
             rotation: mode.fw_rotation,
             reverse: false,
+            auto_x: false,
+            auto_y: false,
             font: mode.default_font,
             font_height: mode.default_font_h,
             font_width: mode.default_font_w,
@@ -589,6 +605,8 @@ impl FieldDraft {
                     rotation: self.rotation,
                 }),
                 None => Field::Text(TextField {
+                    auto_x: self.auto_x,
+                    auto_y: self.auto_y,
                     x: self.x,
                     y: self.y,
                     origin: self.origin,
@@ -691,6 +709,12 @@ pub struct ParseContext<'a> {
     /// Active ^XF stored-format recall depth (recursion cap 4; see
     /// memory.rs `recall_format`).
     pub recall_depth: u32,
+    /// ^FE field-data delimiter (guide p.194): the character that brackets
+    /// ^FN insertions written in ^FD data. Default '#'.
+    pub field_delimiter: u8,
+    /// ^LR reverse-print-all: fields closed while set print in reverse
+    /// video (only fields following the ^LR are affected).
+    pub label_reverse: bool,
     /// `^SN` serial counters, keyed by the field's ordinal among serialized
     /// fields in its format, in the same order as the drafts at ^XZ. The
     /// server persists these across sessions (Task 21).
@@ -736,6 +760,8 @@ impl<'a> ParseContext<'a> {
             config: PrinterConfig::default(),
             pending_label: None,
             recall_depth: 0,
+            field_delimiter: b'#',
+            label_reverse: false,
             serial_counters: BTreeMap::new(),
             queries: Vec::new(),
             token_start: 0,

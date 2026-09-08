@@ -427,6 +427,71 @@ pub(crate) fn media_tracking(ctx: &mut ParseContext, params: &[u8]) {
     );
 }
 
+/// `^SOa,b,c,d,e,f,g` (guide p.343): set/reset RTC clock offsets. a = the
+/// clock (2 secondary / 3 third), b-g = month/day/year/hour/minute offsets
+/// (-32000..32000). Hardware-only: validated and recorded, no image effect.
+pub(crate) fn clock_set(ctx: &mut ParseContext, params: &[u8]) {
+    let parts = split_commas(params);
+    check_num(parts.first().copied(), "SO", "clock", ctx.diags, 2, 3);
+    for (i, what) in [
+        "months offset",
+        "days offset",
+        "years offset",
+        "hours offset",
+        "minutes offset",
+        "seconds offset",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let _ = i32_in(
+            parts.get(i + 1).copied(),
+            "SO",
+            what,
+            ctx.diags,
+            -32000,
+            32000,
+            0,
+        );
+    }
+}
+
+/// `^SPa` (guide p.344): dot row at which to start printing (0..32000).
+/// Hardware-only: validated and recorded, no image effect.
+pub(crate) fn print_row(ctx: &mut ParseContext, params: &[u8]) {
+    let _ = u32_in(
+        split_commas(params).first().copied(),
+        "SP",
+        "dot row",
+        ctx.diags,
+        0,
+        32000,
+        0,
+    );
+}
+
+/// `^SIa,b` (guide p.343): sensor configuration - a = 1 transmissive
+/// brightness / 2 transmissive baseline, b = value 0..196. Hardware-only:
+/// validated and recorded, no image effect.
+pub(crate) fn sensor_config(ctx: &mut ParseContext, params: &[u8]) {
+    let parts = split_commas(params);
+    check_num(parts.first().copied(), "SI", "setting", ctx.diags, 1, 2);
+    let _ = u32_in(parts.get(1).copied(), "SI", "value", ctx.diags, 0, 196, 0);
+}
+
+/// `^SLa,b` (guide p.346): RTC date/time format mode. a = S (start time) /
+/// T (time now) / 1..999 (accuracy tolerance, enhanced RTC); b = date
+/// language. Hardware-only: validated and recorded, no image effect.
+pub(crate) fn clock_mode(ctx: &mut ParseContext, params: &[u8]) {
+    let parts = split_commas(params);
+    let a = parts.first().copied().unwrap_or(&[]);
+    if matches!(a, b"S" | b"T") {
+        return;
+    }
+    let _ = u32_in(Some(a), "SL", "mode", ctx.diags, 1, 999, 0);
+    let _ = u32_in(parts.get(1).copied(), "SL", "language", ctx.diags, 0, 26, 0);
+}
+
 /// `^MTa`: media type - T thermal transfer / D direct thermal. Validated,
 /// not stored.
 pub(crate) fn media_type(ctx: &mut ParseContext, params: &[u8]) {

@@ -625,6 +625,57 @@ fn col_clusters(bmp: &Bitmap, rows: core::ops::Range<u32>) -> Vec<(u32, u32)> {
     clusters
 }
 
+#[test]
+fn ft_blank_args_flow_after_last_formatted_text() {
+    // ^FT with blank x/y resolves to "the position after the last
+    // formatted text field" (guide p.205): the second field inherits its
+    // x from the first field's right edge at render time. "MM" then "N":
+    // the N glyph must not paint anywhere left of the M's right edge.
+    // The blank-x ^FT keeps y explicit (a blank y at Dot origin would
+    // hang the glyph off-label); only x flows.
+    let out = render_text(b"^XA^PW200^LL40^FT10,30^A0N,20,20^FDMM^FS^FT,30^A0N,20,20^FDN^FS^XZ");
+    let bmp = &out.bitmap;
+    let cols: Vec<u32> = (0..bmp.width)
+        .filter(|&x| (0..bmp.height).any(|y| bmp.get(x, y)))
+        .collect();
+    // The M's span columns 11-39; the flowed N must extend past 39.
+    assert!(
+        *cols.last().unwrap() > 39,
+        "the flowed N must paint right of the first field (last ink col {:?})",
+        cols.last()
+    );
+    // The explicit origin stays 10,30-ish: ink starts near column 10.
+    assert!(
+        *cols.first().unwrap() <= 12,
+        "first field at its ^FT origin"
+    );
+    // And the flow chain resolves at IR level: the auto flag is set.
+    let (label, _diags) =
+        common::parse_one(b"^XA^PW200^LL40^FT10,30^A0N,20,20^FDMM^FS^FT,30^A0N,20,20^FDN^FS^XZ");
+    if let zpl::ir::Field::Text(t) = &label.fields[1] {
+        assert!(t.auto_x && !t.auto_y, "blank x marks auto_x only");
+    } else {
+        panic!("second field is text");
+    }
+}
+
+#[test]
+fn fo_blank_arguments_reset_to_zero() {
+    // ^FO's x/y default is 0 (guide p.201): a blank ^FO must not carry a
+    // previous origin forward. Both fields print from column 0.
+    let out = render_text(b"^XA^PW120^LL40^FO100,10^A0N,20,20^FDM^FS^FO^A0N,20,20^FDM^FS^XZ");
+    let bmp = &out.bitmap;
+    let mut cols: Vec<u32> = (0..bmp.width)
+        .filter(|&x| (0..bmp.height).any(|y| bmp.get(x, y)))
+        .collect();
+    cols.dedup();
+    assert!(
+        cols.first().copied().unwrap_or(0) <= 12,
+        "blank ^FO must reset to 0 (ink starts at column {:?})",
+        cols.first()
+    );
+}
+
 /// First row (within the given range) that has any black pixel.
 fn first_ink_row(bmp: &Bitmap, mut rows: core::ops::Range<u32>) -> Option<u32> {
     rows.find(|&y| (0..bmp.width).any(|x| bmp.get(x, y)))
