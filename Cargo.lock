@@ -1428,7 +1428,7 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zpl"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "ab_glyph",
  "encoding_rs",
@@ -1443,7 +1443,7 @@ dependencies = [
 
 [[package]]
 name = "zpl-server"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "axum",
  "eventlog",
