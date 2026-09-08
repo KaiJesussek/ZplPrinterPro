@@ -460,6 +460,7 @@ impl FieldDraft {
                 } => Field::Box(BoxField {
                     x: self.x,
                     y: self.y,
+                    origin: self.origin,
                     width,
                     height,
                     thickness,
@@ -473,6 +474,7 @@ impl FieldDraft {
                 } => Field::Circle(CircleField {
                     x: self.x,
                     y: self.y,
+                    origin: self.origin,
                     diameter,
                     thickness,
                     color,
@@ -487,6 +489,7 @@ impl FieldDraft {
                 } => Field::Diagonal(DiagonalField {
                     x: self.x,
                     y: self.y,
+                    origin: self.origin,
                     width,
                     height,
                     thickness,
@@ -502,6 +505,7 @@ impl FieldDraft {
                 } => Field::Ellipse(EllipseField {
                     x: self.x,
                     y: self.y,
+                    origin: self.origin,
                     width,
                     height,
                     thickness,
@@ -523,6 +527,7 @@ impl FieldDraft {
                 Field::Graphic(GraphicField {
                     x: self.x,
                     y: self.y,
+                    origin: self.origin,
                     kind,
                     data,
                     bytes_per_row,

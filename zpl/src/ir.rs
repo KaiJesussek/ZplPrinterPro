@@ -196,6 +196,10 @@ pub struct BarcodeField {
 pub struct BoxField {
     pub x: u32,
     pub y: u32,
+    /// `^FT` (Dot) semantics for graphics: the rect hangs ABOVE the
+    /// origin (its bottom edge is the "baseline", so the origin sits at
+    /// the rect's bottom) - measured on the reference for ^GB/^GC/^GE.
+    pub origin: OriginMode,
     pub width: u32,
     pub height: u32,
     pub thickness: u32,
@@ -212,6 +216,9 @@ pub struct BoxField {
 pub struct CircleField {
     pub x: u32,
     pub y: u32,
+    /// `^FT` (Dot): the circle's bbox hangs above the origin (see
+    /// [`BoxField::origin`]).
+    pub origin: OriginMode,
     pub diameter: u32,
     pub thickness: u32,
     pub color: u8,
@@ -223,6 +230,9 @@ pub struct CircleField {
 pub struct DiagonalField {
     pub x: u32,
     pub y: u32,
+    /// `^FT` (Dot): the bbox hangs above the origin (see
+    /// [`BoxField::origin`]).
+    pub origin: OriginMode,
     pub width: u32,
     pub height: u32,
     /// `b'R'` right-leaning (`/`, the guide's default) / `b'L'` left-leaning (`\`).
@@ -237,6 +247,9 @@ pub struct DiagonalField {
 pub struct EllipseField {
     pub x: u32,
     pub y: u32,
+    /// `^FT` (Dot): the bbox hangs above the origin (see
+    /// [`BoxField::origin`]).
+    pub origin: OriginMode,
     pub width: u32,
     pub height: u32,
     pub thickness: u32,
@@ -249,6 +262,9 @@ pub struct EllipseField {
 pub struct GraphicField {
     pub x: u32,
     pub y: u32,
+    /// `^FT` (Dot): the image hangs above the origin (see
+    /// [`BoxField::origin`]).
+    pub origin: OriginMode,
     pub kind: GraphicKind,
     pub data: Vec<u8>,
     pub bytes_per_row: u32,
@@ -343,6 +359,7 @@ mod tests {
                     rotation: Rotation::R180,
                 }),
                 Field::Box(BoxField {
+                    origin: OriginMode::Block,
                     x: 5,
                     y: 5,
                     width: 390,
@@ -352,6 +369,7 @@ mod tests {
                     reverse: false,
                 }),
                 Field::Circle(CircleField {
+                    origin: OriginMode::Block,
                     x: 30,
                     y: 30,
                     diameter: 40,
@@ -360,6 +378,7 @@ mod tests {
                     reverse: false,
                 }),
                 Field::Diagonal(DiagonalField {
+                    origin: OriginMode::Block,
                     x: 60,
                     y: 60,
                     width: 100,
@@ -370,6 +389,7 @@ mod tests {
                     reverse: false,
                 }),
                 Field::Ellipse(EllipseField {
+                    origin: OriginMode::Block,
                     x: 90,
                     y: 90,
                     width: 120,
@@ -379,6 +399,7 @@ mod tests {
                     reverse: false,
                 }),
                 Field::Graphic(GraphicField {
+                    origin: OriginMode::Block,
                     x: 100,
                     y: 100,
                     kind: GraphicKind::Inline,
@@ -386,6 +407,7 @@ mod tests {
                     bytes_per_row: 1,
                 }),
                 Field::Graphic(GraphicField {
+                    origin: OriginMode::Block,
                     x: 200,
                     y: 100,
                     kind: GraphicKind::Stored("logo.grf".into()),

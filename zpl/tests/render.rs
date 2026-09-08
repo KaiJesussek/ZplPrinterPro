@@ -427,6 +427,7 @@ fn hostile_dimensions_never_hang_or_panic() {
             Field::Box(BoxField {
                 x: 0,
                 y: 0,
+                origin: zpl::ir::OriginMode::Block,
                 width: u32::MAX,
                 height: u32::MAX,
                 thickness: u32::MAX,
@@ -436,6 +437,7 @@ fn hostile_dimensions_never_hang_or_panic() {
             Field::Circle(CircleField {
                 x: u32::MAX,
                 y: u32::MAX,
+                origin: zpl::ir::OriginMode::Block,
                 diameter: u32::MAX,
                 thickness: u32::MAX,
                 color: b'B',
@@ -444,6 +446,7 @@ fn hostile_dimensions_never_hang_or_panic() {
             Field::Ellipse(EllipseField {
                 x: 2,
                 y: 2,
+                origin: zpl::ir::OriginMode::Block,
                 width: u32::MAX,
                 height: u32::MAX,
                 thickness: u32::MAX,
@@ -453,6 +456,7 @@ fn hostile_dimensions_never_hang_or_panic() {
             Field::Diagonal(DiagonalField {
                 x: 3,
                 y: 0,
+                origin: zpl::ir::OriginMode::Block,
                 width: u32::MAX,
                 height: u32::MAX,
                 direction: b'L',
@@ -463,6 +467,7 @@ fn hostile_dimensions_never_hang_or_panic() {
             Field::Graphic(GraphicField {
                 x: u32::MAX - 1,
                 y: 0,
+                origin: zpl::ir::OriginMode::Block,
                 kind: GraphicKind::Inline,
                 data: vec![0xFF],
                 bytes_per_row: 1,
@@ -473,6 +478,7 @@ fn hostile_dimensions_never_hang_or_panic() {
             Field::Graphic(GraphicField {
                 x: 0,
                 y: 0,
+                origin: zpl::ir::OriginMode::Block,
                 kind: GraphicKind::Inline,
                 data: Vec::new(),
                 bytes_per_row: u32::MAX,
@@ -553,6 +559,7 @@ fn degenerate_inline_graphic_is_render_error() {
         copies: 1,
         numbered: BTreeMap::new(),
         fields: vec![zpl::ir::Field::Graphic(zpl::ir::GraphicField {
+            origin: zpl::ir::OriginMode::Block,
             x: 0,
             y: 0,
             kind: zpl::ir::GraphicKind::Inline,
@@ -1438,6 +1445,68 @@ fn barcode_ft_origin_quadrant_cross() {
     // B270 runs left+up: bars left of the origin, pattern above it (first
     // module at the bottom of the up-running pattern).
     assert!(bmp.get(440, 746), "B270 arm up-left of the origin");
+}
+
+/// `^FT` graphics (user report, same class as the barcode cross): the
+/// reference anchors the shape's bbox with its BOTTOM edge at the origin
+/// (the rect hangs above, [origin-height, origin)) - measured on ^GB,
+/// ^GC and ^GE. `^FO` keeps the top-left anchor.
+#[test]
+fn graphics_ft_origin_hangs_above() {
+    let (_, out) = render_bc(b"^XA^PW600^LL900^FT200,400^GB200,100,10^FS^FT200,700^GC100,10^FS^XZ");
+    let bmp = &out.bitmap;
+    // ^FT box: rect [300,400) - top border at rows 300..309, bottom
+    // border ending at the origin row 400.
+    assert!(
+        bmp.get(210, 305) && bmp.get(390, 305),
+        "box top border above the origin"
+    );
+    assert!(
+        bmp.get(210, 395) && bmp.get(390, 395),
+        "box bottom border at the origin row"
+    );
+    // ^FT circle: bbox [600,700), bottom edge at the origin row.
+    assert!(
+        (600..699).any(|y| bmp.get(250, y)),
+        "circle bbox hangs above the origin"
+    );
+    assert!(
+        !(400..499).any(|y| bmp.get(250, y)),
+        "no shape ink below the origin"
+    );
+}
+
+/// 2D symbols at `^FT`: the reference drops the QR's ^BY pre-band and
+/// hangs the symbol entirely above the origin with its bottom 3 modules
+/// clear - [origin-(S+3m), origin-3m) for every rotation (measured on
+/// ^BQ at mag 2/4/5/6 and ^BY heights 0/60).
+#[test]
+fn qr_ft_origin_hangs_three_modules_clear() {
+    // mag 4 -> S = 21*4 = 84, gap 3*4 = 12: rows [600-96, 600-12).
+    let (_, out) = render_bc(b"^XA^PW400^LL900^FT200,600^BQN,2,4^FDMM,HELLO WORLD 12345^FS^XZ");
+    let bmp = &out.bitmap;
+    assert!(
+        (504..587).any(|y| bmp.get(210, y)) && !(504..587).any(|y| bmp.get(300, y)),
+        "symbol ink spans [504,588) at cols 200..284"
+    );
+    assert!(
+        !(588..600).any(|y| (200..300).any(|x| bmp.get(x, y))),
+        "bottom 3 modules stay clear of the origin"
+    );
+}
+
+/// The auto-height scan covers a 2D symbol: with no ^LL the label must
+/// extend past the QR (band + module map), not stop at the field origin
+/// (the old footprint counted only the ^BC-style height, which a ^BQ
+/// never sets - the symbol rendered clipped off-label).
+#[test]
+fn qr_auto_height_covers_symbol() {
+    let (_, out) = render_bc(b"^XA^FO200,200^BQN,2,6^FDMM,HELLO WORLD 12345^FS^XZ");
+    let bmp = &out.bitmap;
+    // mag 6 -> S = 126; band 10 -> symbol rows [210, 336); the label must
+    // cover row 335.
+    assert!(bmp.height >= 336, "auto height reaches past the symbol");
+    assert!((210..335).any(|y| bmp.get(210, y)), "symbol fully on-label");
 }
 
 /// Interpret line above (`^BC g=Y`): the line prints ABOVE the bars,

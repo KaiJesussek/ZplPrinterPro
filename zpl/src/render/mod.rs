@@ -27,7 +27,7 @@ pub(crate) mod text;
 
 use crate::bc;
 use crate::fonts::{font_data_from_ttf, FontData, FontProvider, FontSpec};
-use crate::ir::{Field, GraphicKind, Label, TextField};
+use crate::ir::{Field, GraphicKind, Label, OriginMode, TextField};
 use crate::memory::Memory;
 use crate::state::PrinterMode;
 use draw::{blit, draw_circle, draw_diagonal, draw_ellipse, draw_rect};
@@ -204,6 +204,15 @@ pub fn render(label: &Label, opts: &RenderOptions) -> Result<RenderOutcome, Rend
             }
             Field::Box(b) => {
                 let (fx, fy) = place(opts.mode, w, h, b.x, b.y, b.width, b.height);
+                // `^FT` (Dot): the rect hangs ABOVE the origin - its
+                // bottom edge is the baseline (measured: ^GB at ^FT
+                // paints [origin-height, origin)). Linear after `place`,
+                // so it composes with ^POI/^PMY.
+                let fy = if b.origin == OriginMode::Dot {
+                    fy - b.height as i64
+                } else {
+                    fy
+                };
                 // `^FR` reverse print: the field's ink is XORed into the
                 // canvas instead of painted black (the reference logo's
                 // white frame - measured; see Bitmap::paint).
@@ -212,11 +221,21 @@ pub fn render(label: &Label, opts: &RenderOptions) -> Result<RenderOutcome, Rend
             }
             Field::Circle(c) => {
                 let (fx, fy) = place(opts.mode, w, h, c.x, c.y, c.diameter, c.diameter);
+                let fy = if c.origin == OriginMode::Dot {
+                    fy - c.diameter as i64
+                } else {
+                    fy
+                };
                 let color = if c.reverse { b'X' } else { c.color };
                 draw_circle(&mut bmp, fx, fy, c.diameter, c.thickness, color);
             }
             Field::Diagonal(d) => {
                 let (fx, fy) = place(opts.mode, w, h, d.x, d.y, d.width, d.height);
+                let fy = if d.origin == OriginMode::Dot {
+                    fy - d.height as i64
+                } else {
+                    fy
+                };
                 let color = if d.reverse { b'X' } else { d.color };
                 draw_diagonal(
                     &mut bmp,
@@ -231,6 +250,11 @@ pub fn render(label: &Label, opts: &RenderOptions) -> Result<RenderOutcome, Rend
             }
             Field::Ellipse(e) => {
                 let (fx, fy) = place(opts.mode, w, h, e.x, e.y, e.width, e.height);
+                let fy = if e.origin == OriginMode::Dot {
+                    fy - e.height as i64
+                } else {
+                    fy
+                };
                 let color = if e.reverse { b'X' } else { e.color };
                 draw_ellipse(&mut bmp, fx, fy, e.width, e.height, e.thickness, color);
             }
@@ -253,11 +277,21 @@ pub fn render(label: &Label, opts: &RenderOptions) -> Result<RenderOutcome, Rend
                     let ih =
                         (g.data.len() as u64 / g.bytes_per_row as u64).min(u32::MAX as u64) as u32;
                     let (fx, fy) = place(opts.mode, w, h, g.x, g.y, iw, ih);
+                    let fy = if g.origin == OriginMode::Dot {
+                        fy - ih as i64
+                    } else {
+                        fy
+                    };
                     blit(&mut bmp, iw, ih, &g.data, fx, fy);
                 }
                 GraphicKind::Stored(name) => match opts.memory.images.get(name) {
                     Some(img) => {
                         let (fx, fy) = place(opts.mode, w, h, g.x, g.y, img.width, img.height);
+                        let fy = if g.origin == OriginMode::Dot {
+                            fy - img.height as i64
+                        } else {
+                            fy
+                        };
                         blit(&mut bmp, img.width, img.height, &img.data, fx, fy);
                     }
                     None => warnings.push(format!(
@@ -332,24 +366,37 @@ fn auto_height(label: &Label, opts: &RenderOptions) -> u32 {
     max_bottom.max(1).min(MAX_LABEL_DOTS as u64) as u32
 }
 
+/// A shape's auto-height span: `^FT` (Dot) anchors the rect's bottom at
+/// the origin (it hangs above), so the scan starts at `y - height`.
+fn ft_span(y: u32, height: u32, origin: OriginMode) -> (Option<u32>, Option<u32>) {
+    let y = if origin == OriginMode::Dot {
+        y.saturating_sub(height)
+    } else {
+        y
+    };
+    (Some(y), Some(height))
+}
+
 /// A field's (y, height) in label space - the extent it contributes to the
 /// auto height. Text/barcode fields are not painted yet (Tasks 13/14) and
 /// contribute nothing; a missing stored image contributes nothing either.
 fn footprint(field: &Field, opts: &RenderOptions) -> (Option<u32>, Option<u32>) {
     match field {
-        Field::Box(b) => (Some(b.y), Some(b.height)),
-        Field::Circle(c) => (Some(c.y), Some(c.diameter)),
-        Field::Diagonal(d) => (Some(d.y), Some(d.height)),
-        Field::Ellipse(e) => (Some(e.y), Some(e.height)),
+        // `^FT` (Dot) graphics hang above the origin (see the paint
+        // branch): the auto-height scan starts at the rect's top.
+        Field::Box(b) => ft_span(b.y, b.height, b.origin),
+        Field::Circle(c) => ft_span(c.y, c.diameter, c.origin),
+        Field::Diagonal(d) => ft_span(d.y, d.height, d.origin),
+        Field::Ellipse(e) => ft_span(e.y, e.height, e.origin),
         Field::Graphic(g) => match &g.kind {
             GraphicKind::Inline
                 if g.bytes_per_row > 0 && g.data.len() % g.bytes_per_row as usize == 0 =>
             {
                 let ih = (g.data.len() as u64 / g.bytes_per_row as u64).min(u32::MAX as u64) as u32;
-                (Some(g.y), Some(ih))
+                ft_span(g.y, ih, g.origin)
             }
             GraphicKind::Stored(name) => match opts.memory.images.get(name) {
-                Some(img) => (Some(g.y), Some(img.height)),
+                Some(img) => ft_span(g.y, img.height, g.origin),
                 None => (None, None),
             },
             _ => (None, None),

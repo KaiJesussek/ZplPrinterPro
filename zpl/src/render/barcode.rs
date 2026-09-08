@@ -142,7 +142,10 @@ fn extent(b: &BarcodeField, pat: &Pattern, tw: u32) -> Extent {
         // of the content box so rotation/mirror place the far corner
         // right. DataMatrix paints at the origin.
         Pattern::Modules { width, height, .. } => {
-            let qr_band = if b.symbology == b'Q' {
+            // The ^BY band only precedes the symbol at ^FO; at ^FT the
+            // reference drops it (the symbol hangs [-(S+3m), -3m) above
+            // the origin, measured - see [`origin_anchor`]).
+            let qr_band = if b.symbology == b'Q' && b.origin == OriginMode::Block {
                 u128::from(if b.height == 0 { 10 } else { b.height })
             } else {
                 0
@@ -163,9 +166,20 @@ fn extent(b: &BarcodeField, pat: &Pattern, tw: u32) -> Extent {
 /// for every rotation (measured on the reference - four barcodes at one
 /// ^FT origin tile the four quadrants around it: rects lie right+down,
 /// right+down, left+down, left+up for N/R/I/B, a cross).
-fn origin_anchor(b: &BarcodeField, fw: u32, fh: u32) -> (i64, i64) {
+fn origin_anchor(b: &BarcodeField, fw: u32, fh: u32, two_d: bool) -> (i64, i64) {
     match (b.origin, b.rotation) {
-        (OriginMode::Block, _) | (OriginMode::Dot, Rotation::R90) => (0, 0),
+        (OriginMode::Block, _) => (0, 0),
+        // 2D symbols (QR): the reference hangs the symbol ABOVE the
+        // origin with its bottom 3 modules clear of it - measured:
+        // `^BQ` at `^FT` renders [origin-(S+3m), origin-3m) for every
+        // rotation (the QR is square, so no corner can be told apart).
+        // Rectangular 2D (DataMatrix) at ^FT is unmeasured; same rule
+        // assumed. // ponytail: DM ^FT untested - probe before relying on it.
+        (OriginMode::Dot, _) if two_d => {
+            let m = if b.module == 0 { 2 } else { b.module };
+            (0, fh as i64 + 3 * m as i64)
+        }
+        (OriginMode::Dot, Rotation::R90) => (0, 0),
         (OriginMode::Dot, Rotation::R0) => (0, fh as i64),
         (OriginMode::Dot, Rotation::R180) => (fw as i64, 0),
         (OriginMode::Dot, Rotation::R270) => (fh as i64, fw as i64),
@@ -176,23 +190,44 @@ fn origin_anchor(b: &BarcodeField, fw: u32, fh: u32) -> (i64, i64) {
 /// bar block (plus the interpret line, when one prints and its font
 /// resolves - a missing font hides only the line, not the bars).
 pub(crate) fn footprint(b: &BarcodeField, _opts: &RenderOptions) -> Option<(u32, u32)> {
+    let m = if b.module == 0 { 2 } else { b.module };
+    let lc_span = (u32::from(b.line == b'Y') + u32::from(b.interpret)) * line_cell(b);
+    // 2D symbols: the module map (+ the QR's ^BY band at ^FO) is the
+    // content; at ^FT the reference drops the band and hangs the symbol
+    // above the origin with its bottom 3 modules clear (see
+    // [`origin_anchor`]).
+    if let Pattern::Modules { height, .. } = crate::bc::barcode_field(b) {
+        let s = (u64::from(m) * u64::from(height)).min(u64::from(u32::MAX)) as u32;
+        if b.origin == OriginMode::Dot {
+            let dy = u64::from(s) + 3 * u64::from(m);
+            let y = (b.y as i64 - dy.min(i64::MAX as u64) as i64).max(0) as u32;
+            return Some((y, s));
+        }
+        let shift = if b.symbology == b'Q' {
+            if b.height == 0 {
+                10
+            } else {
+                b.height
+            }
+        } else {
+            0
+        };
+        return Some((b.y, s.saturating_add(shift)));
+    }
+    // 1D: each printed line adds its own cell (f=Y below, g=Y above),
+    // hung off the rect. An ^FT field's rect hangs off the baseline
+    // corner, so the scan starts at the rect top; for R270 the rotated
+    // rect is `fw` tall (the pattern width), so that case derives the
+    // span from the encoded pattern.
     let height = if b.height == 0 { 10 } else { b.height };
-    let line = b.line == b'Y' || b.interpret;
-    let lc = if line { line_cell(b) } else { 0 };
-    // Each printed line adds its own cell (f=Y below, g=Y above), hung
-    // off the rect. An ^FT field's rect hangs off the baseline corner, so
-    // the scan starts at the rect top; for R270 the rotated rect is
-    // `fw` tall (the pattern width), so that case derives the span from
-    // the encoded pattern.
-    let lc_span = (u32::from(b.line == b'Y') + u32::from(b.interpret)) * lc;
     let fw = if b.origin == OriginMode::Dot && b.rotation == Rotation::R270 {
         pattern_width(b)
     } else {
         0
     };
-    let (_, d_y) = origin_anchor(b, fw, height);
+    let (_, d_y) = origin_anchor(b, fw, height, false);
     let span = if fw > 0 { fw } else { height };
-    let y_off = if b.interpret { -(lc as i64) } else { 0 };
+    let y_off = if b.interpret { -(lc_span as i64) } else { 0 };
     let y = (b.y as i64 - d_y + y_off).max(0) as u32;
     Some((y, span.saturating_add(lc_span)))
 }
@@ -490,7 +525,7 @@ pub(crate) fn paint(
     // `^FT` anchors the rect on the rotated baseline corner instead of
     // the top-left: shift the painted rect so the field origin lands on
     // the anchor (linear, so it composes with ^POI/^PM after `place`).
-    let (d_x, d_y) = origin_anchor(b, g.fw, g.fh);
+    let (d_x, d_y) = origin_anchor(b, g.fw, g.fh, matches!(pat, Pattern::Modules { .. }));
     let (ox, oy) = (ox - d_x, oy - d_y);
     let module = if b.module == 0 { 2 } else { b.module };
     let fw = g.fw as i64;
@@ -533,7 +568,9 @@ pub(crate) fn paint(
             // bits (bit = row*width + col) - a padded ceil(width/8)-byte
             // stride drifts every row once width is not a multiple of 8
             // (it garbled the QR/DM rasters before the fix).
-            let shift = if b.symbology == b'Q' {
+            // The QR's ^BY pre-band only exists at ^FO; under ^FT the
+            // reference drops it (see [`origin_anchor`]).
+            let shift = if b.symbology == b'Q' && b.origin == OriginMode::Block {
                 i64::from(if b.height == 0 { 10 } else { b.height })
             } else {
                 0
