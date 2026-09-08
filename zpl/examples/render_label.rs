@@ -23,7 +23,11 @@ fn main() {
     let mut memory = Memory::default();
     let mut ctx = ParseContext::new(&mut diags, &mut memory);
     parse_stream(&mut Scanner::new(format), &mut ctx);
-    let label = ctx.pending_label.take().expect("^XZ must close a label");
+    let Some(label) = ctx.pending_label.take() else {
+        // A dry stream (e.g. a ^DF format download) renders nothing.
+        eprintln!("no label produced (definition/download-only stream)");
+        std::process::exit(0);
+    };
     let fonts = DefaultFontProvider::new();
     let opts = RenderOptions {
         dpi: 203,

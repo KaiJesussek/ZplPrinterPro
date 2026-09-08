@@ -372,7 +372,7 @@ pub(crate) fn code_128(ctx: &mut ParseContext, params: &[u8]) {
         pdf_cols: 0,
         pdf_rows: 0,
         pdf_truncate: false,
-        md_mode: 4,
+        md_mode: 2,
         md_mag: 1,
     });
     if let Some(r) = rotation {
@@ -399,8 +399,11 @@ pub(crate) fn maxicode_field(ctx: &mut ParseContext, params: &[u8]) {
         },
         None => None,
     };
-    // u32_in clamps out-of-range modes (0/1 obsolete, >4 invalid) to 4.
-    let mode = u32_in(parts.get(1).copied(), "BD", "mode", ctx.diags, 2, 4, 4);
+    // guide p.106: m = 2 (default, structured numeric), 3 (structured
+    // alphanumeric), 4 (standard), 5 (full EEC), 6 (reader program).
+    // 0/1 obsolete, 5 accepted (the encoder's EEC path), 6 unsupported
+    // (scanner-only) - out-of-range warns and falls back to 2.
+    let mode = u32_in(parts.get(1).copied(), "BD", "mode", ctx.diags, 2, 5, 2);
     let mag = u32_in(
         parts.get(2).copied(),
         "BD",
@@ -884,7 +887,7 @@ pub(crate) fn pdf417_field(ctx: &mut ParseContext, params: &[u8]) {
         pdf_cols: cols,
         pdf_rows: rows,
         pdf_truncate: truncate,
-        md_mode: 4,
+        md_mode: 2,
         md_mag: 1,
     });
     if let Some(r) = rotation {
@@ -1125,7 +1128,7 @@ fn barcode_1d(ctx: &mut ParseContext, params: &[u8], cmd: &str, symbology: u8, s
         pdf_cols: 0,
         pdf_rows: 0,
         pdf_truncate: false,
-        md_mode: 4,
+        md_mode: 2,
         md_mag: 1,
     });
     if let Some(r) = rotation {

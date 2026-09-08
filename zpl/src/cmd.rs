@@ -8,7 +8,7 @@ use crate::geom;
 use crate::ir::Label;
 use crate::memory;
 use crate::scanner::{Cmd, Scanner, Token};
-use crate::state::{FieldDraft, FormatState, ParseContext, PendingBinary, QueryRequest};
+use crate::state::{FieldDraft, FormatEnd, FormatState, ParseContext, PendingBinary, QueryRequest};
 use crate::textfmt;
 
 /// Command prefix: `^` (format commands) or `~` (printer operations).
@@ -109,15 +109,39 @@ fn end_format(ctx: &mut ParseContext, _params: &[u8]) {
     check_malformed_utf16(ctx);
     check_malformed_utf8(ctx);
     expand_serials(ctx);
-    if let Some(label) = ctx.state.end_format(&ctx.mode) {
-        // A ^IS pending from this format (guide p.249: save the format as
-        // a graphic image): render exactly the fields that were closed at
-        // the ^IS (serial expansion already applied) and store the bitmap.
-        if let Some(save) = ctx.image_save.take() {
-            memory::fulfill_image_save(ctx, &label, save);
+    match ctx.state.end_format(&ctx.mode) {
+        // A ^DF download: the body up to this ^XZ is the stored format;
+        // downloads produce no label (guide: "saves ZPL II format commands
+        // as text strings to be later merged using ^XF").
+        FormatEnd::Download { name, bytes } => {
+            store_download(ctx, name.as_bytes(), &bytes);
         }
-        ctx.pending_label = Some(label);
+        FormatEnd::None => {}
+        FormatEnd::Label(label) => {
+            // A ^IS pending from this format (guide p.249: save the format
+            // as a graphic image): render exactly the fields that were
+            // closed at the ^IS (serial expansion already applied) and
+            // store the bitmap.
+            if let Some(save) = ctx.image_save.take() {
+                memory::fulfill_image_save(ctx, &label, save);
+            }
+            ctx.pending_label = Some(label);
+        }
     }
+}
+
+/// Store a finished ^DF download (name + captured body) into
+/// `Memory.formats`, guarding printer-memory limits like every other store.
+fn store_download(ctx: &mut ParseContext, name: &[u8], bytes: &[u8]) {
+    let key = memory::format_name(name);
+    if !memory::fits_total(ctx.memory, &key, bytes.len()) {
+        ctx.diags.push(Diagnostic::warning(
+            "DF",
+            format!("{key}: printer memory full; object dropped"),
+        ));
+        return;
+    }
+    ctx.memory.formats.insert(key, bytes.to_vec());
 }
 
 /// Expand `^SN` serialized fields at `^XZ` (plan Task 17 ruling: expansion
@@ -247,22 +271,12 @@ fn substitute_run(data: &[u8], value: i64, zeros: bool) -> Vec<u8> {
 }
 
 fn end_field(ctx: &mut ParseContext, _params: &[u8]) {
-    // An open field closes into its format; a ^DF download hands its
-    // captured bytes over to Memory.formats.
+    // An open field closes into its format. A ^DF download is not touched
+    // here: its ^FS is body text and the download ends at ^XZ.
     check_barcode_data(ctx);
     check_malformed_utf16(ctx);
     check_malformed_utf8(ctx);
-    if let Some((name, bytes)) = ctx.state.end_field() {
-        let key = memory::format_name(name.as_bytes());
-        if !memory::fits_total(ctx.memory, &key, bytes.len()) {
-            ctx.diags.push(Diagnostic::warning(
-                "DF",
-                format!("{key}: printer memory full; object dropped"),
-            ));
-            return;
-        }
-        ctx.memory.formats.insert(key, bytes);
-    }
+    ctx.state.end_field();
 }
 
 /// A `^CI29`/`^CI30` field whose bytes are malformed UTF-16 (odd length,
@@ -355,15 +369,9 @@ fn start_download(ctx: &mut ParseContext, params: &[u8]) {
         ));
         return;
     }
-    // ^DF while a format is open destroys the open format (capture state
-    // replaces it); warn, but still enter the download - the guide's own
-    // pattern embeds ^DF right after ^XA.
-    if ctx.state.is_partial() {
-        ctx.diags.push(Diagnostic::warning(
-            "DF",
-            "format download while a format is open; download started",
-        ));
-    }
+    // The guide's pattern is ^XA then ^DF immediately ("Enter the ^DF
+    // stored format command immediately after the ^XA command"), so the
+    // capture replaces any partial format silently - exactly like Zebra.
     ctx.state.start_download(params);
 }
 
@@ -1386,6 +1394,15 @@ pub fn parse_stream(scanner: &mut Scanner, ctx: &mut ParseContext) {
             ),
         ));
     }
+    // A ^DF download the stream never closed: the store is dropped.
+    // (The chunked driver's session warns at its own EOF instead.)
+    if matches!(ctx.state, FormatState::DefFormat { .. }) {
+        ctx.diags.push(Diagnostic::warning(
+            "DF",
+            "unterminated ^DF download at end of stream; nothing stored",
+        ));
+        ctx.state = FormatState::Outside;
+    }
 }
 
 /// Continue an interrupted binary download ([`ParseContext::pending_binary`])
@@ -1434,14 +1451,20 @@ fn run_cmd_token(
     cmd: Cmd,
     collect: bool,
 ) -> Option<ParsedLabel> {
-    let ends_download = cmd.prefix == ctx.mode.cmd_char && cmd.mnemonic == *b"FS";
-    let aborts_download = cmd.prefix == ctx.mode.cmd_char && cmd.mnemonic == *b"XA";
+    // A ^DF download body is captured verbatim until the closing ^XZ
+    // (which dispatches and ends the download) or an aborting ^XA. ^FS
+    // inside the body is ordinary stored-format text, so it is captured
+    // like any other command.
+    let ends_download = match cmd.prefix == ctx.mode.cmd_char {
+        true => cmd.mnemonic == *b"XZ" || cmd.mnemonic == *b"XA",
+        false => false,
+    };
     // `(declared byte count, payload bytes the token's params run already
     // absorbed)` - None for non-binary commands (see CommandSpec).
     let framed = spec_for(ctx, &cmd)
         .and_then(|s| s.binary_len)
         .and_then(|f| f(cmd.params));
-    if matches!(ctx.state, FormatState::DefFormat { .. }) && !ends_download && !aborts_download {
+    if matches!(ctx.state, FormatState::DefFormat { .. }) && !ends_download {
         // Captured verbatim - cmd_bytes already covers the payload bytes
         // inside the token; the tail after it rides along so the stored
         // format replays the same binary framing when recalled.
@@ -1620,16 +1643,40 @@ mod tests {
     }
 
     #[test]
-    fn download_captures_until_fs() {
+    fn download_stores_body_until_xz() {
         let mut diags = Diagnostics::default();
         let mut mem = Memory::default();
         let mut ctx = ParseContext::new(&mut diags, &mut mem);
-        parse_stream(&mut Scanner::new(b"^DFR:F^FO10,10^FS^XZ"), &mut ctx);
-        // ^DF entered DefFormat and captured the ^FO body; ^FS ended the
-        // download, so the captured commands were never dispatched.
+        // guide p.173: ^DF right after ^XA, the format commands to be saved
+        // follow, and the capture ends at ^XZ - which stores the body and
+        // produces no label.
+        parse_stream(&mut Scanner::new(b"^XA^DFR:F^FO10,10^FS^XZ"), &mut ctx);
         assert!(matches!(&ctx.state, FormatState::Outside));
-        assert_eq!(ctx.diags.items.len(), 0);
-        assert!(ctx.pending_label.is_none()); // ^XZ outside a format is a no-op
+        assert_eq!(ctx.diags.items.len(), 0, "silent store: {diags:?}");
+        assert!(ctx.pending_label.is_none(), "downloads produce no label");
+        assert_eq!(
+            ctx.memory.formats.get("F.ZPL").map(|b| b.as_slice()),
+            Some(&b"^FO10,10^FS"[..]),
+            "the body up to ^XZ (including its ^FS) is stored verbatim"
+        );
+    }
+
+    #[test]
+    fn download_requires_the_xz_envelope() {
+        let mut diags = Diagnostics::default();
+        let mut mem = Memory::default();
+        let mut ctx = ParseContext::new(&mut diags, &mut mem);
+        // A ^DF body closed by a mere ^FS is NOT a store: the ^FS is body
+        // text, so the capture dangles and EOF warns + drops.
+        parse_stream(&mut Scanner::new(b"^DFR:F^FO10,10^FS"), &mut ctx);
+        assert_eq!(
+            ctx.diags.items.len(),
+            1,
+            "dangling download warns: {diags:?}"
+        );
+        assert_eq!(ctx.diags.items[0].command, "DF");
+        assert!(!ctx.memory.formats.contains_key("F.ZPL"));
+        assert!(matches!(&ctx.state, FormatState::Outside));
     }
 
     #[test]
@@ -1794,22 +1841,20 @@ mod tests {
     }
 
     #[test]
-    fn df_during_format_warns_and_download_starts() {
+    fn df_after_xa_is_the_manual_pattern_and_stores_silently() {
         let mut diags = Diagnostics::default();
         let mut mem = Memory::default();
         let mut ctx = ParseContext::new(&mut diags, &mut mem);
-        // ^DF while a format is open: exactly one crossover warning, and
-        // the download still enters capture (body stored on ^FS; ^XZ then
-        // finds no open format).
+        // guide p.173: "Enter the ^DF stored format command immediately
+        // after the ^XA command" - the documented pattern must not warn.
         parse_stream(&mut Scanner::new(b"^XA^DFR:F^FO10,10^FS^XZ"), &mut ctx);
-        assert_eq!(
-            ctx.diags.items.len(),
-            1,
-            "only the crossover warning: {diags:?}"
-        );
-        assert_eq!(ctx.diags.items[0].command, "DF");
-        assert!(matches!(ctx.diags.items[0].severity, Severity::Warning));
+        assert_eq!(ctx.diags.items.len(), 0, "no warnings: {diags:?}");
         assert!(ctx.memory.formats.contains_key("F.ZPL"), "download stored");
+        assert_eq!(
+            ctx.memory.formats.get("F.ZPL").map(|b| b.as_slice()),
+            Some(&b"^FO10,10^FS"[..]),
+            "body captured verbatim to ^XZ"
+        );
         assert!(ctx.pending_label.is_none());
     }
 
@@ -1848,7 +1893,7 @@ mod tests {
         let mut mem = Memory::default();
         let mut ctx = ParseContext::new(&mut diags, &mut mem);
         parse_stream(
-            &mut Scanner::new(b"^XA^FDx^FS^XZ^DFR:F^FO10,10^FS^XA^GB20,20,2,B^XZ"),
+            &mut Scanner::new(b"^XA^FDx^FS^XZ^XA^DFR:F^FO10,10^FS^XZ^XA^GB20,20,2,B^XZ"),
             &mut ctx,
         );
         assert!(ctx.diags.items.is_empty(), "unexpected: {diags:?}");

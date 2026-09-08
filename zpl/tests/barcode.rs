@@ -99,7 +99,7 @@ fn bc128_auto_switches_and_checks() {
             pdf_cols: 0,
             pdf_rows: 0,
             pdf_truncate: false,
-            md_mode: 4,
+            md_mode: 2,
             md_mag: 1,
             // No ^A in the format: the draft's ^CF power-up font (A, 9x5).
             font: *b"A ",
@@ -1084,7 +1084,7 @@ fn b3_hostile_ratio_module_saturates() {
         pdf_cols: 0,
         pdf_rows: 0,
         pdf_truncate: false,
-        md_mode: 4,
+        md_mode: 2,
         md_mag: 1,
         font: *b"A ",
         font_height: 9,

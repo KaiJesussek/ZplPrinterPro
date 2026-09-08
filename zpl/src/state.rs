@@ -320,6 +320,14 @@ pub(crate) struct ImageSave {
 }
 
 /// Where the parser is in the input stream.
+/// What a closing `^XZ` produced: a printable label, a finished ^DF
+/// download (stored-format body), or neither (stray ^XZ).
+pub(crate) enum FormatEnd {
+    None,
+    Download { name: String, bytes: Vec<u8> },
+    Label(Label),
+}
+
 // clippy: the Field variant's draft dwarfs the other variants; boxing it
 // would touch a dozen destructure sites in cmd/textfmt for a one-time
 // stack-layout saving in ParseContext - accepted as-is.
@@ -337,7 +345,10 @@ pub enum FormatState {
         draft: FieldDraft,
         fields: Vec<FieldDraft>,
     },
-    /// ^DF stored-format download: capture raw bytes until ^FS.
+    /// ^DF stored-format download: capture the raw format body. The
+    /// capture runs until ^XZ (guide: "Enter the ^DF stored format command
+    /// immediately after the ^XA command, then enter the format commands
+    /// to be saved"); a later ^XA aborts the download.
     DefFormat { name: String, buf: Vec<u8> },
 }
 
@@ -352,17 +363,21 @@ impl FormatState {
         *self = Self::InFormat { fields: Vec::new() };
     }
 
-    /// ^XZ: finalize the open format into a `Label`, or `None` if no format
-    /// is open (stray ^XZ outside a format is ignored).
-    pub(crate) fn end_format(&mut self, mode: &PrinterMode) -> Option<Label> {
+    /// ^XZ: finalize the open format into a `Label`, a ^DF download into
+    /// its captured bytes, or `None` if no format is open (stray ^XZ
+    /// outside a format is ignored).
+    pub(crate) fn end_format(&mut self, mode: &PrinterMode) -> FormatEnd {
         let drafts = match core::mem::take(self) {
+            Self::DefFormat { name, buf } => {
+                return FormatEnd::Download { name, bytes: buf };
+            }
             Self::InFormat { fields } => fields,
             Self::Field { draft, mut fields } => {
                 // An open field at ^XZ is finalized with the rest.
                 fields.push(draft);
                 fields
             }
-            _ => return None,
+            _ => return FormatEnd::None,
         };
         // `^FN#` numbered fields: the decoded data of every tagged draft,
         // keyed by its number for the server's `^HV` responder. Decoded
@@ -376,7 +391,7 @@ impl FormatState {
             }
         }
         let fields = drafts.into_iter().map(FieldDraft::into_field).collect();
-        Some(Label {
+        FormatEnd::Label(Label {
             width_dots: mode.pw_dots,
             height_dots: mode.ll_dots,
             copies: mode.copies,
@@ -385,23 +400,18 @@ impl FormatState {
         })
     }
 
-    /// ^FS: close an open field into the format's draft list, or finish a
-    /// ^DF download - returning the captured bytes so the caller (cmd.rs)
-    /// can store them in `Memory.formats`. No-op anywhere else.
-    pub(crate) fn end_field(&mut self) -> Option<(String, Vec<u8>)> {
+    /// ^FS: close an open field into the format's draft list. No-op
+    /// outside a field - in a ^DF download ^FS is body text (the download
+    /// ends at ^XZ), so DefFormat is left untouched here.
+    pub(crate) fn end_field(&mut self) {
         let next = match core::mem::take(self) {
             Self::Field { draft, mut fields } => {
                 fields.push(draft);
                 Self::InFormat { fields }
             }
-            Self::DefFormat { name, buf } => {
-                *self = Self::Outside;
-                return Some((name, buf));
-            }
             other => other,
         };
         *self = next;
-        None
     }
 
     /// ^DF (params = stored-format name): enter download capture.

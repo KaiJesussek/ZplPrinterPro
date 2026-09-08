@@ -150,7 +150,7 @@ fn id_globs_across_stores() {
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
     let (_, ctx) = parse_ctx(
-        b"~DGR:LOGO.GRF,8,1,FF00000000000000^DFR:FMT.ZPL^FO10,10^FS~DYE:ARIAL.TTF,A,T,4,0,00FF00FF^XA^IDR:*.GRF^XZ",
+        b"~DGR:LOGO.GRF,8,1,FF00000000000000^XA^DFR:FMT.ZPL^FO10,10^FS^XZ~DYE:ARIAL.TTF,A,T,4,0,00FF00FF^XA^IDR:*.GRF^XZ",
         &mut diags,
         &mut memory,
     );
@@ -199,7 +199,7 @@ fn bare_id_defaults_to_unknown() {
     // All stores are swept: a format and a font stored under the UNKNOWN
     // defaults go too.
     let (_, ctx) = parse_ctx(
-        b"^DF^FO10,10^FS~DS,2,0000^XA^ID^XZ",
+        b"^XA^DF^FO10,10^FS^XZ~DS,2,0000^XA^ID^XZ",
         &mut diags,
         &mut memory,
     );
@@ -223,14 +223,14 @@ fn bare_id_defaults_to_unknown() {
 
 #[test]
 fn df_xf_roundtrip() {
-    // ^DF captures the format bytes until ^FS and stores them; a later
-    // ^XA^XF recalls and re-executes them into the label - same fields.
+    // guide p.173: ^DF right after ^XA captures the format body (all the
+    // format commands to be saved) verbatim until ^XZ; a later ^XA^XF
+    // recalls and re-executes them into the label - same fields. A
+    // definition stream produces no label.
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
-    // ^DF captures everything until ^FS and stores it; a definition stream
-    // (guide: ^DF right after ^XA, content saved, ^FS) produces no label.
     define(
-        b"^DFR:FMT.ZPL^FO10,10^A0,30,30^FDHello^FS",
+        b"^XA^DFR:FMT.ZPL^FO10,10^A0,30,30^FDHello^FS^XZ",
         &mut diags,
         &mut memory,
     );
@@ -239,7 +239,7 @@ fn df_xf_roundtrip() {
         .formats
         .get("FMT.ZPL")
         .expect("^DF stored the format");
-    assert_eq!(stored, b"^FO10,10^A0,30,30^FDHello");
+    assert_eq!(stored, b"^FO10,10^A0,30,30^FDHello^FS");
     let (label, ctx) = parse_ctx(b"^XA^XFR:FMT.ZPL^FS^XZ", &mut diags, &mut memory);
     assert_eq!(
         ctx.diags.items.len(),
@@ -278,7 +278,7 @@ fn xf_depth_and_missing_format() {
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
     define(
-        b"^DFR:F1.ZPL^A0,10,10^FDone^FS^DFR:F3.ZPL^XFR:F3.ZPL^XFR:F3.ZPL^FS",
+        b"^XA^DFR:F1.ZPL^A0,10,10^FDone^FS^XZ^XA^DFR:F3.ZPL^XFR:F3.ZPL^XFR:F3.ZPL^FS^XZ",
         &mut diags,
         &mut memory,
     );
