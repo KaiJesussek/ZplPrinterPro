@@ -37,6 +37,8 @@ fn field() -> BarcodeField {
         pdf_cols: 0,
         pdf_rows: 0,
         pdf_truncate: false,
+        md_mode: 4,
+        md_mag: 1,
         font: *b"0N",
         font_height: 0,
         font_width: 0,

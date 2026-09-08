@@ -12,7 +12,13 @@ use zpl::scanner::Scanner;
 use zpl::state::{Memory, ParseContext};
 
 fn main() {
-    let format = b"^XA^FO50,50^A0N,30,30^FDHello, ZPL!^FS^XZ";
+    let args: Vec<String> = std::env::args().collect();
+    let zpl = if args.len() > 1 {
+        args[1].clone()
+    } else {
+        "^XA^FO50,50^A0N,30,30^FDHello, ZPL!^FS^XZ".to_string()
+    };
+    let format = zpl.as_bytes();
     let mut diags = Diagnostics::default();
     let mut memory = Memory::default();
     let mut ctx = ParseContext::new(&mut diags, &mut memory);

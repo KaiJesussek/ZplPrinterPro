@@ -1787,6 +1787,8 @@ fn barcode_hostile_module_never_panics() {
         pdf_cols: 0,
         pdf_rows: 0,
         pdf_truncate: false,
+        md_mode: 4,
+        md_mag: 1,
         font: *b"A ",
         font_height: 9,
         font_width: 5,

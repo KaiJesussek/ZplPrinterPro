@@ -83,7 +83,7 @@ pub fn barcode_field(f: &BarcodeField) -> Pattern {
     // (measured: the ^BQ reference encodes alphanumerically), PDF417
     // byte compaction, DataMatrix C40 for basic-set runs / ASCII
     // elsewhere, Aztec byte streams - lossless for any decoded charset.
-    if matches!(f.symbology, b'Q' | b'X' | b'7' | b'0') {
+    if matches!(f.symbology, b'Q' | b'X' | b'7' | b'0' | b'D') {
         let data = f.data.as_bytes();
         if data.is_empty() {
             return Pattern::Bars(Vec::new());
@@ -372,10 +372,55 @@ pub(crate) fn code_128(ctx: &mut ParseContext, params: &[u8]) {
         pdf_cols: 0,
         pdf_rows: 0,
         pdf_truncate: false,
+        md_mode: 4,
+        md_mag: 1,
     });
     if let Some(r) = rotation {
         d.rotation = r;
     }
+}
+
+/// ^BDa,b,c (guide p.57): orientation; mode 2/3/4 - the postal
+/// structured-carrier modes need the ^FH-decoded control bytes (^FD
+/// data passes through), mode 4 is the general text mode (default 4);
+/// magnification 1..8 (default 1 = the ISO hexagon pitch; the BinaryKits
+/// reference renders at that size - the printer's magnification is a
+/// hexagon dot scale, applied as a linear symbol scale here).
+pub(crate) fn maxicode_field(ctx: &mut ParseContext, params: &[u8]) {
+    let parts = split_commas(params);
+    let rotation = match parts.first().copied() {
+        Some([]) => None,
+        Some(o) => match parse_rotation(o) {
+            Some(r) => Some(r),
+            None => {
+                warn_invalid("BD", "orientation", o, ctx.diags);
+                None
+            }
+        },
+        None => None,
+    };
+    // u32_in clamps out-of-range modes (0/1 obsolete, >4 invalid) to 4.
+    let mode = u32_in(parts.get(1).copied(), "BD", "mode", ctx.diags, 2, 4, 4);
+    let mag = u32_in(
+        parts.get(2).copied(),
+        "BD",
+        "magnification",
+        ctx.diags,
+        1,
+        8,
+        1,
+    );
+    let _ = parts.get(3); // 4th param accepted (unused)
+    finish_2d(
+        ctx,
+        b'D',
+        rotation,
+        Opt2d {
+            md_mode: mode as u8,
+            md_mag: mag as u8,
+            ..Opt2d::default()
+        },
+    );
 }
 
 // --- Task 15 1D barcode handlers (^B1..^B9, ^BA, ^BK, ^BE, ^BU, ^BM) ----
@@ -578,6 +623,8 @@ struct Opt2d {
     pdf_cols: u32,
     pdf_rows: u32,
     pdf_truncate: bool,
+    md_mode: u8,
+    md_mag: u8,
 }
 
 fn finish_2d(ctx: &mut ParseContext, symbology: u8, rotation: Option<Rotation>, opt: Opt2d) {
@@ -609,6 +656,8 @@ fn finish_2d(ctx: &mut ParseContext, symbology: u8, rotation: Option<Rotation>, 
         pdf_cols: opt.pdf_cols,
         pdf_rows: opt.pdf_rows,
         pdf_truncate: opt.pdf_truncate,
+        md_mode: opt.md_mode,
+        md_mag: opt.md_mag,
     });
     if let Some(r) = rotation {
         d.rotation = r;
@@ -835,6 +884,8 @@ pub(crate) fn pdf417_field(ctx: &mut ParseContext, params: &[u8]) {
         pdf_cols: cols,
         pdf_rows: rows,
         pdf_truncate: truncate,
+        md_mode: 4,
+        md_mag: 1,
     });
     if let Some(r) = rotation {
         d.rotation = r;
@@ -1074,6 +1125,8 @@ fn barcode_1d(ctx: &mut ParseContext, params: &[u8], cmd: &str, symbology: u8, s
         pdf_cols: 0,
         pdf_rows: 0,
         pdf_truncate: false,
+        md_mode: 4,
+        md_mag: 1,
     });
     if let Some(r) = rotation {
         d.rotation = r;

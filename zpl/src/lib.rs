@@ -15,6 +15,7 @@ pub mod fonts;
 mod geom;
 mod gfxdata;
 pub mod ir;
+pub mod maxicode;
 pub mod memory;
 pub mod reed_solomon;
 pub mod render;

@@ -120,7 +120,7 @@ fn line_width(b: &BarcodeField, fd: &FontData, cell: u32) -> u32 {
 /// Measure the R0 content box of a barcode field. The box is the BAR
 /// block (fw x bar-height) anchored at the field origin - interpret lines
 /// hang outside it (see the module docs and [`Extent`]).
-fn extent(b: &BarcodeField, pat: &Pattern, tw: u32) -> Extent {
+fn extent(b: &BarcodeField, pat: &Pattern, tw: u32, dpi: u32) -> Extent {
     // ^BY/^BC defaults, mirror of bc::barcode_field (hand-built IR can
     // carry 0s that the parser never leaves behind).
     let module = if b.module == 0 { 2 } else { b.module };
@@ -142,6 +142,16 @@ fn extent(b: &BarcodeField, pat: &Pattern, tw: u32) -> Extent {
         // y+10; corpus 16 with ^BY2,3,60 -> y+60). The blank band is part
         // of the content box so rotation/mirror place the far corner
         // right. DataMatrix paints at the origin.
+        Pattern::Modules { width, height, .. } if b.symbology == b'D' => {
+            // MaxiCode is a fixed-size ISO symbol: hexagon pitch at the
+            // printer density, scaled only by the ^BD magnification (the
+            // ^BY module does not apply). See [`maxi_geo`].
+            let (fw, fh) = maxi_size(b, dpi);
+            Extent {
+                fw: cmax(u128::from(fw)),
+                fh: cmax(u128::from(fh)),
+            }
+        }
         Pattern::Modules { width, height, .. } => {
             // The ^BY band only precedes the symbol at ^FO; at ^FT the
             // reference drops it (the symbol hangs [-(S+3m), -3m) above
@@ -191,7 +201,7 @@ fn origin_anchor(b: &BarcodeField, fw: u32, fh: u32, two_d: bool) -> (i64, i64) 
 /// The field's (y, height) in label space for the auto-height scan: the
 /// bar block (plus the interpret line, when one prints and its font
 /// resolves - a missing font hides only the line, not the bars).
-pub(crate) fn footprint(b: &BarcodeField, _opts: &RenderOptions) -> Option<(u32, u32)> {
+pub(crate) fn footprint(b: &BarcodeField, opts: &RenderOptions) -> Option<(u32, u32)> {
     let m = if b.module == 0 { 2 } else { b.module };
     let lc_span = (u32::from(b.line == b'Y') + u32::from(b.interpret)) * line_cell(b);
     // 2D symbols: the module map (+ the QR's ^BY band at ^FO) is the
@@ -199,9 +209,18 @@ pub(crate) fn footprint(b: &BarcodeField, _opts: &RenderOptions) -> Option<(u32,
     // above the origin with its bottom 3 modules clear (see
     // [`origin_anchor`]).
     if let Pattern::Modules { height, .. } = crate::bc::barcode_field(b) {
-        let s = (u64::from(m) * u64::from(height)).min(u64::from(u32::MAX)) as u32;
+        let s = if b.symbology == b'D' {
+            // the MaxiCode symbol height is ISO-fixed (the grid rows are
+            // 33 *module* rows, not the dot span)
+            maxi_size(b, opts.dpi).1
+        } else {
+            (u64::from(m) * u64::from(height)).min(u64::from(u32::MAX)) as u32
+        };
         if b.origin == OriginMode::Dot {
-            let dy = u64::from(s) + 3 * u64::from(m);
+            // the ^FT 2D gap: 3 modules for the QR, 3 dots constant for
+            // every other 2D symbol (measured - see [`origin_anchor`]).
+            let gap = if b.symbology == b'Q' { 3 * m } else { 3 };
+            let dy = u64::from(s) + u64::from(gap);
             let y = (b.y as i64 - dy.min(i64::MAX as u64) as i64).max(0) as u32;
             return Some((y, s));
         }
@@ -224,7 +243,7 @@ pub(crate) fn footprint(b: &BarcodeField, _opts: &RenderOptions) -> Option<(u32,
     // label bottom (BinaryKits BarcodeOrientation1/2 comparison).
     let height = if b.height == 0 { 10 } else { b.height };
     let fw = if matches!(b.rotation, Rotation::R90 | Rotation::R270) {
-        pattern_width(b)
+        pattern_width(b, opts.dpi)
     } else {
         0
     };
@@ -235,8 +254,9 @@ pub(crate) fn footprint(b: &BarcodeField, _opts: &RenderOptions) -> Option<(u32,
     Some((y, span.saturating_add(lc_span)))
 }
 
-/// The R0 pattern width in dots (1D bar runs sum; 2D = module map dots).
-fn pattern_width(b: &BarcodeField) -> u32 {
+/// The R0 pattern width in dots (1D bar runs sum; 2D = module map dots;
+/// MaxiCode = its fixed ISO width at the printer density).
+fn pattern_width(b: &BarcodeField, dpi: u32) -> u32 {
     let m = if b.module == 0 { 2 } else { b.module };
     match crate::bc::barcode_field(b) {
         Pattern::Bars(bars) => bars
@@ -244,6 +264,7 @@ fn pattern_width(b: &BarcodeField) -> u32 {
             .map(|x| u64::from(x.width))
             .sum::<u64>()
             .min(u64::from(u32::MAX)) as u32,
+        Pattern::Modules { .. } if b.symbology == b'D' => maxi_size(b, dpi).0,
         Pattern::Modules { width, .. } => {
             (u64::from(m) * u64::from(width)).min(u64::from(u32::MAX)) as u32
         }
@@ -551,7 +572,7 @@ pub(crate) fn paint(
     } else {
         0
     };
-    let g = extent(b, pat, tw);
+    let g = extent(b, pat, tw, opts.dpi);
     // `^FT` anchors the rect on the rotated baseline corner instead of
     // the top-left: `place` repositions the anchored content RECT, so
     // the label transforms (^LH/^LS/^LT/^POI/^PMY) move the rect as a
@@ -598,6 +619,11 @@ pub(crate) fn paint(
                 off += bar.width as u128;
             }
         }
+        Pattern::Modules {
+            width,
+            height,
+            data,
+        } if b.symbology == b'D' => paint_maxicode(bmp, b, data, fw, fh, ox, oy, flip, opts),
         Pattern::Modules {
             width,
             height,
@@ -694,6 +720,168 @@ pub(crate) fn paint(
     }
 }
 
+/// MaxiCode geometry at a printer density, transcribed from the
+/// BinaryKits MaxiCodeDrawer (ISO/IEC 16023:2000 pp. 16, 38-40), scaled
+/// by the ^BD magnification. Zebra printers are 203/300 dpi, so the
+/// table rows cover them; other densities use the ISO formulas.
+struct MaxiGeo {
+    w: f64,
+    v: f64,
+    x: f64,
+    y: f64,
+    gx: f64,
+    gv: f64,
+    xoff: f64,
+    yoff: f64,
+}
+
+fn maxi_geo(b: &BarcodeField, dpi: u32) -> MaxiGeo {
+    let dpmm = f64::from(dpi) / 25.4;
+    let mag = f64::from(if b.md_mag == 0 { 1 } else { b.md_mag });
+    if dpmm <= 9.0 {
+        MaxiGeo {
+            w: 7.0 * mag,
+            v: 8.0 * mag,
+            x: 7.0 * mag,
+            y: 6.0 * mag,
+            gx: 1.0 * mag,
+            gv: 1.0 * mag,
+            xoff: 3.5 * mag,
+            yoff: 3.0 * mag,
+        }
+    } else if dpmm <= 13.0 {
+        MaxiGeo {
+            w: 10.0 * mag,
+            v: 12.0 * mag,
+            x: 10.0 * mag,
+            y: 9.0 * mag,
+            gx: 2.0 * mag,
+            gv: 2.0 * mag,
+            xoff: 5.0 * mag,
+            yoff: 4.5 * mag,
+        }
+    } else {
+        // ISO formulas for unusual densities.
+        // ponytail: real printers are 203/300 dpi; this branch is
+        // untested against a reference.
+        let w = 25.5 * dpmm / 29.0 * mag;
+        let gx = dpmm / 6.0 * mag;
+        MaxiGeo {
+            w,
+            v: 1.1547 * w,
+            x: w,
+            y: 0.866 * w,
+            gx,
+            gv: 1.1547 * gx,
+            xoff: w / 2.0,
+            yoff: 0.866 * w / 2.0,
+        }
+    }
+}
+
+/// `(fw, fh)` of the MaxiCode content rect: the full 30-wide grid plus
+/// the bottom row tip.
+fn maxi_size(b: &BarcodeField, dpi: u32) -> (u32, u32) {
+    let g = maxi_geo(b, dpi);
+    (
+        ((30.0 * g.w).ceil() as u32).max(1),
+        ((32.0 * g.y + g.v).ceil() as u32).max(1),
+    )
+}
+
+/// MaxiCode hexagon paint: the 33-row honeycomb (odd rows 29 wide,
+/// shifted by exactly half a cell - the decoder samples a 30x33 grid
+/// with a `(y & 1) * width / 2` brick offset), full pointy-top hexagons
+/// of radius W/2 (they must touch: the BinaryKits drawer's 4-wide
+/// hexagons at a 7-dot pitch leave gutters that break decoding), and the
+/// centered bullseye finder (fixed ISO radii). Verified decodable with
+/// zxing-cpp at 203 dpi.
+#[allow(clippy::too_many_arguments)]
+fn paint_maxicode(
+    bmp: &mut Bitmap,
+    b: &BarcodeField,
+    data: &[u8],
+    fw: i64,
+    fh: i64,
+    ox: i64,
+    oy: i64,
+    flip: Flip,
+    opts: &RenderOptions,
+) {
+    let g = maxi_geo(b, opts.dpi);
+    let mag = if b.md_mag == 0 {
+        1.0
+    } else {
+        f64::from(b.md_mag)
+    };
+    let dpmm = f64::from(opts.dpi) / 25.4;
+    // bullseye center: the middle hexagon cell plus the half-gutter;
+    // ring radii are ISO mm times the density (R6 closes the outer void).
+    let (fx, fy) = (
+        14.0 * g.w + (g.x - g.gx) / 2.0,
+        16.0 * g.y + (g.v - g.gv) / 2.0,
+    );
+    let ring = |k: f64| (k * dpmm * mag).powi(2);
+    let (r1, r2, r3, r4, r5) = (ring(0.51), ring(1.18), ring(1.86), ring(2.53), ring(3.20));
+    let _ = r5;
+    if let Some((x0, x1, y0, y1)) = dest_bounds(bmp, ox, oy, b.rotation, fw, fh, 0, 0, fw, fh, flip)
+    {
+        for by in y0..=y1 {
+            for bx in x0..=x1 {
+                let (mx, my) = flip.fwd(fw, fh, bx - ox, by - oy);
+                let (u, v) = unrotate(mx, my, b.rotation, fw, fh);
+                if u < 0 || v < 0 {
+                    continue;
+                }
+                let (uf, vf) = (u as f64, v as f64);
+                let d2 = (uf - fx).powi(2) + (vf - fy).powi(2);
+                if d2 <= r1 || (d2 > r2 && d2 <= r3) || (d2 > r4 && d2 <= r5) {
+                    bmp.set(bx as u32, by as u32, true);
+                    continue;
+                }
+                // candidate hexagons: the rows/cols whose centers are
+                // within one pitch of the pixel (honeycomb pitch W x Y
+                // with the odd rows shifted W/2 right)
+                let j0 = (((vf - g.yoff) / g.y - 1.0).floor().max(0.0)) as i64;
+                let j1 = (((vf - g.yoff) / g.y + 1.0).ceil().min(32.0)) as i64;
+                for j in j0..=j1 {
+                    let n = 30 - (j % 2);
+                    let xf = (uf - (j % 2) as f64 * g.xoff) / g.w;
+                    let i0 = ((xf - 1.0).floor().max(0.0)) as i64;
+                    let i1 = ((xf + 1.0).ceil().min((n - 1) as f64)) as i64;
+                    for i in i0..=i1 {
+                        // packed grid: bit = row*30 + col (odd rows padded)
+                        let bit = j as usize * 30 + i as usize;
+                        let byte = data.get(bit >> 3).copied().unwrap_or(0);
+                        if byte >> (7 - bit % 8) & 1 == 0 {
+                            continue;
+                        }
+                        let cx = i as f64 * g.w + (j % 2) as f64 * g.xoff;
+                        let cy = j as f64 * g.y + g.yoff;
+                        // pointy-top hexagon: radius r = W/2, vertex
+                        // height h = (sqrt(3)/2) * r
+                        let dy = (vf - cy).abs();
+                        let r = g.w / 2.0;
+                        let h = 0.866_025_4 * r;
+                        if dy > h {
+                            continue;
+                        }
+                        let xw = if dy <= h / 2.0 {
+                            r
+                        } else {
+                            r * (h - dy) / (h / 2.0)
+                        };
+                        if (uf - cx).abs() <= xw {
+                            bmp.set(bx as u32, by as u32, true);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -729,6 +917,8 @@ mod tests {
             pdf_cols: 0,
             pdf_rows: 0,
             pdf_truncate: false,
+            md_mode: 4,
+            md_mag: 1,
             font: *b"A ",
             font_height: 9,
             font_width: 5,

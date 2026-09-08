@@ -1363,6 +1363,20 @@ pub fn encode_2d(f: &BarcodeField, data: &[u8]) -> Result<Pattern, String> {
         b'X' => datamatrix(f, data),
         b'7' => pdf417(f, data),
         b'0' => aztec(f, data),
+        // MaxiCode: whole-symbol fixed module map (30x33 cell grid, odd
+        // rows 29 wide - the renderer's 'D' arm owns the hexagon
+        // geometry). Word data is the ISO stream; mode 2/3 need the
+        // ^FH-decoded structured-carrier bytes.
+        b'D' => {
+            let mut grid = Grid::new(30, 33);
+            let cells = crate::maxicode::encode(f.data.as_str(), f.md_mode);
+            for (i, &bit) in cells.iter().enumerate() {
+                if bit != 0 {
+                    grid.set(i % 30, i / 30, true);
+                }
+            }
+            Ok(grid.pattern(0, 0, 0, 0))
+        }
         _ => Err("not a 2D symbology".into()),
     }
 }

@@ -207,6 +207,10 @@ pub struct BarcodeDraft {
     pub pdf_rows: u32,
     /// ^B7 t: PDF417 truncation Y/N (default N).
     pub pdf_truncate: bool,
+    /// ^BD b: MaxiCode mode 2/3/4 (guide default 4).
+    pub md_mode: u8,
+    /// ^BD c: MaxiCode magnification 1..8 (default 1 = ISO hexagon pitch).
+    pub md_mag: u8,
 }
 
 /// The shape a drawing-field command (`^GB ^GC ^GD ^GE`) deposits on the
@@ -562,6 +566,8 @@ impl FieldDraft {
                     pdf_cols: b.pdf_cols,
                     pdf_rows: b.pdf_rows,
                     pdf_truncate: b.pdf_truncate,
+                    md_mode: b.md_mode,
+                    md_mag: b.md_mag,
                     // The field's ^A font is captured at ^FS like text,
                     // but the reference renders the interpretation line in
                     // built-in font 0 at ~15% of the bar height, ignoring

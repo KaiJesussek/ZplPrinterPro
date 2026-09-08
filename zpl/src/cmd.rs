@@ -638,6 +638,14 @@ const TABLE: &[CommandSpec] = &[
         binary_handler: None,
     },
     CommandSpec {
+        mnemonic: *b"BD",
+        prefix: Prefix::Caret,
+        kind: CmdKind::Format,
+        handler: bc::maxicode_field,
+        binary_len: None,
+        binary_handler: None,
+    },
+    CommandSpec {
         mnemonic: *b"BK",
         prefix: Prefix::Caret,
         kind: CmdKind::Format,

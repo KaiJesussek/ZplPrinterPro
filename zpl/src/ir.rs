@@ -171,6 +171,10 @@ pub struct BarcodeField {
     /// `^B7 t`: PDF417 truncation Y/N (guide default N): right row
     /// indicators and stop reduced to a single-module bar.
     pub pdf_truncate: bool,
+    /// `^BD b`: MaxiCode mode 2/3/4 (guide default 4).
+    pub md_mode: u8,
+    /// `^BD c`: MaxiCode magnification 1..8 (default 1 = ISO hexagon pitch).
+    pub md_mag: u8,
     /// `^A`/`^A@` font request for the interpretation line, captured when
     /// the symbology field was parsed - guide ^BC p.94: "The interpretation
     /// line can be printed in any font by placing the font command before
@@ -352,6 +356,8 @@ mod tests {
                     pdf_cols: 0,
                     pdf_rows: 0,
                     pdf_truncate: false,
+                    md_mode: 4,
+                    md_mag: 1,
                     font: *b"01",
                     font_height: 30,
                     font_width: 20,
