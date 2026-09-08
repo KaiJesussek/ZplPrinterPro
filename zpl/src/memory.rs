@@ -35,6 +35,9 @@ pub struct Memory {
     pub fonts: BTreeMap<String, Vec<u8>>,
     /// Stored formats (`^DF` download; recalled by `^XF`), raw ZPL bytes.
     pub formats: BTreeMap<String, Vec<u8>>,
+    /// Downloaded character-encoding translation tables (`~DE`), decoded
+    /// hex pairs (`E:NAME.DAT` -> table bytes).
+    pub encodings: BTreeMap<String, Vec<u8>>,
 }
 
 /// A stored bitmap: 1bpp packed, row-major, MSB-first.
@@ -632,6 +635,17 @@ pub(crate) fn dy_binary_len(params: &[u8]) -> Option<(usize, usize)> {
 /// declared count (stream ended mid-payload, warned by the driver) stores
 /// nothing.
 pub(crate) fn dy_binary_handler(ctx: &mut ParseContext, params: &[u8], tail: &[u8]) {
+    binary_object_store(ctx, params, tail, "DY");
+}
+
+/// `~DV` format-B payload receiver: identical layout to ~DY's binary path
+/// (`d:f,b,x,t,w`), so the shared store applies with the command's label.
+pub(crate) fn dv_binary_handler(ctx: &mut ParseContext, params: &[u8], tail: &[u8]) {
+    binary_object_store(ctx, params, tail, "DV");
+}
+
+/// Shared `~DY`/`~DV` binary-object storage under `Memory.fonts`.
+fn binary_object_store(ctx: &mut ParseContext, params: &[u8], tail: &[u8], label: &str) {
     let (segs, already) = head_segments(params, 5);
     let raw_name = segs.first().copied().unwrap_or(&[]);
     let name = String::from_utf8_lossy(raw_name).into_owned();
@@ -639,11 +653,11 @@ pub(crate) fn dy_binary_handler(ctx: &mut ParseContext, params: &[u8], tail: &[u
         segs.get(2).and_then(|p| p.first()).copied(),
         Some(b'G') | Some(b'g')
     ) {
-        warn_drop(ctx, "DY", &name, "graphic downloads need ASCII-hex data");
+        warn_drop(ctx, label, &name, "graphic downloads need ASCII-hex data");
         return;
     }
     let Some(t) = segs.get(3).and_then(|p| to_u32(p)).map(|v| v as usize) else {
-        warn_drop(ctx, "DY", &name, "missing byte count");
+        warn_drop(ctx, label, &name, "missing byte count");
         return;
     };
     let name = font_key(raw_name);
@@ -657,11 +671,11 @@ pub(crate) fn dy_binary_handler(ctx: &mut ParseContext, params: &[u8], tail: &[u
         return; // truncated at the driver; it already warned
     }
     if payload.is_empty() {
-        warn_drop(ctx, "DY", &name, "empty object");
+        warn_drop(ctx, label, &name, "empty object");
         return;
     }
     if !fits_total(ctx.memory, &name, payload.len()) {
-        warn_memory_full(ctx, "DY", &name);
+        warn_memory_full(ctx, label, &name);
         return;
     }
     ctx.memory.fonts.insert(name, payload);
@@ -682,6 +696,201 @@ pub(crate) fn download_bounded_font(ctx: &mut ParseContext, params: &[u8]) {
 /// `~DUd:o.x,s,data` - download an unbounded TrueType font (guide p.180).
 pub(crate) fn download_unbounded_font(ctx: &mut ParseContext, params: &[u8]) {
     font_download(ctx, params, "FNT", "DU");
+}
+
+/// `~DBd:o.x,a,h,w,base,space,#char,copyright,data` (guide p.170): download
+/// a bitmap font. The header defines the cell (h/w), baseline, space width
+/// and character count; `data` is the structured per-character definition
+/// (`#xxxx.h.w.x.y.i.data`, heterogeneous lengths - not a fixed-width
+/// hex image, so it is stored raw). The renderer has no bitmap-font path
+/// (TTF-only), so a font named later by `^A@` falls through to the
+/// existing "font unavailable" warning; the download itself validates the
+/// header, is size-bounded, and persists.
+pub(crate) fn download_bitmap_font(ctx: &mut ParseContext, params: &[u8]) {
+    const DB: &str = "DB";
+    let (segs, data) = head_segments(params, 9);
+    let raw_name = segs.first().copied().unwrap_or(&[]);
+    // The example's `~DBR:TIMES.FNT,...` shows the ampersand-copyright
+    // segment coming after the count; the guide sequence is
+    // d:o.x, a, h, w, base, space, #char, (c), data.
+    let mut name = font_key(raw_name);
+    if !name.contains('.') {
+        name.push_str(".FNT");
+    }
+    if name.len() > 40 {
+        warn_drop(ctx, DB, &name, "font name too long");
+        return;
+    }
+    // a = orientation: the guide fixes it to "normal" (N).
+    if let Some(a) = segs.get(1).and_then(|p| p.first()).copied() {
+        if !matches!(a.to_ascii_uppercase(), b'N') {
+            warn_drop(ctx, DB, &name, "only normal (N) orientation is supported");
+            return;
+        }
+    }
+    for (i, what, max) in [
+        (2usize, "height", 32000u32),
+        (3, "width", 32000),
+        (4, "baseline", 32000),
+        (5, "space width", 32000),
+    ] {
+        match segs.get(i).and_then(|p| p.first()).copied() {
+            Some(_) => {}
+            None => {
+                warn_drop(ctx, DB, &name, &format!("missing {what}"));
+                return;
+            }
+        }
+        let _ = max;
+    }
+    // #char: 1..256, required.
+    let chars = match segs.get(6).and_then(|p| to_u32(p)) {
+        Some(c) if (1..=256).contains(&c) => c,
+        Some(_) => {
+            warn_drop(ctx, DB, &name, "character count must be 1..256");
+            return;
+        }
+        None => {
+            warn_drop(ctx, DB, &name, "missing character count");
+            return;
+        }
+    };
+    let data = if data.is_empty() {
+        // No 9th comma: the character definitions ride in the last segment.
+        segs.last().copied().unwrap_or(&[])
+    } else {
+        data
+    };
+    if !data.starts_with(b"#") || data.len() < chars as usize {
+        warn_drop(ctx, DB, &name, "missing or truncated character data");
+        return;
+    }
+    if !fits_total(ctx.memory, &name, data.len()) {
+        warn_memory_full(ctx, DB, &name);
+        return;
+    }
+    ctx.memory.fonts.insert(name, data.to_vec());
+}
+
+/// `~DEd:o.x,s,data` (guide p.172): download a character-encoding
+/// translation table (`.DAT`). `s` = decoded byte count, `data` = that
+/// many two-digit hex values. Stored decoded under `Memory.encodings`
+/// (the project's text path is Unicode-fixed, so the table is recorded,
+/// not applied).
+pub(crate) fn download_encoding(ctx: &mut ParseContext, params: &[u8]) {
+    const DE: &str = "DE";
+    let (segs, data) = head_segments(params, 2);
+    let mut name = font_key(segs.first().copied().unwrap_or(&[]));
+    if !name.contains('.') {
+        name.push_str(".DAT");
+    }
+    let Some(s) = segs.get(1).and_then(|p| to_u32(p)) else {
+        warn_drop(ctx, DE, &name, "missing table size");
+        return;
+    };
+    if data.is_empty() {
+        warn_drop(ctx, DE, &name, "missing table data");
+        return;
+    }
+    if data.len() % 2 != 0 {
+        warn_drop(ctx, DE, &name, "hex table data has odd length");
+        return;
+    }
+    let mut bytes = Vec::with_capacity(s as usize);
+    for pair in data.as_chunks::<2>().0 {
+        let hi = hex_val(pair[0]);
+        let lo = hex_val(pair[1]);
+        let (Some(hi), Some(lo)) = (hi, lo) else {
+            warn_drop(ctx, DE, &name, "table data is not ASCII hex");
+            return;
+        };
+        bytes.push((hi << 4) | lo);
+    }
+    if bytes.len() != s as usize {
+        warn_drop(
+            ctx,
+            DE,
+            &name,
+            &format!(
+                "table size {s} does not match {} decoded bytes",
+                bytes.len()
+            ),
+        );
+        return;
+    }
+    if !fits_total(ctx.memory, &name, bytes.len()) {
+        warn_memory_full(ctx, DE, &name);
+        return;
+    }
+    ctx.memory.encodings.insert(name, bytes);
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        _ => None,
+    }
+}
+
+/// `~DVd:f,b,x,t,w,data` (guide p.181): download a vector font / file
+/// object. `b` = data format (A hex, B binary - routed to the binary
+/// receiver, C AR-compressed, P PNG), `x` = stored extension (default
+/// `.GRF`), `t` = total byte count, `w` = bytes per row. The ASCII-hex
+/// path stores through `fonts` exactly like `~DY`; compressed (C) and
+/// PNG (P) formats are accepted and stored raw (the payload is opaque to
+/// this emulator).
+pub(crate) fn download_vector_object(ctx: &mut ParseContext, params: &[u8]) {
+    const DV: &str = "DV";
+    let (segs, data) = head_segments(params, 5);
+    // Format B (binary) is handled by `dv_binary_handler` before this
+    // token can split; accept A (hex) and the opaque C/P here.
+    if let Some(b) = segs.get(1).and_then(|p| p.first()).copied() {
+        if !matches!(b.to_ascii_uppercase(), b'A' | b'C' | b'P') {
+            warn_drop(ctx, DV, "object", "format must be A (hex), C or P");
+            return;
+        }
+    }
+    let mut name = font_key(segs.first().copied().unwrap_or(&[]));
+    let ext = match segs.get(2).and_then(|p| p.first()).copied() {
+        Some(x) => x.to_ascii_uppercase(),
+        None => b'G', // "a value other than the accepted values defaults to .GRF"
+    };
+    match ext {
+        b'B' => name.push_str(".BMP"),
+        b'E' => name.push_str(".TTE"),
+        b'G' => name.push_str(".GRF"),
+        b'P' => name.push_str(".PNG"),
+        b'T' => name.push_str(".TTF"),
+        b'X' => name.push_str(".PCX"),
+        b'C' => name.push_str(".WML"),
+        b'F' => name.push_str(".HTM"),
+        b'H' => name.push_str(".GET"),
+        _ => name.push_str(".GRF"),
+    }
+    // d:f carrying its own extension (e.g. E:FONT.TTF) keeps it verbatim;
+    // otherwise the mapped extension is appended.
+    if font_key(segs.first().copied().unwrap_or(&[])).contains('.') {
+        name = font_key(segs.first().copied().unwrap_or(&[]));
+    }
+    let Some(t) = segs.get(3).and_then(|p| to_u32(p)) else {
+        warn_drop(ctx, DV, &name, "missing byte count");
+        return;
+    };
+    if (t as usize) > MAX_IMAGE_BYTES {
+        warn_drop(ctx, DV, &name, "object exceeds emulator size limits");
+        return;
+    }
+    let Some(decoded) = decode_graphic_data(data, t as usize, 1) else {
+        warn_drop(ctx, DV, &name, "malformed or short hex data");
+        return;
+    };
+    if !fits_total(ctx.memory, &name, decoded.len()) {
+        warn_memory_full(ctx, DV, &name);
+        return;
+    }
+    ctx.memory.fonts.insert(name, decoded);
 }
 
 fn font_download(ctx: &mut ParseContext, params: &[u8], default_ext: &str, cmd: &str) {

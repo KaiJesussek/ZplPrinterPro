@@ -192,3 +192,91 @@ fn at_select_carries_cell_and_scaled_advance() {
     let out = render(&label, &opts).expect("render with the downloaded font");
     assert_eq!(out.warnings.len(), 0, "no warning: {:?}", out.warnings);
 }
+
+// --- ~DB bitmap font, ~DE encoding table, ~DV vector object ---------------
+
+#[test]
+fn db_downloads_bitmap_font_header_and_data() {
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    // Guide format: ~DBd:o.x,a,h,w,base,space,#char,copyright,data.
+    // Character 65 = 'A': #065.8.6.0.0.8.<hex rows>.
+    let src =
+        "~DBR:TIMES.FNT,N,24,12,20,10,2,ZEBRA 1992,#065.8.6.0.0.8.0018002400420081008100420024001800^XA^XZ";
+    let (_, ctx) = common::parse_ctx(src.as_bytes(), &mut diags, &mut memory);
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "clean download: {:?}",
+        ctx.diags.items
+    );
+    let stored = ctx.memory.fonts.get("TIMES.FNT").expect("stored");
+    assert!(stored.starts_with(b"#065"), "structured data stored raw");
+    // Missing required header values are rejected with a warning.
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let src = "~DBR:TIMES.FNT^XA^XZ";
+    let (_, ctx) = common::parse_ctx(src.as_bytes(), &mut diags, &mut memory);
+    assert!(
+        !ctx.diags.items.is_empty(),
+        "missing header must warn: {:?}",
+        ctx.diags.items
+    );
+    assert!(!ctx.memory.fonts.contains_key("TIMES.FNT"));
+}
+
+#[test]
+fn de_downloads_encoding_table_decoded() {
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    // The guide's own example shape: s = the decoded byte count (the
+    // "27848 two-digit hexadecimal values" of the JIS example), so the
+    // 16 hex pairs here declare s = 16.
+    let src = "~DEE:EXAMPLE.DAT,16,00310041003200420033004300440034^XA^XZ";
+    let (_, ctx) = common::parse_ctx(src.as_bytes(), &mut diags, &mut memory);
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "clean download: {:?}",
+        ctx.diags.items
+    );
+    assert_eq!(
+        ctx.memory.encodings.get("EXAMPLE.DAT"),
+        Some(&vec![
+            0x00, 0x31, 0x00, 0x41, 0x00, 0x32, 0x00, 0x42, //
+            0x00, 0x33, 0x00, 0x43, 0x00, 0x44, 0x00, 0x34,
+        ]),
+        "decoded hex pairs stored"
+    );
+    // Declared size vs decoded mismatch -> warning, nothing stored.
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    let src = "~DEE:EXAMPLE.DAT,4,0031^XA^XZ";
+    let (_, ctx) = common::parse_ctx(src.as_bytes(), &mut diags, &mut memory);
+    assert!(
+        !ctx.diags.items.is_empty(),
+        "size mismatch must warn: {:?}",
+        ctx.diags.items
+    );
+    assert!(ctx.memory.encodings.is_empty());
+}
+
+#[test]
+fn dv_downloads_vector_object_by_extension() {
+    let mut diags = Diagnostics::default();
+    let mut memory = Memory::default();
+    // ~DVd:f,b,x,t,w,data with x = T (TrueType): stores under .TTF.
+    let src = "~DVE:FONT.TTF,A,T,4,0,41424344^XA^XZ";
+    let (_, ctx) = common::parse_ctx(src.as_bytes(), &mut diags, &mut memory);
+    assert_eq!(
+        ctx.diags.items.len(),
+        0,
+        "clean download: {:?}",
+        ctx.diags.items
+    );
+    assert_eq!(
+        ctx.memory.fonts.get("FONT.TTF").map(Vec::as_slice),
+        Some(&b"ABCD"[..]),
+        "hex payload stored verbatim"
+    );
+}
