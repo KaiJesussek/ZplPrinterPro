@@ -186,11 +186,20 @@ pub(crate) fn field_typeset(ctx: &mut ParseContext, params: &[u8]) {
 
 fn apply_origin(ctx: &mut ParseContext, params: &[u8], origin: OriginMode, cmd: &str) {
     let parts = split_commas(params);
+    // Blank ^FO/^FT arguments carry the LAST field origin forward (the
+    // guide's "last specified value" rule) - e.g. `^FT^GSN^FDA` stacks a
+    // graphic symbol at the previous field's position (BinaryKits
+    // GraphicSymbol comparison). Only the first field with a blank
+    // origin falls back to 0,0.
     let x = p_u32(parts.first().copied(), cmd, "x", ctx.diags, 0);
     let y = p_u32(parts.get(1).copied(), cmd, "y", ctx.diags, 0);
     if let Some(d) = draft_mut(ctx) {
-        d.x = x;
-        d.y = y;
+        if !parts.first().is_some_and(|p| p.is_empty()) {
+            d.x = x;
+        }
+        if !parts.get(1).is_some_and(|p| p.is_empty()) {
+            d.y = y;
+        }
         d.origin = origin;
     }
 }

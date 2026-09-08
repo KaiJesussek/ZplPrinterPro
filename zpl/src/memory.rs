@@ -532,7 +532,47 @@ pub(crate) fn download_object(ctx: &mut ParseContext, params: &[u8]) {
             }
             bytes
         }
-        Some(b'C') | Some(b'P') => {
+        Some(b'P') => {
+            // ~DY P: a compressed graphic (PNG, ASCII-hex or binary
+            // payload). Decode to the 1bpp row-packed model; the ^IM/
+            // ^XG recall path renders it. JPEG (~DY J) stays unsupported.
+            let Some(t) = t else {
+                warn_drop(ctx, "DY", &name, "missing byte count");
+                return;
+            };
+            if t > MAX_IMAGE_BYTES {
+                warn_drop(ctx, "DY", &name, "graphic exceeds emulator size limits");
+                return;
+            }
+            let Some(decoded) = decode_graphic_data(data, t, {
+                segs.get(4).and_then(|p| to_u32(p)).unwrap_or(0) as usize
+            }) else {
+                warn_drop(ctx, "DY", &name, "malformed or short hex data");
+                return;
+            };
+            let Some((w, h, bmp)) = crate::gfxdata::png_to_bitmap(&decoded) else {
+                ctx.diags.push(Diagnostic::warning(
+                    "DY",
+                    format!("{name}: P payload is not a decodable PNG; dropped"),
+                ));
+                return;
+            };
+            let key = image_name(raw_name);
+            if !fits_total(ctx.memory, &key, bmp.len()) {
+                warn_memory_full(ctx, "DY", &name);
+                return;
+            }
+            ctx.memory.images.insert(
+                key,
+                Image {
+                    width: w,
+                    height: h,
+                    data: bmp,
+                },
+            );
+            return;
+        }
+        Some(b'C') => {
             ctx.diags.push(Diagnostic::warning(
                 "DY",
                 format!(

@@ -1549,6 +1549,41 @@ fn pmy_gd_diagonal_direction_swaps() {
     );
 }
 
+/// The auto-height footprint covers rotated 1D barcodes: an R90/R270
+/// content box is `fh` wide x `fw` tall, so the label-Y span is the
+/// PATTERN WIDTH, not the bar height - the label was cutting rotated
+/// barcodes at its bottom edge (BinaryKits BarcodeOrientation2: the
+/// R90 barcode printed through the ^LL boundary).
+#[test]
+fn rotated_barcode_auto_height_uses_pattern_span() {
+    let (_, out) = render_bc(b"^XA^FO50,100^BY2,2^BCR,100,Y,N^FD12345^FS^XZ");
+    let bmp = &out.bitmap;
+    // "12345" at module 2: pattern ~183 dots wide, height 100: the R90
+    // box [50,150) x [100, ~283) - the label must reach past y 283.
+    assert!(
+        bmp.height >= 292,
+        "label grows to cover the rotated pattern"
+    );
+    // ... but stop near the content (not the 32000 ceiling).
+    assert!(bmp.height < 400, "no runaway growth");
+    assert!((100..283).any(|y| bmp.get(120, y)), "rotated bars on-label");
+}
+
+/// A blank ^FO/^FT inherits the previous field origin (the guide's
+/// "last specified value" rule): `^GR^GSN^FDA` after `^FO10,20^FDA`
+/// stacks the symbol at (10,20) - BinaryKits GraphicSymbol.
+#[test]
+fn blank_origin_inherits_last_field_position() {
+    let (_, out) = render_bc(b"^XA^FO10,20^FDA^FS^FT^GSN^FDA^FS^XZ");
+    let bmp = &out.bitmap;
+    // The second (blank-^FT) symbol inherits (10,20): its 9px ink sits at
+    // x10..19, y20..27 - NOT at (0,0).
+    assert!(
+        bmp.get(12, 22) && !(10..19).any(|x| bmp.get(x, 8)),
+        "blank-^FT symbol lands at the previous (10,20) origin"
+    );
+}
+
 /// The label transforms (`^POI`/`^PMY`) reposition the ANCHORED content
 /// rect, not the field origin: with `^FT` the rect hangs above the
 /// origin and must flip as a unit (measured on the reference: ^POI

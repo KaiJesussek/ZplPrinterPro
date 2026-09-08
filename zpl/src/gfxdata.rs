@@ -321,6 +321,26 @@ mod tests {
     }
 
     #[test]
+    fn png_to_bitmap_decodes_paletted_logo() {
+        // A 2x1 paletted PNG: black-orange pixels -> threshold -> 1bpp "10".
+        let png = {
+            let mut w = std::io::Cursor::new(Vec::new());
+            {
+                let mut enc = png::Encoder::new(&mut w, 2, 1);
+                enc.set_color(png::ColorType::Rgb);
+                enc.set_depth(png::BitDepth::Eight);
+                let mut wr = enc.write_header().unwrap();
+                wr.write_image_data(&[0, 0, 0, 255, 128, 0]).unwrap();
+                wr.finish().unwrap();
+            }
+            w.into_inner()
+        };
+        let (w, h, bits) = super::png_to_bitmap(&png).expect("PNG decodes");
+        assert_eq!((w, h), (2, 1));
+        assert_eq!(bits, vec![0b1000_0000], "dark pixel first, light second");
+    }
+
+    #[test]
     fn png_to_bitmap_thresholds_gray_to_1bpp() {
         // 10x8 1-bit gray PNG (the shape ^GF P test payloads use): a
         // filled row decodes back to the same packed bits MSB-first.

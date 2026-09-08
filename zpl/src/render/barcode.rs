@@ -218,11 +218,12 @@ pub(crate) fn footprint(b: &BarcodeField, _opts: &RenderOptions) -> Option<(u32,
     }
     // 1D: each printed line adds its own cell (f=Y below, g=Y above),
     // hung off the rect. An ^FT field's rect hangs off the baseline
-    // corner, so the scan starts at the rect top; for R270 the rotated
-    // rect is `fw` tall (the pattern width), so that case derives the
-    // span from the encoded pattern.
+    // corner, so the scan starts at the rect top; the R90/R270 rects
+    // are `fh` wide x `fw` tall (the pattern width is the label-Y
+    // span) - the auto height was cutting rotated barcodes at the
+    // label bottom (BinaryKits BarcodeOrientation1/2 comparison).
     let height = if b.height == 0 { 10 } else { b.height };
-    let fw = if b.origin == OriginMode::Dot && b.rotation == Rotation::R270 {
+    let fw = if matches!(b.rotation, Rotation::R90 | Rotation::R270) {
         pattern_width(b)
     } else {
         0
