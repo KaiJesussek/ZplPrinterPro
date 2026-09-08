@@ -1509,6 +1509,46 @@ fn qr_auto_height_covers_symbol() {
     assert!((210..335).any(|y| bmp.get(210, y)), "symbol fully on-label");
 }
 
+/// DataMatrix at `^FT` keeps the same hang-above rule as the QR but
+/// with a 3-DOT margin, not 3x the magnification (measured on the
+/// reference at mag 3 and 6: the symbol spans [origin-(S+3), origin-3)
+/// with S = symbol height in px).
+#[test]
+fn dm_ft_origin_hangs_three_dots_clear() {
+    let (_, out) = render_bc(b"^XA^PW600^LL600^FT200,600^BXN,6,200,20,20^FDHello World^FS^XZ");
+    let bmp = &out.bitmap;
+    assert!(
+        (501..597).any(|y| bmp.get(260, y)),
+        "DM symbol spans [501,597) above the ^FT origin"
+    );
+    assert!(
+        !(597..600).any(|y| (200..330).any(|x| bmp.get(x, y))),
+        "bottom 3 dots stay clear of the origin"
+    );
+}
+
+/// `^PMY` mirrors GEOMETRY content (measured: the reference flips the
+/// ^GD diagonal direction under the label mirror). A straight diagonal
+/// is 180deg-symmetric, so `^POI` preserves it and only the single-axis
+/// mirror swaps the direction.
+#[test]
+fn pmy_gd_diagonal_direction_swaps() {
+    // The label mirror flips the diagonal's direction (measured: the
+    // reference's ^GD TR+BL under ^PMY renders TL+BR). The rect flips
+    // to [300,500)x[100,200) and the anti-diagonal runs TR->BL there:
+    // ink at x 489 on row 110 and x 319 on row 190, none on the
+    // main-diagonal path (x ~320 on row 110).
+    let (_, out) = render_bc(b"^XA^PW600^LL600^PMY^FO100,100^GD200,100,10,L^FS^XZ");
+    let bmp = &out.bitmap;
+    // Measured: ink 475..484 on row 110 (the mirror of the plain
+    // main-diagonal at 116..125) and 314..323 on row 190; the
+    // main-diagonal path at row 110 stays clear.
+    assert!(
+        bmp.get(479, 110) && bmp.get(318, 190) && !bmp.get(320, 110),
+        "diagonal direction flipped under ^PMY"
+    );
+}
+
 /// The label transforms (`^POI`/`^PMY`) reposition the ANCHORED content
 /// rect, not the field origin: with `^FT` the rect hangs above the
 /// origin and must flip as a unit (measured on the reference: ^POI

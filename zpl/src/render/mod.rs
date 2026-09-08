@@ -259,16 +259,23 @@ pub fn render(label: &Label, opts: &RenderOptions) -> Result<RenderOutcome, Rend
                     d.height,
                 );
                 let color = if d.reverse { b'X' } else { d.color };
-                draw_diagonal(
-                    &mut bmp,
-                    fx,
-                    fy,
-                    d.width,
-                    d.height,
-                    d.direction,
-                    d.thickness,
-                    color,
-                );
+                // The label flips mirror GEOMETRY content too (measured:
+                // ^GD direction A flips to the other diagonal under
+                // ^PMY). A diagonal through the rect center is
+                // 180deg-symmetric, so ^POI preserves it; single-axis
+                // flips (^PMY, and POI+PMY = vertical) swap the
+                // direction - i.e. exactly `mirror` (POI XOR PMY on x,
+                // POI on y; see barcode.rs Flip).
+                let dir = if opts.mode.mirror {
+                    if d.direction == b'L' {
+                        b'A'
+                    } else {
+                        b'L'
+                    }
+                } else {
+                    d.direction
+                };
+                draw_diagonal(&mut bmp, fx, fy, d.width, d.height, dir, d.thickness, color);
             }
             Field::Ellipse(e) => {
                 let (fx, fy) = place(

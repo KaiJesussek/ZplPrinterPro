@@ -170,15 +170,16 @@ fn extent(b: &BarcodeField, pat: &Pattern, tw: u32) -> Extent {
 fn origin_anchor(b: &BarcodeField, fw: u32, fh: u32, two_d: bool) -> (i64, i64) {
     match (b.origin, b.rotation) {
         (OriginMode::Block, _) => (0, 0),
-        // 2D symbols (QR): the reference hangs the symbol ABOVE the
-        // origin with its bottom 3 modules clear of it - measured:
-        // `^BQ` at `^FT` renders [origin-(S+3m), origin-3m) for every
-        // rotation (the QR is square, so no corner can be told apart).
-        // Rectangular 2D (DataMatrix) at ^FT is unmeasured; same rule
-        // assumed. // ponytail: DM ^FT untested - probe before relying on it.
+        // 2D symbols at `^FT`: the reference hangs the symbol ABOVE the
+        // origin with its bottom margin clear - measured `^BQ` renders
+        // [origin-(S+3m), origin-3m) (3 MODULES, mag-independent ratio),
+        // while `^BXN` (DataMatrix) renders [origin-(S+3), origin-3)
+        // (3 DOTS regardless of magnification - probed at mag 3 and 6);
+        // every rotation (the QR is square, so no corner can be told).
         (OriginMode::Dot, _) if two_d => {
-            let m = if b.module == 0 { 2 } else { b.module };
-            (0, fh as i64 + 3 * m as i64)
+            let m = i64::from(if b.module == 0 { 2 } else { b.module });
+            let gap = if b.symbology == b'Q' { 3 * m } else { 3 };
+            (0, fh as i64 + gap)
         }
         (OriginMode::Dot, Rotation::R90) => (0, 0),
         (OriginMode::Dot, Rotation::R0) => (0, fh as i64),
