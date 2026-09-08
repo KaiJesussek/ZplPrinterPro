@@ -203,16 +203,24 @@ pub fn render(label: &Label, opts: &RenderOptions) -> Result<RenderOutcome, Rend
                 barcode::paint(&mut bmp, b, &pattern, opts, &mut warnings);
             }
             Field::Box(b) => {
-                let (fx, fy) = place(opts.mode, w, h, b.x, b.y, b.width, b.height);
                 // `^FT` (Dot): the rect hangs ABOVE the origin - its
                 // bottom edge is the baseline (measured: ^GB at ^FT
-                // paints [origin-height, origin)). Linear after `place`,
-                // so it composes with ^POI/^PMY.
-                let fy = if b.origin == OriginMode::Dot {
-                    fy - b.height as i64
-                } else {
-                    fy
-                };
+                // paints [origin-height, origin)). `place` repositions
+                // the anchored rect top-left, so ^POI/^PMY move the rect
+                // as a unit (a post-place shift would not compose).
+                let (fx, fy) = place(
+                    opts.mode,
+                    w,
+                    h,
+                    b.x as i64,
+                    if b.origin == OriginMode::Dot {
+                        b.y as i64 - b.height as i64
+                    } else {
+                        b.y as i64
+                    },
+                    b.width,
+                    b.height,
+                );
                 // `^FR` reverse print: the field's ink is XORed into the
                 // canvas instead of painted black (the reference logo's
                 // white frame - measured; see Bitmap::paint).
@@ -220,22 +228,36 @@ pub fn render(label: &Label, opts: &RenderOptions) -> Result<RenderOutcome, Rend
                 draw_rect(&mut bmp, fx, fy, b.width, b.height, b.thickness, color);
             }
             Field::Circle(c) => {
-                let (fx, fy) = place(opts.mode, w, h, c.x, c.y, c.diameter, c.diameter);
-                let fy = if c.origin == OriginMode::Dot {
-                    fy - c.diameter as i64
-                } else {
-                    fy
-                };
+                let (fx, fy) = place(
+                    opts.mode,
+                    w,
+                    h,
+                    c.x as i64,
+                    if c.origin == OriginMode::Dot {
+                        c.y as i64 - c.diameter as i64
+                    } else {
+                        c.y as i64
+                    },
+                    c.diameter,
+                    c.diameter,
+                );
                 let color = if c.reverse { b'X' } else { c.color };
                 draw_circle(&mut bmp, fx, fy, c.diameter, c.thickness, color);
             }
             Field::Diagonal(d) => {
-                let (fx, fy) = place(opts.mode, w, h, d.x, d.y, d.width, d.height);
-                let fy = if d.origin == OriginMode::Dot {
-                    fy - d.height as i64
-                } else {
-                    fy
-                };
+                let (fx, fy) = place(
+                    opts.mode,
+                    w,
+                    h,
+                    d.x as i64,
+                    if d.origin == OriginMode::Dot {
+                        d.y as i64 - d.height as i64
+                    } else {
+                        d.y as i64
+                    },
+                    d.width,
+                    d.height,
+                );
                 let color = if d.reverse { b'X' } else { d.color };
                 draw_diagonal(
                     &mut bmp,
@@ -249,12 +271,19 @@ pub fn render(label: &Label, opts: &RenderOptions) -> Result<RenderOutcome, Rend
                 );
             }
             Field::Ellipse(e) => {
-                let (fx, fy) = place(opts.mode, w, h, e.x, e.y, e.width, e.height);
-                let fy = if e.origin == OriginMode::Dot {
-                    fy - e.height as i64
-                } else {
-                    fy
-                };
+                let (fx, fy) = place(
+                    opts.mode,
+                    w,
+                    h,
+                    e.x as i64,
+                    if e.origin == OriginMode::Dot {
+                        e.y as i64 - e.height as i64
+                    } else {
+                        e.y as i64
+                    },
+                    e.width,
+                    e.height,
+                );
                 let color = if e.reverse { b'X' } else { e.color };
                 draw_ellipse(&mut bmp, fx, fy, e.width, e.height, e.thickness, color);
             }
@@ -276,22 +305,36 @@ pub fn render(label: &Label, opts: &RenderOptions) -> Result<RenderOutcome, Rend
                     let iw = (g.bytes_per_row as u64 * 8).min(u32::MAX as u64) as u32;
                     let ih =
                         (g.data.len() as u64 / g.bytes_per_row as u64).min(u32::MAX as u64) as u32;
-                    let (fx, fy) = place(opts.mode, w, h, g.x, g.y, iw, ih);
-                    let fy = if g.origin == OriginMode::Dot {
-                        fy - ih as i64
-                    } else {
-                        fy
-                    };
+                    let (fx, fy) = place(
+                        opts.mode,
+                        w,
+                        h,
+                        g.x as i64,
+                        if g.origin == OriginMode::Dot {
+                            g.y as i64 - ih as i64
+                        } else {
+                            g.y as i64
+                        },
+                        iw,
+                        ih,
+                    );
                     blit(&mut bmp, iw, ih, &g.data, fx, fy);
                 }
                 GraphicKind::Stored(name) => match opts.memory.images.get(name) {
                     Some(img) => {
-                        let (fx, fy) = place(opts.mode, w, h, g.x, g.y, img.width, img.height);
-                        let fy = if g.origin == OriginMode::Dot {
-                            fy - img.height as i64
-                        } else {
-                            fy
-                        };
+                        let (fx, fy) = place(
+                            opts.mode,
+                            w,
+                            h,
+                            g.x as i64,
+                            if g.origin == OriginMode::Dot {
+                                g.y as i64 - img.height as i64
+                            } else {
+                                g.y as i64
+                            },
+                            img.width,
+                            img.height,
+                        );
                         blit(&mut bmp, img.width, img.height, &img.data, fx, fy);
                     }
                     None => warnings.push(format!(
@@ -424,13 +467,13 @@ pub(crate) fn place(
     mode: &PrinterMode,
     w: i64,
     h: i64,
-    x: u32,
-    y: u32,
+    x: i64,
+    y: i64,
     fw: u32,
     fh: u32,
 ) -> (i64, i64) {
-    let mut fx = x as i64 + mode.lh_x as i64 - mode.left_shift as i64;
-    let mut fy = y as i64 + mode.lh_y as i64 + mode.label_top as i64;
+    let mut fx = x + mode.lh_x as i64 - mode.left_shift as i64;
+    let mut fy = y + mode.lh_y as i64 + mode.label_top as i64;
     if mode.orientation == 1 {
         fx = w - fx - fw as i64;
         fy = h - fy - fh as i64;

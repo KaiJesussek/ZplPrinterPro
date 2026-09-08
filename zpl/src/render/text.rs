@@ -549,18 +549,6 @@ pub(crate) fn paint_text(
         fb24: t.block.is_some() && l.cell == 24,
     };
 
-    let (_, fw, fh) = extents(t, &l);
-    let fw = u32::try_from(fw).unwrap_or(u32::MAX);
-    let fh = u32::try_from(fh).unwrap_or(u32::MAX);
-    let (ox, oy) = crate::render::place(
-        opts.mode,
-        bmp.width as i64,
-        bmp.height as i64,
-        t.x,
-        t.y,
-        fw,
-        fh,
-    );
     let n_lines = l.lines.len() as i64;
     let last_pitch = (n_lines - 1) * l.pitch as i64;
     // Bitmap-style fonts draw the glyph's ink one row lower than the
@@ -608,6 +596,23 @@ pub(crate) fn paint_text(
     // first character advance; the shrink term is that advance minus one
     // (the advance column's last row).
     let ft_adv = first_adv.saturating_sub(1);
+    // `^FT` anchors the content rect on the rotated baseline corner;
+    // `place` repositions that RECT, so the label transforms
+    // (^LH/^LS/^LT/^POI/^PMY) move it as a unit (a post-place shift
+    // would not compose - ^POI mirrors the anchor the wrong way). The
+    // paint functions keep their origin-relative offsets, so they get
+    // the placed rect minus its top-left offset.
+    let (rx, ry, rw, rh) = field_rect(t, &l, l.baseline as i64, paint_baseline, ft_adv);
+    let (ox, oy) = crate::render::place(
+        opts.mode,
+        bmp.width as i64,
+        bmp.height as i64,
+        t.x as i64 + rx,
+        t.y as i64 + ry,
+        rw as u32,
+        rh as u32,
+    );
+    let (ox, oy) = (ox - rx, oy - ry);
     if t.reverse {
         let paint_baseline = if matches!(fd.metrics.cap, CapModel::Ascent) {
             l.baseline as i64
@@ -668,32 +673,24 @@ pub(crate) fn paint_text(
     }
 }
 
-/// Fill the field's layout rectangle black (reverse video background),
-/// in rotated space.
-#[allow(clippy::too_many_arguments)]
-fn paint_reverse_box(
-    bmp: &mut Bitmap,
-    ox: i64,
-    oy: i64,
-    l: &FieldLayout,
+/// The field's content rect relative to the origin (label space), per
+/// rotation/origin: `[rx, rx+rw) x [ry, ry+rh)`. `^FT` (Dot) anchors the
+/// rotated baseline corner; `place` repositions this rect, so the label
+/// transforms compose. Shared by the reverse-video box and the placement
+/// anchor in [`paint_text`].
+fn field_rect(
     t: &TextField,
-    ft_adv: i64,
-    // Metric baseline (R0 block anchor; the reference's `^FT` point is
-    // the cap's last ink row).
+    l: &FieldLayout,
     baseline: i64,
-    // Paint baseline (rotated arms: the glyphs ink one row below the
-    // metric baseline for bitmap-style fonts).
     paint_baseline: i64,
-) {
+    ft_adv: i64,
+) -> (i64, i64, i64, i64) {
     let box_w = (l.box_right - l.box_left) as i64;
     let n_lines = l.lines.len() as i64;
     let block_w = (n_lines - 1) * l.pitch as i64 + l.cell as i64;
     let cell = l.cell as i64;
     let last_pitch = (n_lines - 1) * l.pitch as i64;
-    // Box coordinates relative to the origin; the Dot arms use the same
-    // rotated re-anchor as `rotate_point` (the last line's baseline point
-    // lands on the origin).
-    let (x, y, w, h) = match (t.rotation, t.origin) {
+    match (t.rotation, t.origin) {
         (Rotation::R0, OriginMode::Block) => (l.box_left as i64, 0, box_w, l.block_h as i64),
         (Rotation::R0, OriginMode::Dot) => (
             l.box_left as i64,
@@ -722,7 +719,27 @@ fn paint_reverse_box(
             block_w,
             box_w,
         ),
-    };
+    }
+}
+
+/// Fill the field's layout rectangle black (reverse video background),
+/// in rotated space.
+#[allow(clippy::too_many_arguments)]
+fn paint_reverse_box(
+    bmp: &mut Bitmap,
+    ox: i64,
+    oy: i64,
+    l: &FieldLayout,
+    t: &TextField,
+    ft_adv: i64,
+    // Metric baseline (R0 block anchor; the reference's `^FT` point is
+    // the cap's last ink row).
+    baseline: i64,
+    // Paint baseline (rotated arms: the glyphs ink one row below the
+    // metric baseline for bitmap-style fonts).
+    paint_baseline: i64,
+) {
+    let (x, y, w, h) = field_rect(t, l, baseline, paint_baseline, ft_adv);
     fill_rect(bmp, ox + x, oy + y, w, h, b'B');
 }
 

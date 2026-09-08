@@ -57,6 +57,7 @@ use crate::fonts::{left_pad, matrix_pad, CapModel, FontData};
 use crate::ir::{BarcodeField, OriginMode, Rotation};
 use crate::render::text::{advance_at, draw_baseline, font_scale, scan_bitmap_ink};
 use crate::render::{font_spec, place, resolve_font, Bitmap, RenderOptions};
+use crate::state::PrinterMode;
 
 /// Content-coordinate ceiling: any dot beyond this can never intersect the
 /// 32000-dot canvas (even shifted by ^LH/^LS/^LT/^PO/^PM), and clamping to
@@ -249,6 +250,35 @@ fn pattern_width(b: &BarcodeField) -> u32 {
 
 /// Map a content dot through the field rotation (same orientation as
 /// text.rs's transform: R = 90deg clockwise about the ^FO origin).
+/// The `^POI`/`^PMY` label transform additionally mirrors BARCODE content
+/// (measured on the reference: under both the bar sequence reverses and
+/// the interpret line crosses to the opposite side, while text fields
+/// stay upright). The mirror is expressed on the rect-relative axes so
+/// every on-rect position follows the field unit.
+#[derive(Clone, Copy, Default)]
+struct Flip {
+    x: bool,
+    y: bool,
+}
+
+impl Flip {
+    fn of(mode: &PrinterMode) -> Self {
+        let poi = mode.orientation == 1;
+        // POI = 180deg (both axes); PMY = horizontal; POI+PMY = vertical.
+        Self {
+            x: poi != mode.mirror,
+            y: poi,
+        }
+    }
+
+    fn fwd(self, fw: i64, fh: i64, bx: i64, by: i64) -> (i64, i64) {
+        (
+            if self.x { fw - 1 - bx } else { bx },
+            if self.y { fh - 1 - by } else { by },
+        )
+    }
+}
+
 fn rotate(u: i64, v: i64, r: Rotation, fw: i64, fh: i64) -> (i64, i64) {
     match r {
         Rotation::R0 => (u, v),
@@ -283,11 +313,13 @@ fn dest_bounds(
     v0: i64,
     w: i64,
     h: i64,
+    flip: Flip,
 ) -> Option<(i64, i64, i64, i64)> {
     let (u1, v1) = (u0 + w, v0 + h); // bounded by the 2^50 clamp -> no overflow
     let (mut min_x, mut min_y, mut max_x, mut max_y) = (i64::MAX, i64::MAX, i64::MIN, i64::MIN);
     for (u, v) in [(u0, v0), (u1, v0), (u0, v1), (u1, v1)] {
         let (bx, by) = rotate(u, v, r, fw, fh);
+        let (bx, by) = flip.fwd(fw, fh, bx, by);
         min_x = min_x.min(bx);
         min_y = min_y.min(by);
         max_x = max_x.max(bx);
@@ -322,14 +354,16 @@ fn paint_rect(
     v0: i64,
     w: i64,
     h: i64,
+    flip: Flip,
 ) {
-    let Some((x0, x1, y0, y1)) = dest_bounds(bmp, ox, oy, r, fw, fh, u0, v0, w, h) else {
+    let Some((x0, x1, y0, y1)) = dest_bounds(bmp, ox, oy, r, fw, fh, u0, v0, w, h, flip) else {
         return;
     };
     let (u1, v1) = (u0 + w, v0 + h);
     for by in y0..=y1 {
         for bx in x0..=x1 {
-            let (u, v) = unrotate(bx - ox, by - oy, r, fw, fh);
+            let (mx, my) = flip.fwd(fw, fh, bx - ox, by - oy);
+            let (u, v) = unrotate(mx, my, r, fw, fh);
             if u >= u0 && u < u1 && v >= v0 && v < v1 {
                 bmp.set(bx as u32, by as u32, true);
             }
@@ -351,6 +385,7 @@ fn paint_line(
     bar_w: i64,
     ox: i64,
     oy: i64,
+    flip: Flip,
     _opts: &RenderOptions,
     warnings: &mut Vec<String>,
 ) {
@@ -439,6 +474,7 @@ fn paint_line(
                 y_top,
                 adv,
                 draw_cell as i64,
+                flip,
             )
             .is_some();
             if gid != GlyphId(0) && on_canvas {
@@ -471,6 +507,7 @@ fn paint_line(
                                 return;
                             }
                             let (bx, by) = rotate(u0 + gx, y_top + gy, b.rotation, fw, fh);
+                            let (bx, by) = flip.fwd(fw, fh, bx, by);
                             // Negative destinations are dropped by set().
                             bmp.set((bx + ox) as u32, (by + oy) as u32, true);
                         },
@@ -513,20 +550,22 @@ pub(crate) fn paint(
         0
     };
     let g = extent(b, pat, tw);
+    // `^FT` anchors the rect on the rotated baseline corner instead of
+    // the top-left: `place` repositions the anchored content RECT, so
+    // the label transforms (^LH/^LS/^LT/^POI/^PMY) move the rect as a
+    // unit (a shift after `place` would not compose - ^POI rotates the
+    // anchor vector the wrong way, measured off by 2x the anchor).
+    let (d_x, d_y) = origin_anchor(b, g.fw, g.fh, matches!(pat, Pattern::Modules { .. }));
     let (ox, oy) = place(
         opts.mode,
         bmp.width as i64,
         bmp.height as i64,
-        b.x,
-        b.y,
+        b.x as i64 - d_x,
+        b.y as i64 - d_y,
         g.fw,
         g.fh,
     );
-    // `^FT` anchors the rect on the rotated baseline corner instead of
-    // the top-left: shift the painted rect so the field origin lands on
-    // the anchor (linear, so it composes with ^POI/^PM after `place`).
-    let (d_x, d_y) = origin_anchor(b, g.fw, g.fh, matches!(pat, Pattern::Modules { .. }));
-    let (ox, oy) = (ox - d_x, oy - d_y);
+    let flip = Flip::of(opts.mode);
     let module = if b.module == 0 { 2 } else { b.module };
     let fw = g.fw as i64;
     let fh = g.fh as i64;
@@ -551,6 +590,7 @@ pub(crate) fn paint(
                         h - bh,
                         c50(bar.width as u128),
                         bh,
+                        flip,
                     );
                 }
                 off += bar.width as u128;
@@ -577,11 +617,12 @@ pub(crate) fn paint(
             };
             let m = module as i64;
             if let Some((x0, x1, y0, y1)) =
-                dest_bounds(bmp, ox, oy, b.rotation, fw, fh, 0, 0, fw, fh)
+                dest_bounds(bmp, ox, oy, b.rotation, fw, fh, 0, 0, fw, fh, flip)
             {
                 for by in y0..=y1 {
                     for bx in x0..=x1 {
-                        let (u, v) = unrotate(bx - ox, by - oy, b.rotation, fw, fh);
+                        let (mx, my) = flip.fwd(fw, fh, bx - ox, by - oy);
+                        let (u, v) = unrotate(mx, my, b.rotation, fw, fh);
                         // The QR's blank band [0, shift) is not symbol
                         // content: truncating division would smear its
                         // low rows onto symbol row 0 (a 5-px ghost band
@@ -627,6 +668,7 @@ pub(crate) fn paint(
                 bar_w,
                 ox,
                 oy,
+                flip,
                 opts,
                 warnings,
             );
@@ -642,6 +684,7 @@ pub(crate) fn paint(
                 bar_w,
                 ox,
                 oy,
+                flip,
                 opts,
                 warnings,
             );

@@ -1509,6 +1509,70 @@ fn qr_auto_height_covers_symbol() {
     assert!((210..335).any(|y| bmp.get(210, y)), "symbol fully on-label");
 }
 
+/// The label transforms (`^POI`/`^PMY`) reposition the ANCHORED content
+/// rect, not the field origin: with `^FT` the rect hangs above the
+/// origin and must flip as a unit (measured on the reference: ^POI
+/// moves the ^GB rect [300,400) to [198,297] and the ^FT bars [50,150)
+/// to [448,547]). The reference additionally mirrors BARCODE content
+/// under both transforms (the bar sequence reverses - flipped bar 1 =
+/// the pre-flip last bar - and the interpret line crosses to the other
+/// side), while text fields stay upright.
+#[test]
+fn poi_ft_anchor_flips_content_rects() {
+    let (_, out) = render_bc(
+        b"^XA^PW600^LL600^POI^FT100,150^BY2,2^BCN,100,Y,N^FD12345^FS^FT100,400^GB200,100,10^FS^FT100,550^A0N,48,48^FDHELLO^FS^XZ",
+    );
+    let bmp = &out.bitmap;
+    // The label is 600 dots (the ^LL); the reference canvas (a 2.95-in
+    // fit) is 598, so all flipped positions come out 2 rows EQ the
+    // reference: flip origin = [600-300-100, 600-300] = [200,299].
+    assert!(
+        bmp.get(300, 201) && bmp.get(497, 298),
+        "flipped FT box hangs at [200,299]"
+    );
+    assert!(
+        !(448..548).any(|y| bmp.get(400, y)),
+        "box is not below the flipped origin"
+    );
+    // Flipped bars: rows [450,549], first bar = the pre-last bar at
+    // [320,323] (sequence reversed: 4,2,6 then 4,4,4,8 ...).
+    assert!(
+        bmp.get(320, 500) && bmp.get(330, 500) && bmp.get(364, 500),
+        "reversed bar pattern at [320,323]/[330,335]/[364,367]"
+    );
+    assert!(
+        !bmp.get(324, 500),
+        "space between reversed bars stays clear"
+    );
+    // The interpret line crossed ABOVE the flipped bars (rows
+    // [429,441], bars start at 450) - the f=Y side flipped.
+    assert!(
+        (429..442).any(|y| bmp.get(400, y)),
+        "interpret line above the flipped bars"
+    );
+    // HELLO text stays upright at the flipped baseline rows [47,85].
+    assert!(
+        (47..85).any(|y| bmp.get(375, y)),
+        "text at the flipped baseline"
+    );
+}
+
+/// `^PMY` mirrors the same anchored rects and bar content (x only): the
+/// ^FT bars stay at rows [50,150) with the reversed pattern.
+#[test]
+fn pmy_ft_barcode_bars_flip_x() {
+    let (_, out) = render_bc(b"^XA^PW600^LL600^PMY^FT100,150^BY2,2^BCN,100,Y,N^FD12345^FS^XZ");
+    let bmp = &out.bitmap;
+    // The mirror is x-only: the reversed pattern lands at
+    // [320,323]/[326,327] (the reference: [318,321]/[324,325] on its
+    // 598 canvas) STILL at rows [50,150).
+    assert!(
+        bmp.get(320, 100) && !bmp.get(324, 100) && bmp.get(326, 100),
+        "mirrored bars at [320,323]/[326,327] above the origin"
+    );
+    assert!(bmp.get(320, 60), "bars span the full height");
+}
+
 /// Interpret line above (`^BC g=Y`): the line prints ABOVE the bars,
 /// extending the field above its ^FO origin; the bars are unchanged. The
 /// line is the built-in font-0 line at 12 dots per module (^BY2 -> 24),
