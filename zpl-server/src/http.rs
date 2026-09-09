@@ -75,8 +75,8 @@ use crate::state::{AppState, Conditions, Event};
 /// its login form.
 pub fn router(state: Arc<AppState>) -> Router {
     let api = Router::new()
-        .route("/api/labels", get(list_labels))
-        .route("/api/labels/{id}", get(label_get))
+        .route("/api/labels", get(list_labels).delete(delete_all_labels))
+        .route("/api/labels/{id}", get(label_get).delete(label_delete))
         .route("/api/labels/{id}/rerender", post(rerender))
         .route("/api/render", post(render_direct))
         .route(
@@ -327,6 +327,24 @@ async fn label_get(
 #[derive(Deserialize)]
 struct RerenderParams {
     dpi: u32,
+}
+
+/// DELETE /api/labels/{id}: remove one retained render (files + index
+/// row). 404 when the id was never archived.
+async fn label_delete(State(state): State<Arc<AppState>>, Path(id): Path<u64>) -> StatusCode {
+    let removed = state.archive.lock().await.remove(id);
+    if removed {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::NOT_FOUND
+    }
+}
+
+/// DELETE /api/labels: drop every retained render. Returns how many were
+/// removed.
+async fn delete_all_labels(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let removed = state.archive.lock().await.clear();
+    Json(serde_json::json!({ "removed": removed }))
 }
 
 async fn rerender(

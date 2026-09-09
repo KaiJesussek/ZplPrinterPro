@@ -83,6 +83,26 @@ main {
   max-height: calc(100vh - 150px);
   overflow-y: auto;
 }
+#list-head { display: flex; align-items: center; justify-content: space-between; }
+#list-head h2 { margin: 0; }
+#label-list { display: flex; flex-direction: column; gap: 8px; }
+.label-card { position: relative; }
+.row-del {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 1;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.row-del:hover { background: #c0392b; }
 .hint { color: var(--muted); margin: 4px 0; }
 .label-row {
   display: flex;

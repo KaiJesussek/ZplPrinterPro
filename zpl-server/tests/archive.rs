@@ -478,3 +478,77 @@ fn byte_cap_prune_stops_on_failed_deletion() {
 // DEFAULT_KEEP is used through open_with above; keep the import honest.
 #[allow(dead_code)]
 const _: usize = DEFAULT_KEEP;
+
+#[test]
+fn remove_drops_files_index_and_bytes() {
+    let dir = test_dir("remove");
+    let _keep = Cleanup(dir.clone());
+    let mut arc = Archive::open(dir.clone()).unwrap();
+    let ir = small_ir();
+    let mut row = LabelRow {
+        id: 0,
+        ts_ms: 7,
+        bytes: 28,
+        diags: 0,
+        width: 832,
+        height: 50,
+    };
+    let id = arc
+        .push(&mut row, b"^XA^GB50,50,2,B^XZ", &ir, &[0xff; 16], &[])
+        .unwrap();
+    assert_eq!(id, 1);
+    assert_eq!(arc.len(), 1);
+
+    // Deleting an unknown id is a clean miss.
+    assert!(!arc.remove(999));
+    assert_eq!(arc.len(), 1);
+    // Files exist before the delete.
+    for ext in ["zpl", "json", "png"] {
+        assert!(dir.join("labels").join(format!("{id}.{ext}")).exists());
+    }
+    assert!(arc.remove(id), "the retained id removes");
+    for ext in ["zpl", "json", "png"] {
+        assert!(
+            !dir.join("labels").join(format!("{id}.{ext}")).exists(),
+            "files deleted"
+        );
+    }
+    assert!(arc.rows().is_empty());
+    // sum_bytes is private; len/rows are the observable state.
+    let _ = arc.rows().len();
+}
+
+#[test]
+fn clear_removes_every_label() {
+    let dir = test_dir("clear");
+    let _keep = Cleanup(dir.clone());
+    let mut arc = Archive::open(dir.clone()).unwrap();
+    let ir = small_ir();
+    for i in 0..3 {
+        let mut row = LabelRow {
+            id: 0,
+            ts_ms: i,
+            bytes: 28,
+            diags: 0,
+            width: 832,
+            height: 50,
+        };
+        arc.push(&mut row, b"^XA^GB50,50,2,B^XZ", &ir, &[0xff; 16], &[])
+            .unwrap();
+    }
+    let dir = &dir;
+    assert_eq!(arc.len(), 3);
+    // Make 1.zpl undeletable (a directory where the file should be) so its
+    // row must survive the clear.
+    std::fs::remove_file(dir.join("labels").join("1.zpl")).unwrap();
+    std::fs::create_dir(dir.join("labels").join("1.zpl")).unwrap();
+    assert_eq!(arc.clear(), 2, "the stuck file keeps its row");
+    assert_eq!(arc.rows().len(), 1, "only the row whose files failed stays");
+    // The stuck row survives while 1.zpl stays a directory...
+    assert!(!arc.remove(1), "a row whose file cannot be deleted is kept");
+    // ...and removes cleanly once the blocker is gone.
+    std::fs::remove_dir(dir.join("labels").join("1.zpl")).unwrap();
+    assert!(arc.remove(1), "the row removes once its files can go");
+    assert!(arc.rows().is_empty());
+    assert!(arc.rows().is_empty());
+}

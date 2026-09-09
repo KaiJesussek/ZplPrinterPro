@@ -291,6 +291,34 @@ impl Archive {
         ok
     }
 
+    /// Delete the retained label `id`: remove its three files first; a
+    /// failed deletion leaves the row indexed (never half-pruned). Returns
+    /// whether the id existed and was removed. The debounced `index.json`
+    /// write picks up the row drop.
+    pub fn remove(&mut self, id: u64) -> bool {
+        let Some(pos) = self.rows.iter().position(|e| e.row.id == id) else {
+            return false;
+        };
+        let labels = self.dir.join("labels");
+        let ok = ["zpl", "json", "png"]
+            .iter()
+            .all(|ext| delete_if_present(&labels.join(format!("{id}.{ext}"))));
+        if ok {
+            self.sum_bytes = self
+                .sum_bytes
+                .saturating_sub(self.rows[pos].row.bytes as u64);
+            self.rows.remove(pos);
+        }
+        ok
+    }
+
+    /// Delete every retained label. Returns how many were removed (a row
+    /// whose files fail to delete stays).
+    pub fn clear(&mut self) -> usize {
+        let ids: Vec<u64> = self.rows.iter().map(|e| e.row.id).collect();
+        ids.into_iter().filter(|&id| self.remove(id)).count()
+    }
+
     /// Labels currently retained (`next_id - 1` historical; ids start at 1).
     pub fn len(&self) -> usize {
         self.next_id.saturating_sub(1) as usize

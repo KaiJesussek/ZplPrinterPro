@@ -181,6 +181,8 @@ async function loadStorage() {
 const labelList = $('#label-list');
 
 function makeRow(row) {
+  const wrap = document.createElement('div');
+  wrap.className = 'label-card';
   const card = document.createElement('button');
   card.type = 'button';
   card.className = 'label-row';
@@ -193,12 +195,43 @@ function makeRow(row) {
     (row.diags ? `<span class="badge">${row.diags} diag</span>` : '') +
     `</div>`;
   card.addEventListener('click', () => openDetail(row.id));
-  return card;
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'row-del';
+  del.title = `Clear render #${row.id}`;
+  del.setAttribute('aria-label', `Clear render ${row.id}`);
+  del.textContent = '\u00d7';
+  del.addEventListener('click', async (ev) => {
+    ev.stopPropagation();
+    await deleteLabel(row.id);
+  });
+  wrap.append(card, del);
+  return wrap;
 }
+
+async function deleteLabel(id) {
+  const r = await apiFetch(`/api/labels/${id}`, { method: 'DELETE' });
+  if (!r.ok) return; // 404: already gone; the list refresh settles it
+  const pane = $('#detail-pane');
+  if (pane && !pane.hidden && $('#detail-id').textContent === String(id)) {
+    pane.hidden = true;
+  }
+  await loadList();
+}
+
+const clearAll = $('#clear-all');
+clearAll.addEventListener('click', async () => {
+  if (!confirm('Clear every previous render? This cannot be undone.')) return;
+  const r = await apiFetch('/api/labels', { method: 'DELETE' });
+  if (!r.ok) return;
+  $('#detail-pane').hidden = true;
+  await loadList();
+});
 
 async function loadList() {
   const rows = await getJSON('/api/labels');
   labelList.textContent = '';
+  clearAll.hidden = !rows.length;
   if (!rows.length) {
     labelList.innerHTML = '<p class="hint">No labels yet &mdash; send one to the TCP port.</p>';
     return;
