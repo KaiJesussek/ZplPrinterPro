@@ -266,7 +266,11 @@ pub(crate) fn draw_diagonal(
     }
     let bw = bm.width as i64;
     let bh = bm.height as i64;
-    let left = direction == b'L';
+    // Guide p.213 (2006 + 2018 official manuals agree): R (or /) = the
+    // RIGHT-leaning diagonal (bottom-left to top-right), L (or \) = the
+    // LEFT-leaning one (top-left to bottom-right). The right-leaning form
+    // mirrors the walk along the long axis.
+    let rising = direction == b'R';
     let run_start = (t - 1) / 2; // odd centered; even +1 toward +x/+y
     if w64 >= h64 {
         // Iterate rows (the longer axis); the diagonal's column at row r
@@ -278,7 +282,7 @@ pub(crate) fn draw_diagonal(
         for row in row0..row1 {
             let r = row as i128;
             let along = ((2 * r * slope_num + (h64 - 1) as i128) / slope_den) as i64;
-            let cx = if left {
+            let cx = if rising {
                 x + (w64 - 1) - along
             } else {
                 x + along
@@ -293,7 +297,7 @@ pub(crate) fn draw_diagonal(
         for col in col0..col1 {
             let c = col as i128;
             let along = ((2 * c * slope_num + (w64 - 1) as i128) / slope_den) as i64;
-            let cy = if left {
+            let cy = if rising {
                 y + (h64 - 1) - along
             } else {
                 y + along

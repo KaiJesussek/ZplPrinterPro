@@ -283,9 +283,12 @@ pub fn render(label: &Label, opts: &RenderOptions) -> Result<RenderOutcome, Rend
                 // flips (^PMY, and POI+PMY = vertical) swap the
                 // direction - i.e. exactly `mirror` (POI XOR PMY on x,
                 // POI on y; see barcode.rs Flip).
+                // A single-axis flip swaps the diagonal's direction
+                // (mirror(L) == R at the mirrored rect); ^POI alone is
+                // 180deg-symmetric and preserves it.
                 let dir = if opts.mode.mirror {
                     if d.direction == b'L' {
-                        b'A'
+                        b'R'
                     } else {
                         b'L'
                     }

@@ -369,25 +369,27 @@ fn ellipse_paints_ring_with_hole() {
 
 #[test]
 fn diagonal_direction_pins_r_and_l() {
-    // ^GD: R = right-leaning (top-left to bottom-right "/"), L = left-leaning.
+    // Guide p.213 (official manuals, 2006 + 2018 agree): R (or /) = the
+    // right-leaning diagonal (bottom-left to top-right), L (or \) = the
+    // left-leaning one (top-left to bottom-right).
     let outcome = render_src(b"^XA^PW20^LL20^FO0,0^GD5,5,1,B,R^FS^XZ");
     let bmp = &outcome.bitmap;
     for i in 0..5 {
-        assert!(bmp.get(i, i), "R diagonal on the main diagonal at {i}");
+        assert!(bmp.get(4 - i, i), "R on the anti-diagonal at {i}");
     }
     assert!(
-        !bmp.get(4, 0) && !bmp.get(0, 4),
-        "R diagonal's anti-diagonal corners empty"
+        !bmp.get(0, 0) && !bmp.get(4, 4),
+        "R diagonal's main-diagonal corners empty"
     );
 
     let outcome = render_src(b"^XA^PW20^LL20^FO0,0^GD5,5,1,B,L^FS^XZ");
     let bmp = &outcome.bitmap;
     for i in 0..5 {
-        assert!(bmp.get(4 - i, i), "L diagonal on the anti-diagonal at {i}");
+        assert!(bmp.get(i, i), "L on the main diagonal at {i}");
     }
     assert!(
-        !bmp.get(0, 0) && !bmp.get(4, 4),
-        "L diagonal's main-diagonal corners empty"
+        !bmp.get(4, 0) && !bmp.get(0, 4),
+        "L diagonal's anti-diagonal corners empty"
     );
 }
 
