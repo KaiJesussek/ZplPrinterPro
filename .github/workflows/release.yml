@@ -1,0 +1,32 @@
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            slug: linux-x86_64
+            ext: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            slug: windows-x86_64
+            ext: ".exe"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: rustup target add ${{ matrix.target }}
+
+      - run: cargo build --release --target ${{ matrix.target }} -p zpl-server
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zpl-server-${{ matrix.slug }}
+          path: target/${{ matrix.target }}/release/zpl-server${{ matrix.ext }}

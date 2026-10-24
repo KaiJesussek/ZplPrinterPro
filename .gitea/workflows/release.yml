@@ -1,0 +1,43 @@
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: rust:bookworm
+    steps:
+      - uses: actions/checkout@v4
+
+      # mingw-w64 provides gcc + windmc/windres; the eventlog crate's build
+      # script needs windmc/windres when cross-compiling from Linux.
+      - name: Install deps
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends mingw-w64 zip
+          rustup target add x86_64-unknown-linux-musl x86_64-pc-windows-gnu
+
+      - name: Build
+        run: |
+          cargo build --release --target x86_64-unknown-linux-musl -p zpl-server
+          cargo build --release --target x86_64-pc-windows-gnu -p zpl-server
+
+      - name: Package
+        run: |
+          V=$(sed -n 's/^version = "\([^"]*\)"/\1/p' zpl-server/Cargo.toml | head -n1)
+          (cd target/x86_64-unknown-linux-musl/release && zip -q9 "../../../zpl-server-${V}-linux-x86_64.zip" zpl-server)
+          (cd target/x86_64-pc-windows-gnu/release && zip -q9 "../../../zpl-server-${V}-windows-x86_64.zip" zpl-server.exe)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zpl-server-linux-x86_64
+          path: zpl-server-*-linux-x86_64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zpl-server-windows-x86_64
+          path: zpl-server-*-windows-x86_64.zip
