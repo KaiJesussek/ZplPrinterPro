@@ -19,6 +19,17 @@ The workspace is two crates:
   host queries on the socket, and exposes an HTTP API with a web UI for
   labels, printer state, and storage.
 
+## Web UI
+
+The server serves a web UI at <http://localhost:8080>: the label
+archive with rendered samples (shipping label with QR + Code 128,
+product label with EAN-13, wrapped-text batch label), a detail view
+with the raw ZPL and parsed IR, and a direct-render pane.
+
+![Web UI: label archive with rendered ZPL samples](docs/web-ui.png)
+
+![Label detail: render, raw ZPL, IR](docs/web-ui-detail.png)
+
 ## Quickstart
 
 ```sh
