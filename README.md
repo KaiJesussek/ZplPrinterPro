@@ -24,7 +24,8 @@ The workspace is two crates:
 The server serves a web UI at <http://localhost:8080>: the label
 archive with rendered samples (shipping label with QR + Code 128,
 product label with EAN-13, wrapped-text batch label), a detail view
-with the raw ZPL and parsed IR, and a direct-render pane.
+with the raw ZPL and parsed IR, and a direct-ZPL pane that prints through
+the same path as the TCP port (rendered, archived, listed).
 
 ![Web UI: label archive with rendered ZPL samples](docs/web-ui.png)
 

@@ -377,9 +377,9 @@ function connectEvents() {
 }
 
 // ---------- direct ZPL playground ----------
-// POST /api/render: parse + render arbitrary ZPL text, PNG inline. The
-// label is NOT archived (playground semantics), so repeated edits don't
-// pollute the label list.
+// POST /api/labels: the same path a TCP session takes - parse, render,
+// archive - so the printed label lands in the list (via the SSE event)
+// like any label sent to port 9100.
 const playZpl = $('#play-zpl');
 const playGo = $('#play-go');
 const playStatus = $('#play-status');
@@ -393,9 +393,9 @@ async function playRender() {
     return;
   }
   playGo.disabled = true;
-  playStatus.textContent = 'rendering...';
+  playStatus.textContent = 'printing...';
   try {
-    const r = await apiFetch('/api/render', {
+    const r = await apiFetch('/api/labels', {
       method: 'POST',
       headers: { 'content-type': 'text/plain' },
       body: new TextEncoder().encode(text), // binary-unsafe textarea: bytes survive
@@ -407,13 +407,15 @@ async function playRender() {
       playStatus.textContent = msg;
       return;
     }
-    const blob = await r.blob();
-    playImg.src = URL.createObjectURL(blob);
+    const rows = await r.json();
+    const last = rows[rows.length - 1];
+    playImg.src = authedUrl(`/api/labels/${last.id}.png`);
     playImgWrap.hidden = false;
     playStatus.textContent =
-      `${r.headers.get('x-label-width')} \u00d7 ${r.headers.get('x-label-height')} dots`;
+      `#${last.id} - ${last.width}${last.height ? ` \u00d7 ${last.height}` : ''} dots` +
+      (last.diags ? `, ${last.diags} diag` : '');
   } catch (e) {
-    playStatus.textContent = `render failed: ${e.message}`;
+    playStatus.textContent = `print failed: ${e.message}`;
   } finally {
     playGo.disabled = false;
   }

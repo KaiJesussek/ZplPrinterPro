@@ -18,7 +18,7 @@ use zpl::fonts::DefaultFontProvider;
 use zpl::render::{render, RenderOptions};
 use zpl::scanner::Scanner;
 use zpl::state::{
-    FormatState, ParseContext, PendingBinary, PrinterConfig, PrinterMode, QueryRequest,
+    FormatState, Memory, ParseContext, PendingBinary, PrinterConfig, PrinterMode, QueryRequest,
 };
 
 use crate::archive::{unix_ms, LabelRow};
@@ -174,103 +174,7 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
                 persist.hand_out(&mut ctx);
                 queries = std::mem::take(&mut ctx.queries);
             }
-            for pl in &labels {
-                let raw = &input[pl.start..pl.end];
-                // Per-label attribution: each row's diagnostics are the
-                // window closed by ITS ^XZ, not everything in the chunk
-                // (a multi-label chunk previously charged every diagnostic
-                // to the first label).
-                let window = &diags.items[pl.diag_start..pl.diag_end];
-                let diag_count = window.len();
-                let messages: Vec<String> = window.iter().map(|d| d.message.clone()).collect();
-                // Render inside its own scope: RenderOptions borrows a
-                // `&dyn FontProvider`, which is not Sync, so `opts` must
-                // not live across the archive await below.
-                let (png, height) = {
-                    let fonts = DefaultFontProvider::new();
-                    let opts = RenderOptions {
-                        dpi: DPI,
-                        fonts: &fonts,
-                        memory: &guard,
-                        mode: &persist.mode,
-                    };
-                    match render(&pl.label, &opts) {
-                        Ok(o) => (o.bitmap.to_png(), o.bitmap.height),
-                        Err(e) => {
-                            // Only reachable from hand-built IR; parsed
-                            // labels always render. Skip rather than
-                            // archive a broken row (the archive's 3-file
-                            // layout stays intact). The window indices are
-                            // NOT invalidated here (no clear) - later
-                            // labels in the chunk slice valid windows.
-                            crate::log!("tcp: render failed: {e:?}; label not archived");
-                            continue;
-                        }
-                    }
-                };
-                let mut row = LabelRow {
-                    id: 0, // push assigns
-                    ts_ms: unix_ms(),
-                    bytes: raw.len(),
-                    diags: diag_count,
-                    width: pl.label.width_dots,
-                    height: pl.label.height_dots,
-                };
-                let mut archive = state.archive.lock().await;
-                match archive.push(&mut row, raw, &pl.label, &png, &messages) {
-                    Ok(_id) => {
-                        state.counters.labels.fetch_add(1, Ordering::Relaxed);
-                        // Label completion -> printer state. `labels_remaining`
-                        // adds this format's ^PQ copies and consumes the
-                        // first printed copy (v1 renders each format once, so
-                        // a ^PQn batch leaves n-1 outstanding); the numbered
-                        // map and the measured label length come from this
-                        // label; every print advances the odometer.
-                        let mut ps = state.printer_state.lock().await;
-                        ps.labels_remaining = ps
-                            .labels_remaining
-                            .saturating_add(pl.label.copies)
-                            .saturating_sub(1)
-                            .min(99_999_999);
-                        ps.meter_total = ps.meter_total.saturating_add(1);
-                        ps.label_length_dots = height;
-                        ps.numbered = pl.label.numbered.clone();
-                    }
-                    Err(e) => crate::log!("tcp: archive push failed: {e}"),
-                }
-                drop(archive);
-                // Push the label event after the archive lock drops (the
-                // broadcast send is sync/non-blocking - subscribers never
-                // stall the printer). `row.id` is 0 only when push failed.
-                if row.id != 0 {
-                    let _ = state.events.send(crate::state::Event::Label(row.clone()));
-                }
-            }
-            if !labels.is_empty() {
-                // The chunk's boot totals are buffer-wide, unchanged from
-                // the pre-window accounting (which counted every diagnostic
-                // exactly once, on the first label's iteration): a
-                // diagnostic raised outside any ^XA..^XZ - e.g. a stray
-                // ^ZZ between formats - still counts toward the totals; it
-                // just attaches to no archive row.
-                state
-                    .counters
-                    .warnings
-                    .fetch_add(diags.items.len() as u64, Ordering::Relaxed);
-                for d in &diags.items {
-                    if matches!(d.severity, Severity::UnknownCommand) {
-                        state
-                            .counters
-                            .unknown_commands
-                            .fetch_add(1, Ordering::Relaxed);
-                    }
-                    crate::log!("tcp: {}", d.message);
-                }
-                // Drop the buffer for the next chunk; a label-less chunk
-                // (partial format still open) keeps its diagnostics so the
-                // closing chunk's window can still slice them.
-                diags.items.clear();
-            }
+            commit_labels(&state, &*guard, &labels, &input, &mut diags, &persist.mode).await;
             // Query responses are built after the chunk's labels complete,
             // so ~HS/~HV read the post-print state (labels first, then the
             // queries that followed them - stream order within the chunk;
@@ -369,4 +273,115 @@ async fn handle_connection(stream: TcpStream, state: Arc<AppState>) {
         diags.push(Diagnostic::warning(mnemonic, msg));
         state.counters.warnings.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+/// Commit every completed label of one parse window: render, archive
+/// (raw span + IR + PNG + per-label diagnostics), advance counters and
+/// printer state, and emit the SSE label events. Shared by the TCP session
+/// driver and `POST /api/labels` (the web UI's Direct ZPL pane), so both
+/// paths produce identical archive rows and state updates.
+///
+/// `input` is the buffer the labels' `start..end` spans index into.
+/// `diags` is the session's diagnostic accumulator: each row's window is
+/// sliced from it, and the whole buffer is cleared once a window-yielding
+/// batch was committed (TCP semantics; the HTTP path passes a fresh one).
+/// Returns the rows that were archived (a render or archive failure skips
+/// that label, exactly as before).
+pub(crate) async fn commit_labels(
+    state: &AppState,
+    memory: &Memory,
+    labels: &[ParsedLabel],
+    input: &[u8],
+    diags: &mut Diagnostics,
+    mode: &PrinterMode,
+) -> Vec<LabelRow> {
+    let mut rows = Vec::new();
+    for pl in labels {
+        let raw = &input[pl.start..pl.end];
+        // Per-label attribution: each row's diagnostics are the window
+        // closed by ITS ^XZ, not everything in the batch (a multi-label
+        // chunk must not charge every diagnostic to the first label).
+        let window = &diags.items[pl.diag_start..pl.diag_end];
+        let diag_count = window.len();
+        let messages: Vec<String> = window.iter().map(|d| d.message.clone()).collect();
+        // Render inside its own scope: RenderOptions borrows a
+        // `dyn FontProvider`, which is not Sync, so `opts` must not live
+        // across the archive await below.
+        let (png, height) = {
+            let fonts = DefaultFontProvider::new();
+            let opts = RenderOptions {
+                dpi: DPI,
+                fonts: &fonts,
+                memory,
+                mode,
+            };
+            match render(&pl.label, &opts) {
+                Ok(o) => (o.bitmap.to_png(), o.bitmap.height),
+                Err(e) => {
+                    // Only reachable from hand-built IR; parsed labels
+                    // always render. Skip rather than archive a broken row
+                    // (the archive's 3-file layout stays intact).
+                    crate::log!("print: render failed: {e:?}; label not archived");
+                    continue;
+                }
+            }
+        };
+        let mut row = LabelRow {
+            id: 0, // push assigns
+            ts_ms: unix_ms(),
+            bytes: raw.len(),
+            diags: diag_count,
+            width: pl.label.width_dots,
+            height: pl.label.height_dots,
+        };
+        let mut archive = state.archive.lock().await;
+        match archive.push(&mut row, raw, &pl.label, &png, &messages) {
+            Ok(_id) => {
+                state.counters.labels.fetch_add(1, Ordering::Relaxed);
+                // Label completion -> printer state. `labels_remaining`
+                // adds this format's ^PQ copies and consumes the first
+                // printed copy (v1 renders each format once, so a ^PQn
+                // batch leaves n-1 outstanding); the numbered map and the
+                // measured label length come from this label; every print
+                // advances the odometer.
+                let mut ps = state.printer_state.lock().await;
+                ps.labels_remaining = ps
+                    .labels_remaining
+                    .saturating_add(pl.label.copies)
+                    .saturating_sub(1)
+                    .min(99_999_999);
+                ps.meter_total = ps.meter_total.saturating_add(1);
+                ps.label_length_dots = height;
+                ps.numbered = pl.label.numbered.clone();
+                rows.push(row.clone());
+            }
+            Err(e) => crate::log!("print: archive push failed: {e}"),
+        }
+        drop(archive);
+        // Send the label event after the archive lock drops (the broadcast
+        // send is sync/non-blocking - subscribers never stall the printer).
+        if row.id != 0 {
+            let _ = state.events.send(crate::state::Event::Label(row.clone()));
+        }
+    }
+    if !labels.is_empty() {
+        // Batch-wide boot totals: a diagnostic raised outside any
+        // ^XA..^XZ still counts toward the totals; it just attaches to no
+        // archive row.
+        state
+            .counters
+            .warnings
+            .fetch_add(diags.items.len() as u64, Ordering::Relaxed);
+        for d in &diags.items {
+            if matches!(d.severity, Severity::UnknownCommand) {
+                state
+                    .counters
+                    .unknown_commands
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            crate::log!("print: {}", d.message);
+        }
+        diags.items.clear();
+    }
+    rows
 }

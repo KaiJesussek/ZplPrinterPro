@@ -202,6 +202,47 @@ async fn render_direct_returns_png_without_archiving() {
 }
 
 #[tokio::test]
+async fn post_labels_archives_like_tcp() {
+    let dir = test_dir("print");
+    let _keep = Cleanup(dir.clone());
+    let (_addr, state) = spawn(dir.clone()).await;
+
+    // A valid format is archived and returned as rows.
+    let zpl = b"^XA^FO10,10^A0N,20,20^FDhi^FS^XZ";
+    let resp = post_bytes(&state, "/api/labels", zpl).await;
+    let (status, body) = body_string(resp).await;
+    assert_eq!(status, StatusCode::OK);
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+    assert_eq!(rows.len(), 1);
+    let id = rows[0]["id"].as_u64().expect("push assigns an id");
+    assert_ne!(id, 0);
+    assert_eq!(
+        rows[0]["bytes"].as_u64().unwrap(),
+        zpl.len() as u64,
+        "the row carries the exact raw span"
+    );
+
+    // The row shows up in the list and the archived PNG is served.
+    let (status, list) = body_string(get(&state, "/api/labels").await).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(list.contains(&format!("\"id\":{id}")), "row in the list: {list}");
+    let png = get(&state, &format!("/api/labels/{id}.png")).await;
+    assert_eq!(png.status(), StatusCode::OK);
+
+    // The odometer advanced exactly as a TCP print would.
+    assert_eq!(
+        state.counters.labels.load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+
+    // No complete format -> 400, nothing archived.
+    let resp = post_bytes(&state, "/api/labels", b"no format here").await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let (_, list) = body_string(get(&state, "/api/labels").await).await;
+    assert_eq!(list.matches("\"id\"").count(), 1, "the 400 archived nothing");
+}
+
+#[tokio::test]
 async fn labels_list_empty_then_shows_archived_rows() {
     let dir = test_dir("list");
     let _keep = Cleanup(dir.clone());

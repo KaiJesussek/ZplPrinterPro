@@ -13,6 +13,9 @@
 //!   rewrite `{id}.png`
 //! - `POST /api/render?dpi=` -> direct ZPL entry (web UI playground):
 //!   parse+render arbitrary ZPL text, PNG inline, nothing archived
+//! - `POST /api/labels` -> print the body's ZPL through the same path as
+//!   a TCP session (render + archive + SSE + printer state); returns the
+//!   archived `[LabelRow]`s as JSON (newest last)
 //! - `GET|PUT /api/printer-state` -> `Conditions` JSON; PUT is a partial
 //!   patch, unknown enum strings 400
 //! - `GET /api/storage` -> images/fonts/formats with sizes (the honest
@@ -75,7 +78,7 @@ use crate::state::{AppState, Conditions, Event};
 /// its login form.
 pub fn router(state: Arc<AppState>) -> Router {
     let api = Router::new()
-        .route("/api/labels", get(list_labels).delete(delete_all_labels))
+        .route("/api/labels", get(list_labels).delete(delete_all_labels).post(print_labels))
         .route("/api/labels/{id}", get(label_get).delete(label_delete))
         .route("/api/labels/{id}/rerender", post(rerender))
         .route("/api/render", post(render_direct))
@@ -422,7 +425,7 @@ async fn rerender(
 }
 
 // ---------------------------------------------------------------------------
-// POST /api/render?dpi= - direct ZPL entry (web UI playground)
+// POST /api/render?dpi= - direct render (parity runbook; not archived)
 
 #[derive(Deserialize)]
 struct RenderParams {
@@ -497,6 +500,48 @@ async fn render_direct(
         .header("x-label-height", height.to_string())
         .body(axum::body::Body::from(png))
         .map_err(|e| AppError::internal(format!("building PNG response: {e}")))
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/labels - print ZPL (the exact TCP session path)
+
+/// Parse the body as a ZPL stream and commit every completed label through
+/// [`crate::tcp::commit_labels`] - the same path a TCP session takes:
+/// render, archive (raw + IR + PNG + per-label diagnostics), counters,
+/// printer state, SSE label events. The web UI's Direct ZPL pane posts
+/// here, so a playground label lands in the label list like any printed
+/// one. No complete `^XA..^XZ` format -> 400 with the parse diagnostics.
+async fn print_labels(
+    State(state): State<Arc<AppState>>,
+    body: Bytes,
+) -> Result<Json<Vec<LabelRow>>, AppError> {
+    let mut guard = state.memory.lock().await;
+    let mut diags = Diagnostics::default();
+    let mut labels = Vec::new();
+    let mode;
+    {
+        let mut ctx = zpl::state::ParseContext::new(&mut diags, &mut guard);
+        parse_stream_collect(&mut Scanner::new(&body), &mut ctx, &mut labels);
+        mode = ctx.mode.clone();
+    }
+    if labels.is_empty() {
+        let detail = diags
+            .items
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(AppError::bad_request(format!(
+            "input contains no complete ^XA..^XZ format{}",
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(" ({detail})")
+            }
+        )));
+    }
+    let rows = crate::tcp::commit_labels(&state, &guard, &labels, &body, &mut diags, &mode).await;
+    Ok(Json(rows))
 }
 
 // ---------------------------------------------------------------------------
