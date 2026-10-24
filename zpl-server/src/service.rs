@@ -50,9 +50,12 @@ pub fn try_run_service() -> bool {
 
 /// Called by the SCM on a background thread once `try_run_service` registered us.
 fn my_service_main(_arguments: Vec<OsString>) {
+    // SCM-launched: from here on every log line also goes to the Event Log
+    // (a service has no console). Console launches never set this and log
+    // to stderr only.
+    zpl_server::logging::set_service_mode();
     if let Err(e) = run_service() {
-        // No console under the SCM, so this is visible only when the service
-        // is run from a console (e.g. for local testing).
+        // No console under the SCM, so this is visible only in the Event Log.
         zpl_server::log!("zpl-server: service terminated with an error: {e}");
     }
 }

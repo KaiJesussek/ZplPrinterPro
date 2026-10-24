@@ -3,11 +3,12 @@
 //! Every diagnostic the server emits goes through [`log!`] rather than a bare
 //! `eprintln!`, so there is exactly one place that decides where a line lands.
 //! That place is stderr - on every OS, in both the foreground and the Windows
-//! service. On Windows each line is *additionally* written to the Windows
-//! Event Log (the Application log, source `zpl-server`), because a service has
-//! no console of its own. The event-log write is purely additive: console
-//! output is never suppressed or redirected, so foreground behavior on every
-//! OS is unchanged apart from the new Windows event-log entries.
+//! service. On Windows, lines are *additionally* written to the Windows Event
+//! Log (the Application log, source `zpl-server`) **only when the process was
+//! launched by the Service Control Manager** ([`set_service_mode`]), because a
+//! service has no console of its own. A console launch keeps stderr as its
+//! only sink and never touches the event log - so it never needs the admin
+//! rights that registering the event source requires.
 //!
 //! Off Windows the event-log branch is compiled out and [`emit`] is a plain
 //! `eprintln!`.
@@ -28,8 +29,20 @@ const EVENTLOG_SOURCE: &str = "zpl-server";
 ///
 /// `eventlog::register` records the source in the registry so Event Viewer
 /// renders our (embedded) message templates instead of a raw string; it needs
-/// administrator rights. A plain foreground run (no admin) simply skips it and
-/// the handle below is still usable - the events just show the raw message.
+/// administrator rights - which the SCM service (Local System) has. A console
+/// run never reaches this handle at all (see [`SERVICE_MODE`]).
+
+/// Set once by the service worker when the SCM launched this process. Only
+/// then does [`emit`] write the Event Log; a console launch keeps stderr as
+/// its only sink and never registers or opens the event source.
+static SERVICE_MODE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Mark this process as SCM-launched; call before the first log line.
+pub fn set_service_mode() {
+    SERVICE_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 #[cfg(windows)]
 static EVENTLOG: LazyLock<Option<eventlog::EventLog>> = LazyLock::new(|| {
     let _ = eventlog::register(EVENTLOG_SOURCE);
@@ -57,7 +70,9 @@ fn write_eventlog(msg: &str) {
 pub fn emit(msg: &str) {
     eprintln!("{msg}");
     #[cfg(windows)]
-    write_eventlog(msg);
+    if SERVICE_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+        write_eventlog(msg);
+    }
 }
 
 /// Format-and-log one diagnostic. A drop-in for `eprintln!` that routes the

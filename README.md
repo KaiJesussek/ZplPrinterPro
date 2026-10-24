@@ -91,18 +91,18 @@ exactly as shown above; when the Service Control Manager (SCM) launches it,
 it serves until the SCM stops it. The service branch is compiled out on every
 other OS, so Linux/foreground behavior is unchanged.
 
-On Windows, every log line the server writes to stderr is **also** written to
-the Windows Event Log - the *Application* log, source `zpl-server`. A Windows
-service has no console of its own, so Event Viewer is where those lines live
-when the exe runs under the Service Control Manager. Console output is
-unchanged and never suppressed; the Event Log is purely additive, and on every
-other OS the branch is compiled out entirely.
+When the exe runs under the Service Control Manager, every log line the
+server writes to stderr is **also** written to the Windows Event Log - the
+*Application* log, source `zpl-server`. A Windows service has no console of
+its own, so Event Viewer is where those lines live. A console launch
+(double-click, `cargo run`, terminal) logs to stderr only and never touches
+the event log - no administrator rights needed. On every other OS the branch
+is compiled out entirely.
 
-The first log line registers the `zpl-server` source under
-`HKLM\SYSTEM\CurrentControlSet\Services\EventLog\Application`, which needs
-administrator rights. The SCM service runs as Local System and has them; a
-foreground run without them still writes the events, Event Viewer just shows
-the message inline rather than a formatted template. Inspect them with:
+The first service log line registers the `zpl-server` source under
+`HKLM\SYSTEM\CurrentControlSet\Services\EventLog\Application`; the SCM
+service runs as Local System, which has the administrator rights
+registration needs. Inspect the events with:
 
 ```bat
 wevtutil qe Application /q:"*[System[Provider[@Name='zpl-server']]]" /c:20 /rd:true
