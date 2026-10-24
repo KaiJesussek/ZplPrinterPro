@@ -42,6 +42,9 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - run: |
+          mv dist/zpl-server dist/zpl-server-linux-x86_64
+          mv dist/zpl-server.exe dist/zpl-server-windows-x86_64.exe
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
